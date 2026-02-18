@@ -102,7 +102,9 @@ app.post("/webhook", (req, res) => {
       });
       const history: Array<{ role: "user" | "assistant"; content: string }> =
         historyRows.reverse().map((m: { direction: string; body: string }) => ({
-          role: m.direction === "in" ? "user" : "assistant",
+          role: (m.direction === "in" ? "user" : "assistant") as
+            | "user"
+            | "assistant",
           content: m.body
         }));
 
