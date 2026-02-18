@@ -9,8 +9,8 @@ const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || "";
 const HISTORY_LIMIT = Number(process.env.HISTORY_LIMIT || 20);
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN || "";
 const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID || "";
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "";
+const GROQ_API_KEY = process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY || "";
+const GROQ_MODEL = process.env.GROQ_MODEL || process.env.OPENAI_MODEL || "";
 
 const prisma = new PrismaClient();
 const app = express();
@@ -131,18 +131,18 @@ app.post("/webhook", (req, res) => {
 async function generateReply(
   history: Array<{ role: "user" | "assistant"; content: string }>
 ): Promise<string> {
-  if (!OPENAI_API_KEY || !OPENAI_MODEL) {
+  if (!GROQ_API_KEY || !GROQ_MODEL) {
     return "Configuração incompleta da IA.";
   }
 
-  const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+  const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${OPENAI_API_KEY}`
+      Authorization: `Bearer ${GROQ_API_KEY}`
     },
     body: JSON.stringify({
-      model: OPENAI_MODEL,
+      model: GROQ_MODEL,
       messages: [
         {
           role: "system",
