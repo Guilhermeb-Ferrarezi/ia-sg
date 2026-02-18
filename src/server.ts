@@ -100,10 +100,11 @@ app.post("/webhook", (req, res) => {
         orderBy: { createdAt: "desc" },
         take: HISTORY_LIMIT
       });
-      const history = historyRows.reverse().map((m: { direction: string; body: string }) => ({
-        role: m.direction === "in" ? "user" : "assistant",
-        content: m.body
-      }));
+      const history: Array<{ role: "user" | "assistant"; content: string }> =
+        historyRows.reverse().map((m: { direction: string; body: string }) => ({
+          role: m.direction === "in" ? "user" : "assistant",
+          content: m.body
+        }));
 
       const reply = await generateReply(history).catch((err) => {
         console.error("OpenAI error:", err);
