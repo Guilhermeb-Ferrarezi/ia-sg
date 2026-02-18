@@ -116,12 +116,12 @@ app.post("/webhook", (req, res) => {
           content: m.body
         }));
 
-      const reply = await generateReply(history).catch((err) => {
+      await sendWhatsAppTypingIndicator(waMessageId);
+      const reply = await generateReplyWithTyping(history, waMessageId).catch((err) => {
         console.error("OpenAI error:", err);
         return "Desculpe, tive um problema aqui. Pode repetir?";
       });
 
-      await sendWhatsAppTypingIndicator(waMessageId);
       await delay(getHumanDelayMs(reply));
       await sendWhatsAppText(waId, reply);
       await prisma.message.create({
@@ -173,6 +173,27 @@ async function generateReply(
   return typeof content === "string" && content.trim()
     ? content.trim()
     : "Desculpe, não consegui responder agora.";
+}
+
+async function generateReplyWithTyping(
+  history: Array<{ role: "user" | "assistant"; content: string }>,
+  waMessageId?: string
+): Promise<string> {
+  if (!waMessageId) {
+    return generateReply(history);
+  }
+
+  const interval = setInterval(() => {
+    sendWhatsAppTypingIndicator(waMessageId).catch((err) => {
+      console.error("Typing indicator error:", err);
+    });
+  }, 20000);
+
+  try {
+    return await generateReply(history);
+  } finally {
+    clearInterval(interval);
+  }
 }
 
 async function sendWhatsAppText(to: string, body: string): Promise<void> {
