@@ -10,6 +10,7 @@ datasource db {
 model Contact {
   id        Int       @id @default(autoincrement())
   waId      String    @unique
+  name      String?
   createdAt DateTime  @default(now())
   messages  Message[]
 }

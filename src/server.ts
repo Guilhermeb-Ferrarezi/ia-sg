@@ -11,6 +11,7 @@ const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN || "";
 const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID || "";
 const GROQ_API_KEY = process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY || "";
 const GROQ_MODEL = process.env.GROQ_MODEL || process.env.OPENAI_MODEL || "";
+const BOT_PERSONA = process.env.BOT_PERSONA || "";
 const HUMAN_DELAY_MIN_MS = Number(process.env.HUMAN_DELAY_MIN_MS || 1200);
 const HUMAN_DELAY_MAX_MS = Number(process.env.HUMAN_DELAY_MAX_MS || 6500);
 
@@ -44,12 +45,17 @@ app.post("/webhook", (req, res) => {
 
       const waId = msg.from as string | undefined;
       const waMessageId = msg.id as string | undefined;
+      const profileNameRaw = req.body?.entry?.[0]?.changes?.[0]?.value?.contacts?.[0]?.profile?.name;
+      const profileName =
+        typeof profileNameRaw === "string" && profileNameRaw.trim()
+          ? profileNameRaw.trim()
+          : null;
       if (!waId) return;
 
       const contact = await prisma.contact.upsert({
         where: { waId },
         update: {},
-        create: { waId }
+        create: { waId, name: profileName }
       });
 
       if (msg.type !== "text") {
@@ -150,8 +156,7 @@ async function generateReply(
       messages: [
         {
           role: "system",
-          content:
-            "Você é um atendente objetivo, útil e curto. Se faltar dado, pergunte direto. Não invente."
+          content: BOT_PERSONA
         },
         ...history
       ]
