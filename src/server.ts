@@ -11,6 +11,8 @@ const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN || "";
 const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID || "";
 const GROQ_API_KEY = process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY || "";
 const GROQ_MODEL = process.env.GROQ_MODEL || process.env.OPENAI_MODEL || "";
+const HUMAN_DELAY_MIN_MS = Number(process.env.HUMAN_DELAY_MIN_MS || 1200);
+const HUMAN_DELAY_MAX_MS = Number(process.env.HUMAN_DELAY_MAX_MS || 6500);
 
 const prisma = new PrismaClient();
 const app = express();
@@ -113,6 +115,8 @@ app.post("/webhook", (req, res) => {
         return "Desculpe, tive um problema aqui. Pode repetir?";
       });
 
+      await sendWhatsAppTypingIndicator(waMessageId);
+      await delay(getHumanDelayMs(reply));
       await sendWhatsAppText(waId, reply);
       await prisma.message.create({
         data: {
@@ -192,6 +196,51 @@ async function sendWhatsAppText(to: string, body: string): Promise<void> {
     const text = await resp.text().catch(() => "");
     throw new Error(`WhatsApp HTTP ${resp.status}: ${text}`);
   }
+}
+
+async function sendWhatsAppTypingIndicator(
+  waMessageId?: string
+): Promise<void> {
+  if (!WHATSAPP_TOKEN || !WHATSAPP_PHONE_NUMBER_ID || !waMessageId) {
+    return;
+  }
+
+  const url = `https://graph.facebook.com/v20.0/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
+
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${WHATSAPP_TOKEN}`
+    },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      status: "read",
+      message_id: waMessageId,
+      typing_indicator: { type: "text" }
+    })
+  });
+
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    console.error(`Typing indicator HTTP ${resp.status}: ${text}`);
+  }
+}
+
+function getHumanDelayMs(reply: string): number {
+  const safeMin = Number.isFinite(HUMAN_DELAY_MIN_MS) ? HUMAN_DELAY_MIN_MS : 1200;
+  const safeMax = Number.isFinite(HUMAN_DELAY_MAX_MS) ? HUMAN_DELAY_MAX_MS : 6500;
+  const min = Math.max(0, Math.min(safeMin, safeMax));
+  const max = Math.max(min, Math.max(safeMin, safeMax));
+  const byLength = Math.max(min, Math.min(max, 800 + reply.length * 45));
+  const jitter = Math.floor(Math.random() * 500);
+  return Math.min(max, byLength + jitter);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function isPrismaUniqueError(err: unknown): boolean {
