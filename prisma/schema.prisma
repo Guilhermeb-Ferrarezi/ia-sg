@@ -1,0 +1,28 @@
+﻿generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Contact {
+  id        Int       @id @default(autoincrement())
+  waId      String    @unique
+  createdAt DateTime  @default(now())
+  messages  Message[]
+}
+
+model Message {
+  id          Int      @id @default(autoincrement())
+  contactId   Int
+  contact     Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  direction   String   // "in" | "out"
+  body        String
+  waMessageId String?
+  createdAt   DateTime @default(now())
+
+  @@index([contactId, createdAt])
+  @@unique([contactId, waMessageId])
+}
