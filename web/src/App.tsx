@@ -85,6 +85,7 @@ export default function App() {
   const [conversations, setConversations] = useState<ContactConversation[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [deletingContactId, setDeletingContactId] = useState<number | null>(null);
   const [clearingContactId, setClearingContactId] = useState<number | null>(null);
@@ -162,6 +163,18 @@ export default function App() {
       setError(err instanceof Error ? err.message : "Falha ao sair.");
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleRefreshDashboard = async () => {
+    setRefreshing(true);
+    setError("");
+    try {
+      await loadDashboard();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Falha ao atualizar dados.");
+    } finally {
+      setRefreshing(false);
     }
   };
 
@@ -328,14 +341,28 @@ export default function App() {
               Sessão ativa: {user.username} ({user.role})
             </p>
           </div>
-          <button
-            className="rounded-lg border border-slate-700 px-4 py-2 text-sm transition-all hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
-            type="button"
-            onClick={handleLogout}
-            disabled={submitting}
-          >
-            Sair
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              className="rounded-lg border border-cyan-700/70 px-4 py-2 text-sm text-cyan-200 transition-all hover:bg-cyan-900/20 disabled:cursor-not-allowed disabled:opacity-60"
+              type="button"
+              onClick={() => {
+                handleRefreshDashboard().catch(() => {
+                  /* handled in state */
+                });
+              }}
+              disabled={refreshing || submitting}
+            >
+              {refreshing ? "Atualizando..." : "Atualizar agora"}
+            </button>
+            <button
+              className="rounded-lg border border-slate-700 px-4 py-2 text-sm transition-all hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+              type="button"
+              onClick={handleLogout}
+              disabled={submitting || refreshing}
+            >
+              Sair
+            </button>
+          </div>
         </header>
 
         {error ? (
