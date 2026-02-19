@@ -667,19 +667,26 @@ async function getFaqContextForInput(input: string): Promise<string> {
 
   if (activeFaqs.length === 0) return "";
 
+  const normalizedInput = normalizeText(text);
   const tokens = tokenizeForMatch(text);
-  if (tokens.length === 0) return "";
 
   const ranked = activeFaqs
     .map((faq) => {
-      const questionTokens = tokenizeForMatch(faq.question);
+      const variants = splitFaqVariants(faq.question);
+      const bestVariant = variants
+        .map((variant) => ({
+          variant,
+          score: scoreVariantMatch(normalizedInput, tokens, variant)
+        }))
+        .sort((a, b) => b.score - a.score)[0];
+
       const answerTokens = tokenizeForMatch(faq.answer);
-      const questionHits = countIntersection(tokens, questionTokens);
       const answerHits = countIntersection(tokens, answerTokens);
-      const score = questionHits * 2 + answerHits;
+      const score = (bestVariant?.score || 0) * 3 + answerHits;
       return {
         question: faq.question,
         answer: faq.answer,
+        matchedVariant: bestVariant?.variant || faq.question,
         score
       };
     })
@@ -690,16 +697,15 @@ async function getFaqContextForInput(input: string): Promise<string> {
   if (ranked.length === 0) return "";
 
   return ranked
-    .map((item, index) => `${index + 1}. Pergunta: ${item.question}\nResposta: ${item.answer}`)
+    .map(
+      (item, index) =>
+        `${index + 1}. Pergunta: ${item.question}\nVariação relevante: ${item.matchedVariant}\nResposta: ${item.answer}`
+    )
     .join("\n\n");
 }
 
 function tokenizeForMatch(text: string): string[] {
-  const cleaned = text
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9\s]/g, " ");
+  const cleaned = normalizeText(text).replace(/[^a-z0-9\s]/g, " ");
 
   const stopWords = new Set([
     "a",
@@ -725,10 +731,12 @@ function tokenizeForMatch(text: string): string[] {
     "que"
   ]);
 
+  const shortAllowed = new Set(["oi", "ola", "opa", "eai", "eae", "hey", "ok"]);
+
   return cleaned
     .split(/\s+/)
     .map((part) => part.trim())
-    .filter((part) => part.length >= 3 && !stopWords.has(part));
+    .filter((part) => (part.length >= 3 || shortAllowed.has(part)) && !stopWords.has(part));
 }
 
 function countIntersection(a: string[], b: string[]): number {
@@ -738,6 +746,48 @@ function countIntersection(a: string[], b: string[]): number {
   for (const token of a) {
     if (bSet.has(token)) score += 1;
   }
+  return score;
+}
+
+function normalizeText(text: string): string {
+  return text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function splitFaqVariants(question: string): string[] {
+  return question
+    .split(/\r?\n|[;,|]/g)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function scoreVariantMatch(normalizedInput: string, inputTokens: string[], variant: string): number {
+  const normalizedVariant = normalizeText(variant);
+  if (!normalizedVariant) return 0;
+
+  const variantTokens = tokenizeForMatch(normalizedVariant);
+  const tokenHits = countIntersection(inputTokens, variantTokens);
+  let score = tokenHits;
+
+  if (normalizedInput === normalizedVariant) {
+    score += 6;
+  }
+
+  if (
+    normalizedVariant.length >= 2 &&
+    (normalizedInput.includes(normalizedVariant) || normalizedVariant.includes(normalizedInput))
+  ) {
+    score += 4;
+  }
+
+  if (variantTokens.length > 0 && variantTokens.every((token) => normalizedInput.includes(token))) {
+    score += 2;
+  }
+
   return score;
 }
 
