@@ -164,6 +164,71 @@ app.get("/api/dashboard/conversations", requireSession, async (_req, res) => {
   });
 });
 
+app.delete("/api/dashboard/messages/:messageId", requireSession, async (req, res) => {
+  const messageId = Number(req.params.messageId);
+  if (!Number.isInteger(messageId) || messageId <= 0) {
+    res.status(400).json({ message: "ID de mensagem inválido." });
+    return;
+  }
+
+  const deleted = await prisma.message.deleteMany({
+    where: { id: messageId }
+  });
+
+  if (deleted.count === 0) {
+    res.status(404).json({ message: "Mensagem não encontrada." });
+    return;
+  }
+
+  res.json({ message: "Mensagem removida com sucesso." });
+});
+
+app.delete("/api/dashboard/contacts/:contactId/messages", requireSession, async (req, res) => {
+  const contactId = Number(req.params.contactId);
+  if (!Number.isInteger(contactId) || contactId <= 0) {
+    res.status(400).json({ message: "ID de contato inválido." });
+    return;
+  }
+
+  const contact = await prisma.contact.findUnique({
+    where: { id: contactId },
+    select: { id: true }
+  });
+
+  if (!contact) {
+    res.status(404).json({ message: "Contato não encontrado." });
+    return;
+  }
+
+  const deleted = await prisma.message.deleteMany({
+    where: { contactId }
+  });
+
+  res.json({
+    message: "Mensagens removidas com sucesso.",
+    deletedCount: deleted.count
+  });
+});
+
+app.delete("/api/dashboard/contacts/:contactId", requireSession, async (req, res) => {
+  const contactId = Number(req.params.contactId);
+  if (!Number.isInteger(contactId) || contactId <= 0) {
+    res.status(400).json({ message: "ID de contato inválido." });
+    return;
+  }
+
+  const deleted = await prisma.contact.deleteMany({
+    where: { id: contactId }
+  });
+
+  if (deleted.count === 0) {
+    res.status(404).json({ message: "Contato não encontrado." });
+    return;
+  }
+
+  res.json({ message: "Contato e histórico removidos com sucesso." });
+});
+
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];

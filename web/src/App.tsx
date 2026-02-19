@@ -36,6 +36,17 @@ type ContactConversation = {
   }>;
 };
 
+type ConfirmDialogState = {
+  title: string;
+  description: string;
+  confirmText: string;
+  tone: "danger" | "warning";
+  action:
+    | { type: "delete-contact"; contact: ContactConversation }
+    | { type: "clear-contact-messages"; contact: ContactConversation }
+    | { type: "delete-message"; messageId: number };
+};
+
 const API_URL = import.meta.env.VITE_API_URL || "";
 
 async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -75,6 +86,10 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [deletingContactId, setDeletingContactId] = useState<number | null>(null);
+  const [clearingContactId, setClearingContactId] = useState<number | null>(null);
+  const [deletingMessageId, setDeletingMessageId] = useState<number | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
 
   const [search, setSearch] = useState("");
   const [directionFilter, setDirectionFilter] = useState<"all" | "in" | "out">("all");
@@ -148,6 +163,66 @@ export default function App() {
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const deleteContact = async (contact: ContactConversation) => {
+    setDeletingContactId(contact.id);
+    setError("");
+    try {
+      await apiFetch<{ message: string }>(`/dashboard/contacts/${contact.id}`, { method: "DELETE" });
+      await loadDashboard();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Falha ao apagar contato.");
+    } finally {
+      setDeletingContactId(null);
+    }
+  };
+
+  const clearContactMessages = async (contact: ContactConversation) => {
+    setClearingContactId(contact.id);
+    setError("");
+    try {
+      await apiFetch<{ message: string; deletedCount: number }>(`/dashboard/contacts/${contact.id}/messages`, {
+        method: "DELETE"
+      });
+      await loadDashboard();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Falha ao apagar mensagens.");
+    } finally {
+      setClearingContactId(null);
+    }
+  };
+
+  const deleteMessage = async (messageId: number) => {
+    setDeletingMessageId(messageId);
+    setError("");
+    try {
+      await apiFetch<{ message: string }>(`/dashboard/messages/${messageId}`, { method: "DELETE" });
+      await loadDashboard();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Falha ao apagar mensagem.");
+    } finally {
+      setDeletingMessageId(null);
+    }
+  };
+
+  const handleConfirmAction = async () => {
+    if (!confirmDialog) return;
+
+    if (confirmDialog.action.type === "delete-contact") {
+      await deleteContact(confirmDialog.action.contact);
+      setConfirmDialog(null);
+      return;
+    }
+
+    if (confirmDialog.action.type === "clear-contact-messages") {
+      await clearContactMessages(confirmDialog.action.contact);
+      setConfirmDialog(null);
+      return;
+    }
+
+    await deleteMessage(confirmDialog.action.messageId);
+    setConfirmDialog(null);
   };
 
   const filteredConversations = useMemo(() => {
@@ -345,12 +420,50 @@ export default function App() {
                     key={contact.id}
                     className="animate-in fade-in-0 slide-in-from-bottom-2 rounded-lg border border-slate-800 bg-slate-900 p-4 duration-300"
                   >
-                    <p className="text-sm text-slate-300">
-                      <span className="text-slate-500">Número:</span> {contact.waId}
-                    </p>
-                    <p className="text-sm text-slate-300">
-                      <span className="text-slate-500">Nome:</span> {contact.name || "Sem nome"}
-                    </p>
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div>
+                        <p className="text-sm text-slate-300">
+                          <span className="text-slate-500">Número:</span> {contact.waId}
+                        </p>
+                        <p className="text-sm text-slate-300">
+                          <span className="text-slate-500">Nome:</span> {contact.name || "Sem nome"}
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          className="rounded-md border border-amber-600/60 px-2 py-1 text-xs text-amber-300 transition hover:bg-amber-900/20 disabled:opacity-40"
+                          type="button"
+                          onClick={() =>
+                            setConfirmDialog({
+                              title: "Limpar mensagens do contato",
+                              description: `As mensagens de "${contact.name || contact.waId}" serão removidas, mas o contato será mantido.`,
+                              confirmText: "Limpar mensagens",
+                              tone: "warning",
+                              action: { type: "clear-contact-messages", contact }
+                            })
+                          }
+                          disabled={clearingContactId === contact.id || deletingContactId === contact.id}
+                        >
+                          {clearingContactId === contact.id ? "Limpando..." : "Limpar mensagens"}
+                        </button>
+                        <button
+                          className="rounded-md border border-rose-600/60 px-2 py-1 text-xs text-rose-300 transition hover:bg-rose-900/20 disabled:opacity-40"
+                          type="button"
+                          onClick={() =>
+                            setConfirmDialog({
+                              title: "Apagar contato",
+                              description: `O contato "${contact.name || contact.waId}" e todo o histórico serão removidos permanentemente.`,
+                              confirmText: "Apagar contato",
+                              tone: "danger",
+                              action: { type: "delete-contact", contact }
+                            })
+                          }
+                          disabled={deletingContactId === contact.id || clearingContactId === contact.id}
+                        >
+                          {deletingContactId === contact.id ? "Apagando..." : "Apagar contato"}
+                        </button>
+                      </div>
+                    </div>
 
                     <div className="mt-3 space-y-2">
                       {contact.messages.length > 0 ? (
@@ -363,13 +476,33 @@ export default function App() {
                                 : "border border-cyan-700/40 bg-cyan-900/20 text-cyan-100"
                             }`}
                           >
-                            <p>
-                              <span className="text-slate-400">{message.direction === "in" ? "Pessoa" : "Bot"}:</span>{" "}
-                              {message.body}
-                            </p>
-                            <p className="mt-1 text-xs text-slate-500">
-                              {new Date(message.createdAt).toLocaleString("pt-BR")}
-                            </p>
+                            <div className="flex items-start justify-between gap-2">
+                              <div>
+                                <p>
+                                  <span className="text-slate-400">{message.direction === "in" ? "Pessoa" : "Bot"}:</span>{" "}
+                                  {message.body}
+                                </p>
+                                <p className="mt-1 text-xs text-slate-500">
+                                  {new Date(message.createdAt).toLocaleString("pt-BR")}
+                                </p>
+                              </div>
+                              <button
+                                className="rounded-md border border-rose-600/60 px-2 py-1 text-xs text-rose-300 transition hover:bg-rose-900/20 disabled:opacity-40"
+                                type="button"
+                                onClick={() =>
+                                  setConfirmDialog({
+                                    title: "Apagar mensagem",
+                                    description: "Esta mensagem será removida permanentemente da conversa.",
+                                    confirmText: "Apagar mensagem",
+                                    tone: "danger",
+                                    action: { type: "delete-message", messageId: message.id }
+                                  })
+                                }
+                                disabled={deletingMessageId === message.id}
+                              >
+                                {deletingMessageId === message.id ? "Apagando..." : "Apagar"}
+                              </button>
+                            </div>
                           </div>
                         ))
                       ) : (
@@ -409,6 +542,20 @@ export default function App() {
             <p className="mt-3 text-sm text-slate-400">Nenhuma conversa encontrada para esse filtro.</p>
           )}
         </section>
+        <ConfirmModal
+          open={Boolean(confirmDialog)}
+          title={confirmDialog?.title || ""}
+          description={confirmDialog?.description || ""}
+          confirmText={confirmDialog?.confirmText || "Confirmar"}
+          tone={confirmDialog?.tone || "danger"}
+          loading={Boolean(deletingContactId || clearingContactId || deletingMessageId)}
+          onCancel={() => setConfirmDialog(null)}
+          onConfirm={() => {
+            handleConfirmAction().catch((err) => {
+              setError(err instanceof Error ? err.message : "Falha ao confirmar ação.");
+            });
+          }}
+        />
       </section>
     </main>
   );
@@ -420,5 +567,59 @@ function StatCard({ label, value }: { label: string; value: number }) {
       <p className="text-xs uppercase tracking-wide text-slate-400">{label}</p>
       <p className="mt-2 text-2xl font-semibold text-cyan-300">{value}</p>
     </article>
+  );
+}
+
+function ConfirmModal({
+  open,
+  title,
+  description,
+  confirmText,
+  tone,
+  loading,
+  onCancel,
+  onConfirm
+}: {
+  open: boolean;
+  title: string;
+  description: string;
+  confirmText: string;
+  tone: "danger" | "warning";
+  loading: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  if (!open) return null;
+
+  const confirmButtonClass =
+    tone === "danger"
+      ? "bg-rose-600 text-rose-50 hover:bg-rose-500"
+      : "bg-amber-500 text-slate-950 hover:bg-amber-400";
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 px-4 backdrop-blur-sm">
+      <div className="w-full max-w-md animate-in zoom-in-95 fade-in-0 rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl duration-200">
+        <h3 className="text-lg font-semibold text-slate-100">{title}</h3>
+        <p className="mt-2 text-sm leading-relaxed text-slate-300">{description}</p>
+        <div className="mt-5 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            className="rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-200 transition hover:bg-slate-800 disabled:opacity-50"
+            onClick={onCancel}
+            disabled={loading}
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            className={`rounded-md px-3 py-2 text-sm font-medium transition disabled:opacity-60 ${confirmButtonClass}`}
+            onClick={onConfirm}
+            disabled={loading}
+          >
+            {loading ? "Processando..." : confirmText}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
