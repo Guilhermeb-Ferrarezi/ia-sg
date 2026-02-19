@@ -219,6 +219,77 @@ app.post("/api/dashboard/faqs", requireSession, async (req, res) => {
   }
 });
 
+app.put("/api/dashboard/faqs/:faqId", requireSession, async (req, res) => {
+  const faqId = Number(req.params.faqId);
+  if (!Number.isInteger(faqId) || faqId <= 0) {
+    res.status(400).json({ message: "ID de FAQ inválido." });
+    return;
+  }
+
+  const questionRaw = typeof req.body?.question === "string" ? req.body.question.trim() : "";
+  const answerRaw = typeof req.body?.answer === "string" ? req.body.answer.trim() : "";
+  const isActiveRaw = req.body?.isActive;
+
+  if (!questionRaw || !answerRaw) {
+    res.status(400).json({ message: "Pergunta e resposta são obrigatórias." });
+    return;
+  }
+
+  const isActive = typeof isActiveRaw === "boolean" ? isActiveRaw : true;
+
+  try {
+    const updated = await prisma.faq.update({
+      where: { id: faqId },
+      data: {
+        question: questionRaw,
+        answer: answerRaw,
+        isActive
+      }
+    });
+
+    res.json({
+      message: "FAQ atualizado com sucesso.",
+      faq: {
+        id: updated.id,
+        question: updated.question,
+        answer: updated.answer,
+        isActive: updated.isActive,
+        createdAt: updated.createdAt,
+        updatedAt: updated.updatedAt
+      }
+    });
+  } catch (err: unknown) {
+    if (isPrismaUniqueError(err)) {
+      res.status(409).json({ message: "Já existe um FAQ com essa pergunta." });
+      return;
+    }
+    if (isPrismaNotFoundError(err)) {
+      res.status(404).json({ message: "FAQ não encontrado." });
+      return;
+    }
+    throw err;
+  }
+});
+
+app.delete("/api/dashboard/faqs/:faqId", requireSession, async (req, res) => {
+  const faqId = Number(req.params.faqId);
+  if (!Number.isInteger(faqId) || faqId <= 0) {
+    res.status(400).json({ message: "ID de FAQ inválido." });
+    return;
+  }
+
+  const deleted = await prisma.faq.deleteMany({
+    where: { id: faqId }
+  });
+
+  if (deleted.count === 0) {
+    res.status(404).json({ message: "FAQ não encontrado." });
+    return;
+  }
+
+  res.json({ message: "FAQ removido com sucesso." });
+});
+
 app.delete("/api/dashboard/messages/:messageId", requireSession, async (req, res) => {
   const messageId = Number(req.params.messageId);
   if (!Number.isInteger(messageId) || messageId <= 0) {
@@ -875,6 +946,15 @@ function isPrismaUniqueError(err: unknown): boolean {
     err !== null &&
     "code" in err &&
     (err as { code?: string }).code === "P2002"
+  );
+}
+
+function isPrismaNotFoundError(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    (err as { code?: string }).code === "P2025"
   );
 }
 
