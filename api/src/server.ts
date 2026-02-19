@@ -1,4 +1,5 @@
-﻿import express from "express";
+import crypto from "crypto";
+import express from "express";
 import dotenv from "dotenv";
 import { PrismaClient } from "@prisma/client";
 
@@ -15,12 +16,152 @@ const BOT_PERSONA = process.env.BOT_PERSONA || "";
 const HUMAN_DELAY_MIN_MS = Number(process.env.HUMAN_DELAY_MIN_MS || 1200);
 const HUMAN_DELAY_MAX_MS = Number(process.env.HUMAN_DELAY_MAX_MS || 6500);
 
+const SESSION_SECRET = process.env.SESSION_SECRET || process.env.JWT_SECRET || "dev-session-secret";
+const AUTH_COOKIE_NAME = process.env.AUTH_COOKIE_NAME || "ia_sg_auth";
+const SESSION_TTL_DAYS = Number(process.env.SESSION_TTL_DAYS || 7);
+const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN || "";
+const COOKIE_SAMESITE = (process.env.COOKIE_SAMESITE || "lax").toLowerCase();
+const COOKIE_SECURE = (process.env.COOKIE_SECURE || "").toLowerCase();
+const DASHBOARD_USER = process.env.DASHBOARD_USER || "";
+const DASHBOARD_PASS = process.env.DASHBOARD_PASS || "";
+
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || "http://localhost:5173")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
 const prisma = new PrismaClient();
 const app = express();
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && allowedOrigins.includes(origin)) {
+    res.header("Access-Control-Allow-Origin", origin);
+    res.header("Vary", "Origin");
+  }
+  res.header("Access-Control-Allow-Credentials", "true");
+  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
+
+  if (req.method === "OPTIONS") {
+    res.sendStatus(204);
+    return;
+  }
+
+  next();
+});
+
 app.use(express.json());
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true });
+});
+
+app.post("/auth/login", (req, res) => {
+  const { username, password } = req.body as { username?: string; password?: string };
+
+  if (!username || !password) {
+    res.status(400).json({ message: "Usuário e senha são obrigatórios." });
+    return;
+  }
+
+  if (username !== DASHBOARD_USER || password !== DASHBOARD_PASS) {
+    res.status(401).json({ message: "Credenciais inválidas." });
+    return;
+  }
+
+  const token = signSession({ username, role: "admin" });
+  setAuthCookie(res, token);
+
+  res.json({
+    message: "Login realizado com sucesso.",
+    user: { username, role: "admin" }
+  });
+});
+
+app.post("/auth/logout", (_req, res) => {
+  clearAuthCookie(res);
+  res.json({ message: "Logout realizado com sucesso." });
+});
+
+app.get("/auth/me", (req, res) => {
+  const session = getSessionFromRequest(req);
+  if (!session) {
+    res.status(401).json({ message: "Não autenticado." });
+    return;
+  }
+
+  res.json({
+    user: {
+      username: session.username,
+      role: session.role,
+      exp: session.exp
+    }
+  });
+});
+
+app.get("/dashboard/summary", requireSession, async (_req, res) => {
+  const [contacts, messages, inbound, outbound, faqs] = await Promise.all([
+    prisma.contact.count(),
+    prisma.message.count(),
+    prisma.message.count({ where: { direction: "in" } }),
+    prisma.message.count({ where: { direction: "out" } }),
+    prisma.faq.count({ where: { isActive: true } })
+  ]);
+
+  const latestMessage = await prisma.message.findFirst({
+    orderBy: { createdAt: "desc" },
+    include: { contact: true }
+  });
+
+  res.json({
+    metrics: {
+      contacts,
+      messages,
+      inbound,
+      outbound,
+      activeFaqs: faqs
+    },
+    latest:
+      latestMessage
+        ? {
+            body: latestMessage.body,
+            direction: latestMessage.direction,
+            contact: latestMessage.contact?.name || latestMessage.contact?.waId || "Sem nome",
+            createdAt: latestMessage.createdAt
+          }
+        : null
+  });
+});
+
+app.get("/dashboard/conversations", requireSession, async (_req, res) => {
+  const contacts = await prisma.contact.findMany({
+    orderBy: { createdAt: "desc" },
+    take: 30,
+    include: {
+      messages: {
+        orderBy: { createdAt: "desc" },
+        take: 20
+      }
+    }
+  });
+
+  res.json({
+    contacts: contacts.map((contact) => ({
+      id: contact.id,
+      waId: contact.waId,
+      name: contact.name,
+      createdAt: contact.createdAt,
+      messages: [...contact.messages]
+        .reverse()
+        .map((message) => ({
+          id: message.id,
+          direction: message.direction,
+          body: message.body,
+          createdAt: message.createdAt
+        }))
+    }))
+  });
 });
 
 app.get("/webhook", (req, res) => {
@@ -251,6 +392,132 @@ async function sendWhatsAppTypingIndicator(
     const text = await resp.text().catch(() => "");
     console.error(`Typing indicator HTTP ${resp.status}: ${text}`);
   }
+}
+
+type SessionPayload = {
+  username: string;
+  role: string;
+  exp: number;
+};
+
+function signSession(input: { username: string; role: string }): string {
+  const payload: SessionPayload = {
+    username: input.username,
+    role: input.role,
+    exp: Math.floor(Date.now() / 1000) + SESSION_TTL_DAYS * 24 * 60 * 60
+  };
+
+  const payloadEncoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+  const signature = crypto
+    .createHmac("sha256", SESSION_SECRET)
+    .update(payloadEncoded)
+    .digest("base64url");
+
+  return `${payloadEncoded}.${signature}`;
+}
+
+function verifySession(token: string): SessionPayload | null {
+  const parts = token.split(".");
+  if (parts.length !== 2) return null;
+
+  const [payloadEncoded, signature] = parts;
+  const expected = crypto
+    .createHmac("sha256", SESSION_SECRET)
+    .update(payloadEncoded)
+    .digest("base64url");
+
+  if (!safeEqual(signature, expected)) return null;
+
+  let payload: SessionPayload;
+  try {
+    payload = JSON.parse(Buffer.from(payloadEncoded, "base64url").toString("utf8")) as SessionPayload;
+  } catch {
+    return null;
+  }
+
+  if (!payload.exp || payload.exp < Math.floor(Date.now() / 1000)) {
+    return null;
+  }
+
+  return payload;
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const aBuf = Buffer.from(a);
+  const bBuf = Buffer.from(b);
+  if (aBuf.length !== bBuf.length) return false;
+  return crypto.timingSafeEqual(aBuf, bBuf);
+}
+
+function setAuthCookie(res: express.Response, token: string): void {
+  const maxAge = SESSION_TTL_DAYS * 24 * 60 * 60;
+  const cookieParts = [
+    `${AUTH_COOKIE_NAME}=${encodeURIComponent(token)}`,
+    "HttpOnly",
+    "Path=/",
+    `Max-Age=${maxAge}`,
+    shouldUseSecureCookie() ? "Secure" : "",
+    cookieSameSiteAttribute(),
+    COOKIE_DOMAIN ? `Domain=${COOKIE_DOMAIN}` : ""
+  ].filter(Boolean);
+
+  res.setHeader("Set-Cookie", cookieParts.join("; "));
+}
+
+function clearAuthCookie(res: express.Response): void {
+  const cookieParts = [
+    `${AUTH_COOKIE_NAME}=`,
+    "HttpOnly",
+    "Path=/",
+    "Max-Age=0",
+    shouldUseSecureCookie() ? "Secure" : "",
+    cookieSameSiteAttribute(),
+    COOKIE_DOMAIN ? `Domain=${COOKIE_DOMAIN}` : ""
+  ].filter(Boolean);
+
+  res.setHeader("Set-Cookie", cookieParts.join("; "));
+}
+
+function cookieSameSiteAttribute(): string {
+  if (COOKIE_SAMESITE === "none") return "SameSite=None";
+  if (COOKIE_SAMESITE === "strict") return "SameSite=Strict";
+  return "SameSite=Lax";
+}
+
+function shouldUseSecureCookie(): boolean {
+  if (COOKIE_SECURE === "true" || COOKIE_SECURE === "1") return true;
+  if (COOKIE_SECURE === "false" || COOKIE_SECURE === "0") return false;
+  return process.env.NODE_ENV === "production";
+}
+
+function parseCookies(header: string | undefined): Record<string, string> {
+  if (!header) return {};
+
+  return header.split(";").reduce<Record<string, string>>((acc, part) => {
+    const [name, ...valueParts] = part.trim().split("=");
+    if (!name || valueParts.length === 0) return acc;
+    acc[name] = decodeURIComponent(valueParts.join("="));
+    return acc;
+  }, {});
+}
+
+function getSessionFromRequest(req: express.Request): SessionPayload | null {
+  const cookies = parseCookies(req.headers.cookie);
+  const raw = cookies[AUTH_COOKIE_NAME];
+  if (!raw) return null;
+
+  return verifySession(raw);
+}
+
+function requireSession(req: express.Request, res: express.Response, next: express.NextFunction): void {
+  const session = getSessionFromRequest(req);
+  if (!session) {
+    res.status(401).json({ message: "Não autenticado." });
+    return;
+  }
+
+  (req as express.Request & { user?: SessionPayload }).user = session;
+  next();
 }
 
 function getHumanDelayMs(reply: string): number {

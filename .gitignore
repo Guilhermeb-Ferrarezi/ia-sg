@@ -1,6 +1,5 @@
-node_modules
-
 *.env
-*.env*.example
 dist
+node_modules
 docker-compose.yml
+*.sh
