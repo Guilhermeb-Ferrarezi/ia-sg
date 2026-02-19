@@ -53,11 +53,11 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 
-app.get("/health", (_req, res) => {
+app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
 });
 
-app.post("/auth/login", (req, res) => {
+app.post("/api/auth/login", (req, res) => {
   const { username, password } = req.body as { username?: string; password?: string };
 
   if (!username || !password) {
@@ -79,12 +79,12 @@ app.post("/auth/login", (req, res) => {
   });
 });
 
-app.post("/auth/logout", (_req, res) => {
+app.post("/api/auth/logout", (_req, res) => {
   clearAuthCookie(res);
   res.json({ message: "Logout realizado com sucesso." });
 });
 
-app.get("/auth/me", (req, res) => {
+app.get("/api/auth/me", (req, res) => {
   const session = getSessionFromRequest(req);
   if (!session) {
     res.status(401).json({ message: "Não autenticado." });
@@ -100,7 +100,7 @@ app.get("/auth/me", (req, res) => {
   });
 });
 
-app.get("/dashboard/summary", requireSession, async (_req, res) => {
+app.get("/api/dashboard/summary", requireSession, async (_req, res) => {
   const [contacts, messages, inbound, outbound, faqs] = await Promise.all([
     prisma.contact.count(),
     prisma.message.count(),
@@ -134,7 +134,7 @@ app.get("/dashboard/summary", requireSession, async (_req, res) => {
   });
 });
 
-app.get("/dashboard/conversations", requireSession, async (_req, res) => {
+app.get("/api/dashboard/conversations", requireSession, async (_req, res) => {
   const contacts = await prisma.contact.findMany({
     orderBy: { createdAt: "desc" },
     take: 30,
@@ -176,7 +176,122 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
+app.get("/api/webhook", (req, res) => {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+
+  if (mode === "subscribe" && token === WEBHOOK_VERIFY_TOKEN) {
+    return res.status(200).send(challenge);
+  }
+
+  return res.sendStatus(403);
+});
+
 app.post("/webhook", (req, res) => {
+  res.sendStatus(200);
+
+  setImmediate(async () => {
+    try {
+      const msg = req.body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+      if (!msg) return;
+
+      const waId = msg.from as string | undefined;
+      const waMessageId = msg.id as string | undefined;
+      const profileNameRaw = req.body?.entry?.[0]?.changes?.[0]?.value?.contacts?.[0]?.profile?.name;
+      const profileName =
+        typeof profileNameRaw === "string" && profileNameRaw.trim()
+          ? profileNameRaw.trim()
+          : null;
+      if (!waId) return;
+
+      const contact = await prisma.contact.upsert({
+        where: { waId },
+        update: {},
+        create: { waId, name: profileName }
+      });
+
+      if (msg.type !== "text") {
+        await prisma.message.create({
+          data: {
+            contactId: contact.id,
+            direction: "in",
+            body: `[${msg.type}]`,
+            waMessageId: waMessageId || null
+          }
+        }).catch((err: unknown) => {
+          if (isPrismaUniqueError(err)) return;
+          throw err;
+        });
+
+        const fallback = "Por enquanto eu só entendo texto 🙂";
+        await sendWhatsAppText(waId, fallback);
+        await prisma.message.create({
+          data: {
+            contactId: contact.id,
+            direction: "out",
+            body: fallback,
+            waMessageId: null
+          }
+        });
+        return;
+      }
+
+      const textIn = msg.text?.body as string | undefined;
+      if (!textIn) return;
+
+      try {
+        await prisma.message.create({
+          data: {
+            contactId: contact.id,
+            direction: "in",
+            body: textIn,
+            waMessageId: waMessageId || null
+          }
+        });
+      } catch (err) {
+        if (isPrismaUniqueError(err)) {
+          return;
+        }
+        throw err;
+      }
+
+      const historyRows = await prisma.message.findMany({
+        where: { contactId: contact.id },
+        orderBy: { createdAt: "desc" },
+        take: HISTORY_LIMIT
+      });
+      const history: Array<{ role: "user" | "assistant"; content: string }> =
+        historyRows.reverse().map((m: { direction: string; body: string }) => ({
+          role: (m.direction === "in" ? "user" : "assistant") as
+            | "user"
+            | "assistant",
+          content: m.body
+        }));
+
+      await sendWhatsAppTypingIndicator(waMessageId);
+      const reply = await generateReplyWithTyping(history, waMessageId).catch((err) => {
+        console.error("OpenAI error:", err);
+        return "Desculpe, tive um problema aqui. Pode repetir?";
+      });
+
+      await delay(getHumanDelayMs(reply));
+      await sendWhatsAppText(waId, reply);
+      await prisma.message.create({
+        data: {
+          contactId: contact.id,
+          direction: "out",
+          body: reply,
+          waMessageId: null
+        }
+      });
+    } catch (err) {
+      console.error("Webhook processing error:", err);
+    }
+  });
+});
+
+app.post("/api/webhook", (req, res) => {
   res.sendStatus(200);
 
   setImmediate(async () => {
