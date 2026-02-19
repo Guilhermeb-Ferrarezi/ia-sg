@@ -23,6 +23,15 @@ type DashboardSummary = {
   } | null;
 };
 
+type FaqItem = {
+  id: number;
+  question: string;
+  answer: string;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
 type ContactConversation = {
   id: number;
   waId: string;
@@ -82,10 +91,12 @@ export default function App() {
   const [password, setPassword] = useState("");
   const [user, setUser] = useState<AuthUser | null>(null);
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
+  const [faqs, setFaqs] = useState<FaqItem[]>([]);
   const [conversations, setConversations] = useState<ContactConversation[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [faqSubmitting, setFaqSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [deletingContactId, setDeletingContactId] = useState<number | null>(null);
   const [clearingContactId, setClearingContactId] = useState<number | null>(null);
@@ -96,14 +107,19 @@ export default function App() {
   const [directionFilter, setDirectionFilter] = useState<"all" | "in" | "out">("all");
   const [itemsPerPage, setItemsPerPage] = useState(6);
   const [page, setPage] = useState(1);
+  const [faqQuestion, setFaqQuestion] = useState("");
+  const [faqAnswer, setFaqAnswer] = useState("");
+  const [activePanel, setActivePanel] = useState<"dashboard" | "faqs">("dashboard");
 
   const loadDashboard = useCallback(async () => {
-    const [summaryResult, conversationsResult] = await Promise.all([
+    const [summaryResult, conversationsResult, faqResult] = await Promise.all([
       apiFetch<DashboardSummary>("/dashboard/summary"),
-      apiFetch<{ contacts: ContactConversation[] }>("/dashboard/conversations")
+      apiFetch<{ contacts: ContactConversation[] }>("/dashboard/conversations"),
+      apiFetch<{ faqs: FaqItem[] }>("/dashboard/faqs")
     ]);
     setSummary(summaryResult);
     setConversations(conversationsResult.contacts);
+    setFaqs(faqResult.faqs);
   }, []);
 
   const checkSession = useCallback(async () => {
@@ -116,6 +132,7 @@ export default function App() {
     } catch {
       setUser(null);
       setSummary(null);
+      setFaqs([]);
       setConversations([]);
     } finally {
       setLoading(false);
@@ -157,6 +174,7 @@ export default function App() {
       await apiFetch<{ message: string }>("/auth/logout", { method: "POST" });
       setUser(null);
       setSummary(null);
+      setFaqs([]);
       setConversations([]);
       setError("");
     } catch (err) {
@@ -175,6 +193,37 @@ export default function App() {
       setError(err instanceof Error ? err.message : "Falha ao atualizar dados.");
     } finally {
       setRefreshing(false);
+    }
+  };
+
+  const handleGoToFaqs = () => {
+    setActivePanel("faqs");
+  };
+
+  const handleCreateFaq = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!faqQuestion.trim() || !faqAnswer.trim()) {
+      setError("Preencha pergunta e resposta para adicionar um FAQ.");
+      return;
+    }
+
+    setFaqSubmitting(true);
+    setError("");
+    try {
+      await apiFetch<{ message: string; faq: FaqItem }>("/dashboard/faqs", {
+        method: "POST",
+        body: JSON.stringify({
+          question: faqQuestion.trim(),
+          answer: faqAnswer.trim()
+        })
+      });
+      setFaqQuestion("");
+      setFaqAnswer("");
+      await loadDashboard();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Falha ao adicionar FAQ.");
+    } finally {
+      setFaqSubmitting(false);
     }
   };
 
@@ -343,6 +392,30 @@ export default function App() {
           </div>
           <div className="flex items-center gap-2">
             <button
+              className={`rounded-lg border px-4 py-2 text-sm transition-all disabled:cursor-not-allowed disabled:opacity-60 ${
+                activePanel === "dashboard"
+                  ? "border-cyan-500 bg-cyan-500 text-slate-950"
+                  : "border-slate-700 text-slate-100 hover:bg-slate-800"
+              }`}
+              type="button"
+              onClick={() => setActivePanel("dashboard")}
+              disabled={submitting || refreshing}
+            >
+              Dashboard
+            </button>
+            <button
+              className={`rounded-lg border px-4 py-2 text-sm transition-all disabled:cursor-not-allowed disabled:opacity-60 ${
+                activePanel === "faqs"
+                  ? "border-cyan-500 bg-cyan-500 text-slate-950"
+                  : "border-slate-700 text-slate-100 hover:bg-slate-800"
+              }`}
+              type="button"
+              onClick={() => setActivePanel("faqs")}
+              disabled={submitting || refreshing}
+            >
+              FAQs
+            </button>
+            <button
               className="rounded-lg border border-cyan-700/70 px-4 py-2 text-sm text-cyan-200 transition-all hover:bg-cyan-900/20 disabled:cursor-not-allowed disabled:opacity-60"
               type="button"
               onClick={() => {
@@ -376,10 +449,74 @@ export default function App() {
           <StatCard label="Mensagens" value={summary?.metrics.messages ?? 0} />
           <StatCard label="Entradas" value={summary?.metrics.inbound ?? 0} />
           <StatCard label="Saídas" value={summary?.metrics.outbound ?? 0} />
-          <StatCard label="FAQs Ativas" value={summary?.metrics.activeFaqs ?? 0} />
+          <article className="animate-in fade-in-0 slide-in-from-bottom-2 rounded-xl border border-slate-800 bg-slate-950 p-4 duration-300">
+            <p className="text-xs uppercase tracking-wide text-slate-400">FAQs Ativas</p>
+            <p className="mt-2 text-2xl font-semibold text-cyan-300">{summary?.metrics.activeFaqs ?? 0}</p>
+            <button
+              type="button"
+              onClick={handleGoToFaqs}
+              className="mt-3 rounded-md border border-cyan-700/70 px-3 py-1 text-xs text-cyan-200 transition hover:bg-cyan-900/20"
+            >
+              Ir para FAQs
+            </button>
+          </article>
         </div>
 
-        <section className="mt-6 rounded-xl border border-slate-800 bg-slate-950 p-4">
+        <section
+          className={`${activePanel === "faqs" ? "mt-6" : "hidden"} rounded-xl border border-slate-800 bg-slate-950 p-4`}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="text-sm font-medium text-slate-300">Gerenciar FAQs</h2>
+            <span className="text-xs text-slate-400">{faqs.length} registro(s)</span>
+          </div>
+
+          <form className="mt-3 grid gap-2" onSubmit={handleCreateFaq}>
+            <input
+              value={faqQuestion}
+              onChange={(event) => setFaqQuestion(event.target.value)}
+              placeholder="Pergunta"
+              className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm outline-none focus:border-cyan-400"
+              required
+            />
+            <textarea
+              value={faqAnswer}
+              onChange={(event) => setFaqAnswer(event.target.value)}
+              placeholder="Resposta"
+              className="min-h-24 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm outline-none focus:border-cyan-400"
+              required
+            />
+            <div className="flex justify-end">
+              <button
+                type="submit"
+                disabled={faqSubmitting}
+                className="rounded-md bg-cyan-500 px-4 py-2 text-sm font-medium text-slate-950 transition hover:brightness-110 disabled:opacity-60"
+              >
+                {faqSubmitting ? "Salvando..." : "Adicionar FAQ"}
+              </button>
+            </div>
+          </form>
+
+          <div className="mt-4 space-y-2">
+            {faqs.length > 0 ? (
+              faqs.map((faq) => (
+                <article key={faq.id} className="rounded-lg border border-slate-800 bg-slate-900 p-3">
+                  <p className="text-sm font-medium text-slate-200">{faq.question}</p>
+                  <p className="mt-1 text-sm text-slate-400">{faq.answer}</p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Status: {faq.isActive ? "Ativo" : "Inativo"} • Atualizado em{" "}
+                    {new Date(faq.updatedAt).toLocaleString("pt-BR")}
+                  </p>
+                </article>
+              ))
+            ) : (
+              <p className="text-sm text-slate-500">Nenhum FAQ cadastrado ainda.</p>
+            )}
+          </div>
+        </section>
+
+        <section
+          className={`${activePanel === "dashboard" ? "mt-6" : "hidden"} rounded-xl border border-slate-800 bg-slate-950 p-4`}
+        >
           <h2 className="text-sm font-medium text-slate-300">Última mensagem registrada</h2>
           {summary?.latest ? (
             <div className="mt-3 space-y-1 text-sm text-slate-200">
@@ -402,7 +539,9 @@ export default function App() {
           )}
         </section>
 
-        <section className="mt-6 rounded-xl border border-slate-800 bg-slate-950 p-4">
+        <section
+          className={`${activePanel === "dashboard" ? "mt-6" : "hidden"} rounded-xl border border-slate-800 bg-slate-950 p-4`}
+        >
           <h2 className="text-sm font-medium text-slate-300">Filtros</h2>
           <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
             <input
@@ -433,7 +572,9 @@ export default function App() {
           </div>
         </section>
 
-        <section className="mt-6 rounded-xl border border-slate-800 bg-slate-950 p-4">
+        <section
+          className={`${activePanel === "dashboard" ? "mt-6" : "hidden"} rounded-xl border border-slate-800 bg-slate-950 p-4`}
+        >
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="text-sm font-medium text-slate-300">Número e conversa da pessoa</h2>
             <span className="text-xs text-slate-400">{filteredConversations.length} contato(s)</span>

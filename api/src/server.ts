@@ -164,6 +164,61 @@ app.get("/api/dashboard/conversations", requireSession, async (_req, res) => {
   });
 });
 
+app.get("/api/dashboard/faqs", requireSession, async (_req, res) => {
+  const faqs = await prisma.faq.findMany({
+    orderBy: { updatedAt: "desc" }
+  });
+
+  res.json({
+    faqs: faqs.map((faq) => ({
+      id: faq.id,
+      question: faq.question,
+      answer: faq.answer,
+      isActive: faq.isActive,
+      createdAt: faq.createdAt,
+      updatedAt: faq.updatedAt
+    }))
+  });
+});
+
+app.post("/api/dashboard/faqs", requireSession, async (req, res) => {
+  const questionRaw = typeof req.body?.question === "string" ? req.body.question.trim() : "";
+  const answerRaw = typeof req.body?.answer === "string" ? req.body.answer.trim() : "";
+
+  if (!questionRaw || !answerRaw) {
+    res.status(400).json({ message: "Pergunta e resposta são obrigatórias." });
+    return;
+  }
+
+  try {
+    const created = await prisma.faq.create({
+      data: {
+        question: questionRaw,
+        answer: answerRaw,
+        isActive: true
+      }
+    });
+
+    res.status(201).json({
+      message: "FAQ criado com sucesso.",
+      faq: {
+        id: created.id,
+        question: created.question,
+        answer: created.answer,
+        isActive: created.isActive,
+        createdAt: created.createdAt,
+        updatedAt: created.updatedAt
+      }
+    });
+  } catch (err: unknown) {
+    if (isPrismaUniqueError(err)) {
+      res.status(409).json({ message: "Já existe um FAQ com essa pergunta." });
+      return;
+    }
+    throw err;
+  }
+});
+
 app.delete("/api/dashboard/messages/:messageId", requireSession, async (req, res) => {
   const messageId = Number(req.params.messageId);
   if (!Number.isInteger(messageId) || messageId <= 0) {
