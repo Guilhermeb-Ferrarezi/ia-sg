@@ -389,8 +389,10 @@ app.post("/webhook", (req, res) => {
           content: m.body
         }));
 
+      const faqContext = await getFaqContextForInput(textIn);
+
       await sendWhatsAppTypingIndicator(waMessageId);
-      const reply = await generateReplyWithTyping(history, waMessageId).catch((err) => {
+      const reply = await generateReplyWithTyping(history, faqContext, waMessageId).catch((err) => {
         console.error("OpenAI error:", err);
         return "Desculpe, tive um problema aqui. Pode repetir?";
       });
@@ -492,8 +494,10 @@ app.post("/api/webhook", (req, res) => {
           content: m.body
         }));
 
+      const faqContext = await getFaqContextForInput(textIn);
+
       await sendWhatsAppTypingIndicator(waMessageId);
-      const reply = await generateReplyWithTyping(history, waMessageId).catch((err) => {
+      const reply = await generateReplyWithTyping(history, faqContext, waMessageId).catch((err) => {
         console.error("OpenAI error:", err);
         return "Desculpe, tive um problema aqui. Pode repetir?";
       });
@@ -515,7 +519,8 @@ app.post("/api/webhook", (req, res) => {
 });
 
 async function generateReply(
-  history: Array<{ role: "user" | "assistant"; content: string }>
+  history: Array<{ role: "user" | "assistant"; content: string }>,
+  faqContext: string
 ): Promise<string> {
   if (!GROQ_API_KEY || !GROQ_MODEL) {
     return "Configuração incompleta da IA.";
@@ -533,6 +538,13 @@ async function generateReply(
         {
           role: "system",
           content: BOT_PERSONA
+        },
+        {
+          role: "system",
+          content:
+            faqContext.trim().length > 0
+              ? `Base de FAQ relevante:\n${faqContext}\n\nRegra: use primeiro as informacoes acima. Se nao houver informacao suficiente no FAQ, diga que nao tem essa informacao no momento e ofereca encaminhamento humano.`
+              : "Regra: se nao tiver certeza, diga que vai verificar e ofereca encaminhamento humano."
         },
         ...history
       ]
@@ -553,10 +565,11 @@ async function generateReply(
 
 async function generateReplyWithTyping(
   history: Array<{ role: "user" | "assistant"; content: string }>,
+  faqContext: string,
   waMessageId?: string
 ): Promise<string> {
   if (!waMessageId) {
-    return generateReply(history);
+    return generateReply(history, faqContext);
   }
 
   const interval = setInterval(() => {
@@ -566,10 +579,95 @@ async function generateReplyWithTyping(
   }, 20000);
 
   try {
-    return await generateReply(history);
+    return await generateReply(history, faqContext);
   } finally {
     clearInterval(interval);
   }
+}
+
+async function getFaqContextForInput(input: string): Promise<string> {
+  const text = input.trim();
+  if (!text) return "";
+
+  const activeFaqs = await prisma.faq.findMany({
+    where: { isActive: true },
+    select: { question: true, answer: true }
+  });
+
+  if (activeFaqs.length === 0) return "";
+
+  const tokens = tokenizeForMatch(text);
+  if (tokens.length === 0) return "";
+
+  const ranked = activeFaqs
+    .map((faq) => {
+      const questionTokens = tokenizeForMatch(faq.question);
+      const answerTokens = tokenizeForMatch(faq.answer);
+      const questionHits = countIntersection(tokens, questionTokens);
+      const answerHits = countIntersection(tokens, answerTokens);
+      const score = questionHits * 2 + answerHits;
+      return {
+        question: faq.question,
+        answer: faq.answer,
+        score
+      };
+    })
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5);
+
+  if (ranked.length === 0) return "";
+
+  return ranked
+    .map((item, index) => `${index + 1}. Pergunta: ${item.question}\nResposta: ${item.answer}`)
+    .join("\n\n");
+}
+
+function tokenizeForMatch(text: string): string[] {
+  const cleaned = text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ");
+
+  const stopWords = new Set([
+    "a",
+    "o",
+    "as",
+    "os",
+    "de",
+    "da",
+    "do",
+    "das",
+    "dos",
+    "e",
+    "em",
+    "para",
+    "por",
+    "com",
+    "um",
+    "uma",
+    "na",
+    "no",
+    "nas",
+    "nos",
+    "que"
+  ]);
+
+  return cleaned
+    .split(/\s+/)
+    .map((part) => part.trim())
+    .filter((part) => part.length >= 3 && !stopWords.has(part));
+}
+
+function countIntersection(a: string[], b: string[]): number {
+  if (a.length === 0 || b.length === 0) return 0;
+  const bSet = new Set(b);
+  let score = 0;
+  for (const token of a) {
+    if (bSet.has(token)) score += 1;
+  }
+  return score;
 }
 
 async function sendWhatsAppText(to: string, body: string): Promise<void> {
