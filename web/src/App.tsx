@@ -57,6 +57,8 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [stageFilter, setStageFilter] = useState("all");
+  const [kanbanPageSize, setKanbanPageSize] = useState(5);
+  const [kanbanStagePage, setKanbanStagePage] = useState<Record<number, number>>({});
 
   const [leadName, setLeadName] = useState("");
   const [leadWaId, setLeadWaId] = useState("");
@@ -161,6 +163,12 @@ export default function App() {
     loadLeadDetails(selectedLeadId).catch(() => setError("Falha ao carregar lead."));
     loadLeadMessages(selectedLeadId, 1).catch(() => setError("Falha ao carregar mensagens do lead."));
   }, [selectedLeadId, loadLeadDetails, loadLeadMessages]);
+
+  useEffect(() => {
+    if (!error) return;
+    const timer = window.setTimeout(() => setError(""), 4000);
+    return () => window.clearTimeout(timer);
+  }, [error]);
 
   const handleLogin = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -498,6 +506,29 @@ export default function App() {
     return map;
   }, [filteredLeads, stages]);
 
+  useEffect(() => {
+    setKanbanStagePage((current) => {
+      const next: Record<number, number> = {};
+      let changed = false;
+
+      stages.forEach((stage) => {
+        const total = (leadsByStage.get(stage.id) || []).length;
+        const totalPages = Math.max(1, Math.ceil(total / kanbanPageSize));
+        const currentPage = current[stage.id] ?? 1;
+        const clamped = Math.min(totalPages, Math.max(1, currentPage));
+        next[stage.id] = clamped;
+        if (current[stage.id] !== clamped) changed = true;
+      });
+
+      if (Object.keys(current).length !== Object.keys(next).length) changed = true;
+      return changed ? next : current;
+    });
+  }, [stages, leadsByStage, kanbanPageSize]);
+
+  const handleKanbanStagePageChange = (stageId: number, page: number) => {
+    setKanbanStagePage((current) => ({ ...current, [stageId]: Math.max(1, page) }));
+  };
+
   const handleConfirmAction = async () => {
     if (!confirmDialog) return;
     if (confirmDialog.action.type === "delete-faq") {
@@ -531,7 +562,7 @@ export default function App() {
 
   return (
     <main className="min-h-screen bg-slate-950 px-4 py-8 text-slate-100">
-      <section className="mx-auto max-w-7xl rounded-2xl border border-slate-800 bg-slate-900 p-6">
+      <section className="w-full rounded-2xl border border-slate-800 bg-slate-900 p-6">
         <header className="flex flex-wrap items-center justify-between gap-3">
           <div><h1 className="text-2xl font-semibold">CRM WhatsApp</h1><p className="text-sm text-slate-400">SessÃ£o ativa: {user.username} ({user.role})</p></div>
           <div className="flex flex-wrap gap-2">
@@ -571,14 +602,29 @@ export default function App() {
               <form className="rounded-xl border border-slate-800 bg-slate-950 p-4" onSubmit={handleCreateStage}><h2 className="text-sm font-medium text-slate-300">Pipeline</h2><div className="mt-3 grid gap-2"><input className="rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm" value={newStageName} onChange={(e) => setNewStageName(e.target.value)} placeholder="Nova etapa" required /><input className="h-10 rounded border border-slate-700 bg-slate-900 px-2" type="color" value={newStageColor} onChange={(e) => setNewStageColor(e.target.value)} /><button type="submit" disabled={stageSubmitting} className="rounded bg-cyan-500 px-4 py-2 text-sm font-medium text-slate-950 disabled:opacity-60">{stageSubmitting ? "Criando..." : "Criar etapa"}</button></div><div className="mt-3 space-y-1 text-xs text-slate-400">{stages.map((s) => <div key={s.id} className="flex items-center justify-between rounded border border-slate-800 px-2 py-1"><span>{s.name}</span><div className="flex gap-1"><button type="button" onClick={() => void moveStage(s.id, "up")} className="rounded border border-slate-700 px-2">Up</button><button type="button" onClick={() => void moveStage(s.id, "down")} className="rounded border border-slate-700 px-2">Down</button></div></div>)}</div></form>
             </div>
 
-                        <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-950 p-4">
+            <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-950 p-4">
               <h2 className="text-sm font-medium text-slate-300">Pipeline Kanban</h2>
-              <p className="mt-1 text-xs text-slate-500">Arraste os cards para a etapa desejada.</p>
+              <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs text-slate-500">Arraste os cards para a etapa desejada.</p>
+                <label className="flex items-center gap-2 text-xs text-slate-400">
+                  Itens por fase
+                  <select
+                    className="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
+                    value={kanbanPageSize}
+                    onChange={(e) => setKanbanPageSize(Number(e.target.value))}
+                  >
+                    <option value={3}>3</option>
+                    <option value={5}>5</option>
+                    <option value={10}>10</option>
+                    <option value={20}>20</option>
+                  </select>
+                </label>
+              </div>
               <div className="mt-3 flex min-w-max gap-3">
                 {stages.map((stage) => (
                   <article
                     key={stage.id}
-                    className={`w-72 rounded-lg border p-3 ${dragOverStageId === stage.id ? "border-cyan-500 bg-cyan-900/10" : "border-slate-800 bg-slate-900"}`}
+                    className={`w-72 rounded-lg border p-3 ${dragOverStageId === stage.id ? "border-cyan-500 bg-cyan-900/10" : "border-slate-800 bg-slate-900"} flex flex-col`}
                     onDragOver={(e) => {
                       e.preventDefault();
                       if (dragOverStageId !== stage.id) setDragOverStageId(stage.id);
@@ -597,8 +643,25 @@ export default function App() {
                       </h3>
                       <span className="text-xs text-slate-400">{(leadsByStage.get(stage.id) || []).length}</span>
                     </div>
-                    <div className="space-y-2">
-                      {(leadsByStage.get(stage.id) || []).map((lead) => (
+                    <div
+                      className="flex-1 space-y-2"
+                      style={{
+                        minHeight: (() => {
+                          const totalInStage = (leadsByStage.get(stage.id) || []).length;
+                          const visibleCards = Math.min(kanbanPageSize, totalInStage);
+                          if (visibleCards <= 0) return "0rem";
+                          const cardHeightRem = 5.5;
+                          const cardGapRem = 0.5;
+                          return `${visibleCards * cardHeightRem + Math.max(0, visibleCards - 1) * cardGapRem}rem`;
+                        })()
+                      }}
+                    >
+                      {(leadsByStage.get(stage.id) || [])
+                        .slice(
+                          ((kanbanStagePage[stage.id] ?? 1) - 1) * kanbanPageSize,
+                          (kanbanStagePage[stage.id] ?? 1) * kanbanPageSize
+                        )
+                        .map((lead) => (
                         <button
                           key={lead.id}
                           type="button"
@@ -618,6 +681,37 @@ export default function App() {
                         </button>
                       ))}
                     </div>
+                    {(() => {
+                      const totalInStage = (leadsByStage.get(stage.id) || []).length;
+                      if (totalInStage <= kanbanPageSize) return null;
+                      const currentPage = kanbanStagePage[stage.id] ?? 1;
+                      const totalPages = Math.max(1, Math.ceil(totalInStage / kanbanPageSize));
+                      return (
+                        <div className="mt-2 flex items-center justify-between border-t border-slate-800 pt-2 text-[11px] text-slate-400">
+                          <span>
+                            Página {currentPage}/{totalPages}
+                          </span>
+                          <div className="flex gap-1">
+                            <button
+                              type="button"
+                              className="rounded border border-slate-700 px-2 py-1 disabled:opacity-50"
+                              disabled={currentPage <= 1}
+                              onClick={() => handleKanbanStagePageChange(stage.id, currentPage - 1)}
+                            >
+                              Anterior
+                            </button>
+                            <button
+                              type="button"
+                              className="rounded border border-slate-700 px-2 py-1 disabled:opacity-50"
+                              disabled={currentPage >= totalPages}
+                              onClick={() => handleKanbanStagePageChange(stage.id, currentPage + 1)}
+                            >
+                              Próxima
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </article>
                 ))}
               </div>
@@ -631,6 +725,7 @@ export default function App() {
                 <div className="mt-3 grid gap-4 lg:grid-cols-2">
                   <div className="space-y-3">
                     <div className="rounded-lg border border-slate-800 bg-slate-900 p-3 text-sm">
+                      <p className="mb-2 text-xs text-slate-500">Dados principais do lead e controles de atendimento.</p>
                       <p>
                         <span className="text-slate-400">Nome:</span> {selectedLead.name || "Sem nome"}
                       </p>
@@ -641,6 +736,8 @@ export default function App() {
                         <span className="text-slate-400">Origem:</span> {selectedLead.source || "-"}
                       </p>
                       <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                        <div className="space-y-1">
+                          <p className="text-[11px] text-slate-500">Etapa do funil</p>
                         <select
                           className="rounded border border-slate-700 bg-slate-950 px-2 py-1"
                           value={selectedLead.stageId || ""}
@@ -652,6 +749,9 @@ export default function App() {
                             </option>
                           ))}
                         </select>
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-[11px] text-slate-500">Resultado do lead</p>
                         <select
                           className="rounded border border-slate-700 bg-slate-950 px-2 py-1"
                           value={selectedLead.leadStatus}
@@ -661,7 +761,10 @@ export default function App() {
                           <option value="won">won</option>
                           <option value="lost">lost</option>
                         </select>
-                        <label className="flex items-center gap-2 rounded border border-slate-700 px-2 py-1 text-xs">
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-[11px] text-slate-500">Atendimento automático</p>
+                        <label className="flex items-center gap-2 rounded border border-slate-700 px-2 py-1 text-xs h-[30px]">
                           <input
                             type="checkbox"
                             checked={selectedLead.botEnabled}
@@ -669,7 +772,9 @@ export default function App() {
                           />
                           bot ativo
                         </label>
+                        </div>
                       </div>
+                      <p className="mt-2 text-[11px] text-slate-500">Observações internas sobre histórico, objeções e próximos passos.</p>
                       <textarea
                         className="mt-2 min-h-20 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1"
                         defaultValue={selectedLead.notes || ""}
@@ -701,6 +806,7 @@ export default function App() {
 
                     <div className="rounded-lg border border-slate-800 bg-slate-900 p-3">
                       <h3 className="text-sm font-medium text-slate-300">Mensagens</h3>
+                      <p className="mt-1 text-[11px] text-slate-500">Histórico de conversa do WhatsApp deste lead.</p>
                       <div className="mt-2 max-h-72 space-y-2 overflow-y-auto">
                         {leadMessagesLoading ? (
                           <p className="text-sm text-slate-500">Carregando mensagens...</p>
@@ -739,6 +845,7 @@ export default function App() {
                   <div className="space-y-3">
                     <form className="rounded-lg border border-slate-800 bg-slate-900 p-3" onSubmit={handleCreateTask}>
                       <h3 className="text-sm font-medium text-slate-300">Nova tarefa</h3>
+                      <p className="mt-1 text-[11px] text-slate-500">Crie um follow-up manual com prazo e prioridade.</p>
                       <div className="mt-2 grid gap-2">
                         <input
                           className="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm"
@@ -778,6 +885,7 @@ export default function App() {
                     </form>
                     <div className="rounded-lg border border-slate-800 bg-slate-900 p-3">
                       <h3 className="text-sm font-medium text-slate-300">Tarefas</h3>
+                      <p className="mt-1 text-[11px] text-slate-500">Acompanhe e conclua os próximos passos deste lead.</p>
                       <div className="mt-2 space-y-2">
                         {(selectedLead.tasks || []).length > 0 ? (
                           (selectedLead.tasks || []).map((task) => (
