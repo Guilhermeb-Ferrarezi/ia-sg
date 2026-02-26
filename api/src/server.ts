@@ -1,4 +1,4 @@
-import crypto from "crypto";
+﻿import crypto from "crypto";
 import express from "express";
 import dotenv from "dotenv";
 import { PrismaClient } from "@prisma/client";
@@ -36,7 +36,7 @@ const DEFAULT_PIPELINE_STAGES = [
   { name: "Novo", position: 1, color: "#38bdf8" },
   { name: "Qualificado", position: 2, color: "#22c55e" },
   { name: "Proposta", position: 3, color: "#f59e0b" },
-  { name: "Negociação", position: 4, color: "#f97316" },
+  { name: "NegociaÃ§Ã£o", position: 4, color: "#f97316" },
   { name: "Fechado (ganho)", position: 5, color: "#10b981" },
   { name: "Fechado (perdido)", position: 6, color: "#ef4444" }
 ] as const;
@@ -69,12 +69,12 @@ app.post("/api/auth/login", (req, res) => {
   const { username, password } = req.body as { username?: string; password?: string };
 
   if (!username || !password) {
-    res.status(400).json({ message: "Usuário e senha são obrigatórios." });
+    res.status(400).json({ message: "UsuÃ¡rio e senha sÃ£o obrigatÃ³rios." });
     return;
   }
 
   if (username !== DASHBOARD_USER || password !== DASHBOARD_PASS) {
-    res.status(401).json({ message: "Credenciais inválidas." });
+    res.status(401).json({ message: "Credenciais invÃ¡lidas." });
     return;
   }
 
@@ -95,7 +95,7 @@ app.post("/api/auth/logout", (_req, res) => {
 app.get("/api/auth/me", (req, res) => {
   const session = getSessionFromRequest(req);
   if (!session) {
-    res.status(401).json({ message: "Não autenticado." });
+    res.status(401).json({ message: "NÃ£o autenticado." });
     return;
   }
 
@@ -194,7 +194,7 @@ app.post("/api/dashboard/faqs", requireSession, async (req, res) => {
   const answerRaw = typeof req.body?.answer === "string" ? req.body.answer.trim() : "";
 
   if (!questionRaw || !answerRaw) {
-    res.status(400).json({ message: "Pergunta e resposta são obrigatórias." });
+    res.status(400).json({ message: "Pergunta e resposta sÃ£o obrigatÃ³rias." });
     return;
   }
 
@@ -220,7 +220,7 @@ app.post("/api/dashboard/faqs", requireSession, async (req, res) => {
     });
   } catch (err: unknown) {
     if (isPrismaUniqueError(err)) {
-      res.status(409).json({ message: "Já existe um FAQ com essa pergunta." });
+      res.status(409).json({ message: "JÃ¡ existe um FAQ com essa pergunta." });
       return;
     }
     throw err;
@@ -230,7 +230,7 @@ app.post("/api/dashboard/faqs", requireSession, async (req, res) => {
 app.put("/api/dashboard/faqs/:faqId", requireSession, async (req, res) => {
   const faqId = Number(req.params.faqId);
   if (!Number.isInteger(faqId) || faqId <= 0) {
-    res.status(400).json({ message: "ID de FAQ inválido." });
+    res.status(400).json({ message: "ID de FAQ invÃ¡lido." });
     return;
   }
 
@@ -239,7 +239,7 @@ app.put("/api/dashboard/faqs/:faqId", requireSession, async (req, res) => {
   const isActiveRaw = req.body?.isActive;
 
   if (!questionRaw || !answerRaw) {
-    res.status(400).json({ message: "Pergunta e resposta são obrigatórias." });
+    res.status(400).json({ message: "Pergunta e resposta sÃ£o obrigatÃ³rias." });
     return;
   }
 
@@ -268,11 +268,11 @@ app.put("/api/dashboard/faqs/:faqId", requireSession, async (req, res) => {
     });
   } catch (err: unknown) {
     if (isPrismaUniqueError(err)) {
-      res.status(409).json({ message: "Já existe um FAQ com essa pergunta." });
+      res.status(409).json({ message: "JÃ¡ existe um FAQ com essa pergunta." });
       return;
     }
     if (isPrismaNotFoundError(err)) {
-      res.status(404).json({ message: "FAQ não encontrado." });
+      res.status(404).json({ message: "FAQ nÃ£o encontrado." });
       return;
     }
     throw err;
@@ -282,7 +282,7 @@ app.put("/api/dashboard/faqs/:faqId", requireSession, async (req, res) => {
 app.delete("/api/dashboard/faqs/:faqId", requireSession, async (req, res) => {
   const faqId = Number(req.params.faqId);
   if (!Number.isInteger(faqId) || faqId <= 0) {
-    res.status(400).json({ message: "ID de FAQ inválido." });
+    res.status(400).json({ message: "ID de FAQ invÃ¡lido." });
     return;
   }
 
@@ -291,7 +291,7 @@ app.delete("/api/dashboard/faqs/:faqId", requireSession, async (req, res) => {
   });
 
   if (deleted.count === 0) {
-    res.status(404).json({ message: "FAQ não encontrado." });
+    res.status(404).json({ message: "FAQ nÃ£o encontrado." });
     return;
   }
 
@@ -301,7 +301,7 @@ app.delete("/api/dashboard/faqs/:faqId", requireSession, async (req, res) => {
 app.delete("/api/dashboard/messages/:messageId", requireSession, async (req, res) => {
   const messageId = Number(req.params.messageId);
   if (!Number.isInteger(messageId) || messageId <= 0) {
-    res.status(400).json({ message: "ID de mensagem inválido." });
+    res.status(400).json({ message: "ID de mensagem invÃ¡lido." });
     return;
   }
 
@@ -310,7 +310,7 @@ app.delete("/api/dashboard/messages/:messageId", requireSession, async (req, res
   });
 
   if (deleted.count === 0) {
-    res.status(404).json({ message: "Mensagem não encontrada." });
+    res.status(404).json({ message: "Mensagem nÃ£o encontrada." });
     return;
   }
 
@@ -320,7 +320,7 @@ app.delete("/api/dashboard/messages/:messageId", requireSession, async (req, res
 app.delete("/api/dashboard/contacts/:contactId/messages", requireSession, async (req, res) => {
   const contactId = Number(req.params.contactId);
   if (!Number.isInteger(contactId) || contactId <= 0) {
-    res.status(400).json({ message: "ID de contato inválido." });
+    res.status(400).json({ message: "ID de contato invÃ¡lido." });
     return;
   }
 
@@ -330,7 +330,7 @@ app.delete("/api/dashboard/contacts/:contactId/messages", requireSession, async 
   });
 
   if (!contact) {
-    res.status(404).json({ message: "Contato não encontrado." });
+    res.status(404).json({ message: "Contato nÃ£o encontrado." });
     return;
   }
 
@@ -347,7 +347,7 @@ app.delete("/api/dashboard/contacts/:contactId/messages", requireSession, async 
 app.delete("/api/dashboard/contacts/:contactId", requireSession, async (req, res) => {
   const contactId = Number(req.params.contactId);
   if (!Number.isInteger(contactId) || contactId <= 0) {
-    res.status(400).json({ message: "ID de contato inválido." });
+    res.status(400).json({ message: "ID de contato invÃ¡lido." });
     return;
   }
 
@@ -356,11 +356,11 @@ app.delete("/api/dashboard/contacts/:contactId", requireSession, async (req, res
   });
 
   if (deleted.count === 0) {
-    res.status(404).json({ message: "Contato não encontrado." });
+    res.status(404).json({ message: "Contato nÃ£o encontrado." });
     return;
   }
 
-  res.json({ message: "Contato e histórico removidos com sucesso." });
+  res.json({ message: "Contato e histÃ³rico removidos com sucesso." });
 });
 
 app.get("/api/crm/stages", requireSession, async (_req, res) => {
@@ -378,7 +378,7 @@ app.post("/api/crm/stages", requireSession, async (req, res) => {
   const color = typeof req.body?.color === "string" && req.body.color.trim() ? req.body.color.trim() : "#06b6d4";
 
   if (!name) {
-    res.status(400).json({ message: "Nome da etapa é obrigatório." });
+    res.status(400).json({ message: "Nome da etapa Ã© obrigatÃ³rio." });
     return;
   }
 
@@ -394,7 +394,7 @@ app.post("/api/crm/stages", requireSession, async (req, res) => {
     res.status(201).json({ message: "Etapa criada com sucesso.", stage });
   } catch (err) {
     if (isPrismaUniqueError(err)) {
-      res.status(409).json({ message: "Já existe etapa com este nome ou posição." });
+      res.status(409).json({ message: "JÃ¡ existe etapa com este nome ou posiÃ§Ã£o." });
       return;
     }
     throw err;
@@ -404,7 +404,7 @@ app.post("/api/crm/stages", requireSession, async (req, res) => {
 app.put("/api/crm/stages/:id(\\d+)", requireSession, async (req, res) => {
   const stageId = Number(req.params.id);
   if (!Number.isInteger(stageId) || stageId <= 0) {
-    res.status(400).json({ message: "ID de etapa inválido." });
+    res.status(400).json({ message: "ID de etapa invÃ¡lido." });
     return;
   }
 
@@ -414,7 +414,7 @@ app.put("/api/crm/stages/:id(\\d+)", requireSession, async (req, res) => {
   if (typeof req.body?.isActive === "boolean") payload.isActive = req.body.isActive;
 
   if (Object.keys(payload).length === 0) {
-    res.status(400).json({ message: "Nenhuma alteração enviada." });
+    res.status(400).json({ message: "Nenhuma alteraÃ§Ã£o enviada." });
     return;
   }
 
@@ -426,11 +426,11 @@ app.put("/api/crm/stages/:id(\\d+)", requireSession, async (req, res) => {
     res.json({ message: "Etapa atualizada com sucesso.", stage });
   } catch (err) {
     if (isPrismaNotFoundError(err)) {
-      res.status(404).json({ message: "Etapa não encontrada." });
+      res.status(404).json({ message: "Etapa nÃ£o encontrada." });
       return;
     }
     if (isPrismaUniqueError(err)) {
-      res.status(409).json({ message: "Já existe etapa com este nome." });
+      res.status(409).json({ message: "JÃ¡ existe etapa com este nome." });
       return;
     }
     throw err;
@@ -440,7 +440,7 @@ app.put("/api/crm/stages/:id(\\d+)", requireSession, async (req, res) => {
 app.put("/api/crm/stages/reorder", requireSession, async (req, res) => {
   const stageIds = Array.isArray(req.body?.stageIds) ? req.body.stageIds.map((id: unknown) => Number(id)).filter((id: number) => Number.isInteger(id) && id > 0) : [];
   if (stageIds.length === 0) {
-    res.status(400).json({ message: "Envie uma lista válida de IDs de etapa." });
+    res.status(400).json({ message: "Envie uma lista vÃ¡lida de IDs de etapa." });
     return;
   }
 
@@ -462,6 +462,13 @@ app.put("/api/crm/stages/reorder", requireSession, async (req, res) => {
 
 app.get("/api/crm/leads", requireSession, async (req, res) => {
   await ensureDefaultStages();
+  const defaultStageId = await getDefaultStageId();
+  if (defaultStageId) {
+    await prisma.contact.updateMany({
+      where: { stageId: null },
+      data: { stageId: defaultStageId }
+    });
+  }
   const stageId = req.query.stageId ? Number(req.query.stageId) : undefined;
   const status = typeof req.query.status === "string" ? req.query.status : undefined;
   const search = typeof req.query.search === "string" ? req.query.search.trim() : "";
@@ -517,12 +524,14 @@ app.post("/api/crm/leads", requireSession, async (req, res) => {
   const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
   const waIdRaw = typeof req.body?.waId === "string" ? req.body.waId.trim() : "";
   const waId = normalizeWaId(waIdRaw);
-  const stageId = Number(req.body?.stageId);
+  const stageIdRaw = Number(req.body?.stageId);
+  const defaultStageId = await getDefaultStageId();
+  const stageId = Number.isInteger(stageIdRaw) && stageIdRaw > 0 ? stageIdRaw : defaultStageId;
   const source = typeof req.body?.source === "string" ? req.body.source.trim() : null;
   const notes = typeof req.body?.notes === "string" ? req.body.notes.trim() : null;
 
-  if (!name || !waId || !Number.isInteger(stageId) || stageId <= 0) {
-    res.status(400).json({ message: "Nome, WhatsApp e etapa são obrigatórios." });
+  if (!name || !waId || !stageId) {
+    res.status(400).json({ message: "Nome e WhatsApp sao obrigatorios." });
     return;
   }
 
@@ -543,7 +552,7 @@ app.post("/api/crm/leads", requireSession, async (req, res) => {
     res.status(201).json({ message: "Lead criado com sucesso.", lead: mapLeadDetails(lead) });
   } catch (err) {
     if (isPrismaUniqueError(err)) {
-      res.status(409).json({ message: "Já existe lead com este WhatsApp." });
+      res.status(409).json({ message: "JÃ¡ existe lead com este WhatsApp." });
       return;
     }
     throw err;
@@ -553,7 +562,7 @@ app.post("/api/crm/leads", requireSession, async (req, res) => {
 app.get("/api/crm/leads/:id", requireSession, async (req, res) => {
   const leadId = Number(req.params.id);
   if (!Number.isInteger(leadId) || leadId <= 0) {
-    res.status(400).json({ message: "ID de lead inválido." });
+    res.status(400).json({ message: "ID de lead invÃ¡lido." });
     return;
   }
 
@@ -567,7 +576,7 @@ app.get("/api/crm/leads/:id", requireSession, async (req, res) => {
   });
 
   if (!lead) {
-    res.status(404).json({ message: "Lead não encontrado." });
+    res.status(404).json({ message: "Lead nÃ£o encontrado." });
     return;
   }
 
@@ -577,7 +586,7 @@ app.get("/api/crm/leads/:id", requireSession, async (req, res) => {
 app.put("/api/crm/leads/:id", requireSession, async (req, res) => {
   const leadId = Number(req.params.id);
   if (!Number.isInteger(leadId) || leadId <= 0) {
-    res.status(400).json({ message: "ID de lead inválido." });
+    res.status(400).json({ message: "ID de lead invÃ¡lido." });
     return;
   }
 
@@ -586,7 +595,7 @@ app.put("/api/crm/leads/:id", requireSession, async (req, res) => {
   if (typeof req.body?.waId === "string") {
     const parsed = normalizeWaId(req.body.waId.trim());
     if (!parsed) {
-      res.status(400).json({ message: "WhatsApp inválido." });
+      res.status(400).json({ message: "WhatsApp invÃ¡lido." });
       return;
     }
     updateData.waId = parsed;
@@ -598,7 +607,7 @@ app.put("/api/crm/leads/:id", requireSession, async (req, res) => {
   if (typeof req.body?.notes === "string") updateData.notes = req.body.notes.trim() || null;
 
   if (Object.keys(updateData).length === 0) {
-    res.status(400).json({ message: "Nenhuma alteração enviada." });
+    res.status(400).json({ message: "Nenhuma alteraÃ§Ã£o enviada." });
     return;
   }
 
@@ -611,11 +620,32 @@ app.put("/api/crm/leads/:id", requireSession, async (req, res) => {
     res.json({ message: "Lead atualizado com sucesso.", lead: mapLeadDetails(lead) });
   } catch (err) {
     if (isPrismaNotFoundError(err)) {
-      res.status(404).json({ message: "Lead não encontrado." });
+      res.status(404).json({ message: "Lead nÃ£o encontrado." });
       return;
     }
     if (isPrismaUniqueError(err)) {
-      res.status(409).json({ message: "Já existe lead com este WhatsApp." });
+      res.status(409).json({ message: "JÃ¡ existe lead com este WhatsApp." });
+      return;
+    }
+    throw err;
+  }
+});
+
+app.delete("/api/crm/leads/:id", requireSession, async (req, res) => {
+  const leadId = Number(req.params.id);
+  if (!Number.isInteger(leadId) || leadId <= 0) {
+    res.status(400).json({ message: "ID de lead invÃ¡lido." });
+    return;
+  }
+
+  try {
+    await prisma.contact.delete({
+      where: { id: leadId }
+    });
+    res.json({ message: "Lead excluÃ­do com sucesso." });
+  } catch (err) {
+    if (isPrismaNotFoundError(err)) {
+      res.status(404).json({ message: "Lead nÃ£o encontrado." });
       return;
     }
     throw err;
@@ -626,7 +656,7 @@ app.patch("/api/crm/leads/:id/stage", requireSession, async (req, res) => {
   const leadId = Number(req.params.id);
   const stageId = Number(req.body?.stageId);
   if (!Number.isInteger(leadId) || leadId <= 0 || !Number.isInteger(stageId) || stageId <= 0) {
-    res.status(400).json({ message: "Lead e etapa são obrigatórios." });
+    res.status(400).json({ message: "Lead e etapa sÃ£o obrigatÃ³rios." });
     return;
   }
 
@@ -639,7 +669,7 @@ app.patch("/api/crm/leads/:id/stage", requireSession, async (req, res) => {
     res.json({ message: "Etapa do lead atualizada.", lead: mapLeadDetails(lead) });
   } catch (err) {
     if (isPrismaNotFoundError(err)) {
-      res.status(404).json({ message: "Lead não encontrado." });
+      res.status(404).json({ message: "Lead nÃ£o encontrado." });
       return;
     }
     throw err;
@@ -650,7 +680,7 @@ app.patch("/api/crm/leads/:id/status", requireSession, async (req, res) => {
   const leadId = Number(req.params.id);
   const leadStatus = typeof req.body?.status === "string" ? req.body.status : "";
   if (!Number.isInteger(leadId) || leadId <= 0 || !["open", "won", "lost"].includes(leadStatus)) {
-    res.status(400).json({ message: "Status inválido." });
+    res.status(400).json({ message: "Status invÃ¡lido." });
     return;
   }
 
@@ -663,7 +693,7 @@ app.patch("/api/crm/leads/:id/status", requireSession, async (req, res) => {
     res.json({ message: "Status do lead atualizado.", lead: mapLeadDetails(lead) });
   } catch (err) {
     if (isPrismaNotFoundError(err)) {
-      res.status(404).json({ message: "Lead não encontrado." });
+      res.status(404).json({ message: "Lead nÃ£o encontrado." });
       return;
     }
     throw err;
@@ -687,7 +717,7 @@ app.patch("/api/crm/leads/:id/bot", requireSession, async (req, res) => {
     res.json({ message: "Modo bot atualizado.", lead: mapLeadDetails(lead) });
   } catch (err) {
     if (isPrismaNotFoundError(err)) {
-      res.status(404).json({ message: "Lead não encontrado." });
+      res.status(404).json({ message: "Lead nÃ£o encontrado." });
       return;
     }
     throw err;
@@ -696,25 +726,39 @@ app.patch("/api/crm/leads/:id/bot", requireSession, async (req, res) => {
 
 app.get("/api/crm/leads/:id/messages", requireSession, async (req, res) => {
   const leadId = Number(req.params.id);
-  const limit = Math.max(1, Math.min(300, Number(req.query.limit || 100)));
+  const page = Math.max(1, Number(req.query.page || 1));
+  const limit = Math.max(1, Math.min(100, Number(req.query.limit || 20)));
   if (!Number.isInteger(leadId) || leadId <= 0) {
     res.status(400).json({ message: "ID de lead inválido." });
     return;
   }
 
-  const messages = await prisma.message.findMany({
-    where: { contactId: leadId },
-    orderBy: { createdAt: "asc" },
-    take: limit
+  const skip = (page - 1) * limit;
+  const where = { contactId: leadId };
+  const [total, messagesDesc] = await Promise.all([
+    prisma.message.count({ where }),
+    prisma.message.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limit
+    })
+  ]);
+
+  res.json({
+    messages: messagesDesc.slice().reverse(),
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / limit))
+    }
   });
-
-  res.json({ messages });
 });
-
 app.get("/api/crm/leads/:id/tasks", requireSession, async (req, res) => {
   const leadId = Number(req.params.id);
   if (!Number.isInteger(leadId) || leadId <= 0) {
-    res.status(400).json({ message: "ID de lead inválido." });
+    res.status(400).json({ message: "ID de lead invÃ¡lido." });
     return;
   }
 
@@ -735,7 +779,7 @@ app.post("/api/crm/leads/:id/tasks", requireSession, async (req, res) => {
   const dueAt = new Date(dueAtRaw);
 
   if (!Number.isInteger(leadId) || leadId <= 0 || !title || Number.isNaN(dueAt.getTime())) {
-    res.status(400).json({ message: "Lead, título e vencimento são obrigatórios." });
+    res.status(400).json({ message: "Lead, tÃ­tulo e vencimento sÃ£o obrigatÃ³rios." });
     return;
   }
 
@@ -756,7 +800,7 @@ app.post("/api/crm/leads/:id/tasks", requireSession, async (req, res) => {
 app.put("/api/crm/tasks/:taskId", requireSession, async (req, res) => {
   const taskId = Number(req.params.taskId);
   if (!Number.isInteger(taskId) || taskId <= 0) {
-    res.status(400).json({ message: "ID de tarefa inválido." });
+    res.status(400).json({ message: "ID de tarefa invÃ¡lido." });
     return;
   }
 
@@ -767,14 +811,14 @@ app.put("/api/crm/tasks/:taskId", requireSession, async (req, res) => {
   if (typeof req.body?.dueAt === "string") {
     const dueAt = new Date(req.body.dueAt);
     if (Number.isNaN(dueAt.getTime())) {
-      res.status(400).json({ message: "Data de vencimento inválida." });
+      res.status(400).json({ message: "Data de vencimento invÃ¡lida." });
       return;
     }
     data.dueAt = dueAt;
   }
 
   if (Object.keys(data).length === 0) {
-    res.status(400).json({ message: "Nenhuma alteração enviada." });
+    res.status(400).json({ message: "Nenhuma alteraÃ§Ã£o enviada." });
     return;
   }
 
@@ -786,7 +830,7 @@ app.put("/api/crm/tasks/:taskId", requireSession, async (req, res) => {
     res.json({ message: "Tarefa atualizada com sucesso.", task });
   } catch (err) {
     if (isPrismaNotFoundError(err)) {
-      res.status(404).json({ message: "Tarefa não encontrada." });
+      res.status(404).json({ message: "Tarefa nÃ£o encontrada." });
       return;
     }
     throw err;
@@ -797,7 +841,7 @@ app.patch("/api/crm/tasks/:taskId/status", requireSession, async (req, res) => {
   const taskId = Number(req.params.taskId);
   const status = typeof req.body?.status === "string" ? req.body.status : "";
   if (!Number.isInteger(taskId) || taskId <= 0 || !["open", "done", "canceled"].includes(status)) {
-    res.status(400).json({ message: "Status inválido." });
+    res.status(400).json({ message: "Status invÃ¡lido." });
     return;
   }
 
@@ -812,7 +856,7 @@ app.patch("/api/crm/tasks/:taskId/status", requireSession, async (req, res) => {
     res.json({ message: "Status da tarefa atualizado.", task });
   } catch (err) {
     if (isPrismaNotFoundError(err)) {
-      res.status(404).json({ message: "Tarefa não encontrada." });
+      res.status(404).json({ message: "Tarefa nÃ£o encontrada." });
       return;
     }
     throw err;
@@ -822,13 +866,13 @@ app.patch("/api/crm/tasks/:taskId/status", requireSession, async (req, res) => {
 app.delete("/api/crm/tasks/:taskId", requireSession, async (req, res) => {
   const taskId = Number(req.params.taskId);
   if (!Number.isInteger(taskId) || taskId <= 0) {
-    res.status(400).json({ message: "ID de tarefa inválido." });
+    res.status(400).json({ message: "ID de tarefa invÃ¡lido." });
     return;
   }
 
   const deleted = await prisma.task.deleteMany({ where: { id: taskId } });
   if (deleted.count === 0) {
-    res.status(404).json({ message: "Tarefa não encontrada." });
+    res.status(404).json({ message: "Tarefa nÃ£o encontrada." });
     return;
   }
   res.json({ message: "Tarefa removida com sucesso." });
@@ -966,7 +1010,7 @@ async function processIncomingWebhook(payload: unknown): Promise<void> {
 
     if (!contact.botEnabled) return;
 
-    const fallback = "Por enquanto eu só entendo texto 🙂";
+    const fallback = "Por enquanto eu sÃ³ entendo texto ðŸ™‚";
     await sendWhatsAppText(waId, fallback);
     await prisma.message.create({
       data: {
@@ -1032,7 +1076,7 @@ async function generateReply(
   faqContext: string
 ): Promise<string> {
   if (!GROQ_API_KEY || !GROQ_MODEL) {
-    return "Configuração incompleta da IA.";
+    return "ConfiguraÃ§Ã£o incompleta da IA.";
   }
 
   const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
@@ -1069,7 +1113,7 @@ async function generateReply(
   const content = data?.choices?.[0]?.message?.content;
   return typeof content === "string" && content.trim()
     ? content.trim()
-    : "Desculpe, não consegui responder agora.";
+    : "Desculpe, nÃ£o consegui responder agora.";
 }
 
 async function generateReplyWithTyping(
@@ -1137,7 +1181,7 @@ async function getFaqContextForInput(input: string): Promise<string> {
   return ranked
     .map(
       (item, index) =>
-        `${index + 1}. Pergunta: ${item.question}\nVariação relevante: ${item.matchedVariant}\nResposta: ${item.answer}`
+        `${index + 1}. Pergunta: ${item.question}\nVariaÃ§Ã£o relevante: ${item.matchedVariant}\nResposta: ${item.answer}`
     )
     .join("\n\n");
 }
@@ -1493,7 +1537,7 @@ function getSessionFromRequest(req: express.Request): SessionPayload | null {
 function requireSession(req: express.Request, res: express.Response, next: express.NextFunction): void {
   const session = getSessionFromRequest(req);
   if (!session) {
-    res.status(401).json({ message: "Não autenticado." });
+    res.status(401).json({ message: "NÃ£o autenticado." });
     return;
   }
 
@@ -1538,5 +1582,8 @@ function isPrismaNotFoundError(err: unknown): boolean {
 app.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
 });
+
+
+
 
 

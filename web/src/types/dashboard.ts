@@ -36,6 +36,13 @@ export type ContactMessage = {
   createdAt: string;
 };
 
+export type PaginationMeta = {
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+};
+
 export type ContactConversation = {
   id: number;
   waId: string;
@@ -118,5 +125,6 @@ export type ConfirmDialogState = {
     | { type: "delete-contact"; contact: ContactConversation }
     | { type: "clear-contact-messages"; contact: ContactConversation }
     | { type: "delete-message"; messageId: number }
-    | { type: "delete-faq"; faqId: number };
+    | { type: "delete-faq"; faqId: number }
+    | { type: "delete-lead"; leadId: number; leadName: string | null; waId: string };
 };
