@@ -32,6 +32,14 @@ const allowedOrigins = (process.env.ALLOWED_ORIGINS || "http://localhost:5173")
 
 const prisma = new PrismaClient();
 const app = express();
+const DEFAULT_PIPELINE_STAGES = [
+  { name: "Novo", position: 1, color: "#38bdf8" },
+  { name: "Qualificado", position: 2, color: "#22c55e" },
+  { name: "Proposta", position: 3, color: "#f59e0b" },
+  { name: "Negociação", position: 4, color: "#f97316" },
+  { name: "Fechado (ganho)", position: 5, color: "#10b981" },
+  { name: "Fechado (perdido)", position: 6, color: "#ef4444" }
+] as const;
 
 app.use((req, res, next) => {
   const origin = req.headers.origin;
@@ -355,6 +363,522 @@ app.delete("/api/dashboard/contacts/:contactId", requireSession, async (req, res
   res.json({ message: "Contato e histórico removidos com sucesso." });
 });
 
+app.get("/api/crm/stages", requireSession, async (_req, res) => {
+  await ensureDefaultStages();
+  const stages = await prisma.pipelineStage.findMany({
+    where: { isActive: true },
+    orderBy: { position: "asc" }
+  });
+
+  res.json({ stages });
+});
+
+app.post("/api/crm/stages", requireSession, async (req, res) => {
+  const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+  const color = typeof req.body?.color === "string" && req.body.color.trim() ? req.body.color.trim() : "#06b6d4";
+
+  if (!name) {
+    res.status(400).json({ message: "Nome da etapa é obrigatório." });
+    return;
+  }
+
+  const maxPosition = await prisma.pipelineStage.aggregate({
+    _max: { position: true }
+  });
+  const position = typeof req.body?.position === "number" ? Math.max(1, Math.floor(req.body.position)) : (maxPosition._max.position || 0) + 1;
+
+  try {
+    const stage = await prisma.pipelineStage.create({
+      data: { name, color, position, isActive: true }
+    });
+    res.status(201).json({ message: "Etapa criada com sucesso.", stage });
+  } catch (err) {
+    if (isPrismaUniqueError(err)) {
+      res.status(409).json({ message: "Já existe etapa com este nome ou posição." });
+      return;
+    }
+    throw err;
+  }
+});
+
+app.put("/api/crm/stages/:id(\\d+)", requireSession, async (req, res) => {
+  const stageId = Number(req.params.id);
+  if (!Number.isInteger(stageId) || stageId <= 0) {
+    res.status(400).json({ message: "ID de etapa inválido." });
+    return;
+  }
+
+  const payload: { name?: string; color?: string; isActive?: boolean } = {};
+  if (typeof req.body?.name === "string" && req.body.name.trim()) payload.name = req.body.name.trim();
+  if (typeof req.body?.color === "string" && req.body.color.trim()) payload.color = req.body.color.trim();
+  if (typeof req.body?.isActive === "boolean") payload.isActive = req.body.isActive;
+
+  if (Object.keys(payload).length === 0) {
+    res.status(400).json({ message: "Nenhuma alteração enviada." });
+    return;
+  }
+
+  try {
+    const stage = await prisma.pipelineStage.update({
+      where: { id: stageId },
+      data: payload
+    });
+    res.json({ message: "Etapa atualizada com sucesso.", stage });
+  } catch (err) {
+    if (isPrismaNotFoundError(err)) {
+      res.status(404).json({ message: "Etapa não encontrada." });
+      return;
+    }
+    if (isPrismaUniqueError(err)) {
+      res.status(409).json({ message: "Já existe etapa com este nome." });
+      return;
+    }
+    throw err;
+  }
+});
+
+app.put("/api/crm/stages/reorder", requireSession, async (req, res) => {
+  const stageIds = Array.isArray(req.body?.stageIds) ? req.body.stageIds.map((id: unknown) => Number(id)).filter((id: number) => Number.isInteger(id) && id > 0) : [];
+  if (stageIds.length === 0) {
+    res.status(400).json({ message: "Envie uma lista válida de IDs de etapa." });
+    return;
+  }
+
+  await prisma.$transaction(
+    stageIds.map((id: number, index: number) =>
+      prisma.pipelineStage.update({
+        where: { id },
+        data: { position: index + 1 }
+      })
+    )
+  );
+
+  const stages = await prisma.pipelineStage.findMany({
+    where: { isActive: true },
+    orderBy: { position: "asc" }
+  });
+  res.json({ message: "Ordem de etapas atualizada.", stages });
+});
+
+app.get("/api/crm/leads", requireSession, async (req, res) => {
+  await ensureDefaultStages();
+  const stageId = req.query.stageId ? Number(req.query.stageId) : undefined;
+  const status = typeof req.query.status === "string" ? req.query.status : undefined;
+  const search = typeof req.query.search === "string" ? req.query.search.trim() : "";
+  const page = Math.max(1, Number(req.query.page || 1));
+  const limit = Math.max(1, Math.min(100, Number(req.query.limit || 20)));
+  const skip = (page - 1) * limit;
+
+  const where: Record<string, unknown> = {};
+  if (stageId && Number.isInteger(stageId) && stageId > 0) where.stageId = stageId;
+  if (status && ["open", "won", "lost"].includes(status)) where.leadStatus = status;
+  if (search) {
+    where.OR = [
+      { waId: { contains: search, mode: "insensitive" } },
+      { name: { contains: search, mode: "insensitive" } },
+      { notes: { contains: search, mode: "insensitive" } }
+    ];
+  }
+
+  const [total, leads] = await Promise.all([
+    prisma.contact.count({ where }),
+    prisma.contact.findMany({
+      where,
+      orderBy: [{ createdAt: "desc" }],
+      skip,
+      take: limit,
+      include: {
+        stage: true,
+        tasks: {
+          where: { status: "open" },
+          orderBy: { dueAt: "asc" },
+          take: 5
+        },
+        messages: {
+          orderBy: { createdAt: "desc" },
+          take: 1
+        }
+      }
+    })
+  ]);
+
+  res.json({
+    leads: leads.map(mapLeadSummary),
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / limit))
+    }
+  });
+});
+
+app.post("/api/crm/leads", requireSession, async (req, res) => {
+  const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+  const waIdRaw = typeof req.body?.waId === "string" ? req.body.waId.trim() : "";
+  const waId = normalizeWaId(waIdRaw);
+  const stageId = Number(req.body?.stageId);
+  const source = typeof req.body?.source === "string" ? req.body.source.trim() : null;
+  const notes = typeof req.body?.notes === "string" ? req.body.notes.trim() : null;
+
+  if (!name || !waId || !Number.isInteger(stageId) || stageId <= 0) {
+    res.status(400).json({ message: "Nome, WhatsApp e etapa são obrigatórios." });
+    return;
+  }
+
+  try {
+    const lead = await prisma.contact.create({
+      data: {
+        name,
+        waId,
+        stageId,
+        source,
+        notes,
+        leadStatus: "open",
+        botEnabled: true
+      },
+      include: { stage: true }
+    });
+
+    res.status(201).json({ message: "Lead criado com sucesso.", lead: mapLeadDetails(lead) });
+  } catch (err) {
+    if (isPrismaUniqueError(err)) {
+      res.status(409).json({ message: "Já existe lead com este WhatsApp." });
+      return;
+    }
+    throw err;
+  }
+});
+
+app.get("/api/crm/leads/:id", requireSession, async (req, res) => {
+  const leadId = Number(req.params.id);
+  if (!Number.isInteger(leadId) || leadId <= 0) {
+    res.status(400).json({ message: "ID de lead inválido." });
+    return;
+  }
+
+  const lead = await prisma.contact.findUnique({
+    where: { id: leadId },
+    include: {
+      stage: true,
+      messages: { orderBy: { createdAt: "desc" }, take: 100 },
+      tasks: { orderBy: [{ status: "asc" }, { dueAt: "asc" }] }
+    }
+  });
+
+  if (!lead) {
+    res.status(404).json({ message: "Lead não encontrado." });
+    return;
+  }
+
+  res.json({ lead: mapLeadDetails(lead) });
+});
+
+app.put("/api/crm/leads/:id", requireSession, async (req, res) => {
+  const leadId = Number(req.params.id);
+  if (!Number.isInteger(leadId) || leadId <= 0) {
+    res.status(400).json({ message: "ID de lead inválido." });
+    return;
+  }
+
+  const updateData: Record<string, unknown> = {};
+  if (typeof req.body?.name === "string") updateData.name = req.body.name.trim() || null;
+  if (typeof req.body?.waId === "string") {
+    const parsed = normalizeWaId(req.body.waId.trim());
+    if (!parsed) {
+      res.status(400).json({ message: "WhatsApp inválido." });
+      return;
+    }
+    updateData.waId = parsed;
+  }
+  if (typeof req.body?.stageId === "number" && Number.isInteger(req.body.stageId) && req.body.stageId > 0) {
+    updateData.stageId = req.body.stageId;
+  }
+  if (typeof req.body?.source === "string") updateData.source = req.body.source.trim() || null;
+  if (typeof req.body?.notes === "string") updateData.notes = req.body.notes.trim() || null;
+
+  if (Object.keys(updateData).length === 0) {
+    res.status(400).json({ message: "Nenhuma alteração enviada." });
+    return;
+  }
+
+  try {
+    const lead = await prisma.contact.update({
+      where: { id: leadId },
+      data: updateData,
+      include: { stage: true }
+    });
+    res.json({ message: "Lead atualizado com sucesso.", lead: mapLeadDetails(lead) });
+  } catch (err) {
+    if (isPrismaNotFoundError(err)) {
+      res.status(404).json({ message: "Lead não encontrado." });
+      return;
+    }
+    if (isPrismaUniqueError(err)) {
+      res.status(409).json({ message: "Já existe lead com este WhatsApp." });
+      return;
+    }
+    throw err;
+  }
+});
+
+app.patch("/api/crm/leads/:id/stage", requireSession, async (req, res) => {
+  const leadId = Number(req.params.id);
+  const stageId = Number(req.body?.stageId);
+  if (!Number.isInteger(leadId) || leadId <= 0 || !Number.isInteger(stageId) || stageId <= 0) {
+    res.status(400).json({ message: "Lead e etapa são obrigatórios." });
+    return;
+  }
+
+  try {
+    const lead = await prisma.contact.update({
+      where: { id: leadId },
+      data: { stageId },
+      include: { stage: true }
+    });
+    res.json({ message: "Etapa do lead atualizada.", lead: mapLeadDetails(lead) });
+  } catch (err) {
+    if (isPrismaNotFoundError(err)) {
+      res.status(404).json({ message: "Lead não encontrado." });
+      return;
+    }
+    throw err;
+  }
+});
+
+app.patch("/api/crm/leads/:id/status", requireSession, async (req, res) => {
+  const leadId = Number(req.params.id);
+  const leadStatus = typeof req.body?.status === "string" ? req.body.status : "";
+  if (!Number.isInteger(leadId) || leadId <= 0 || !["open", "won", "lost"].includes(leadStatus)) {
+    res.status(400).json({ message: "Status inválido." });
+    return;
+  }
+
+  try {
+    const lead = await prisma.contact.update({
+      where: { id: leadId },
+      data: { leadStatus },
+      include: { stage: true }
+    });
+    res.json({ message: "Status do lead atualizado.", lead: mapLeadDetails(lead) });
+  } catch (err) {
+    if (isPrismaNotFoundError(err)) {
+      res.status(404).json({ message: "Lead não encontrado." });
+      return;
+    }
+    throw err;
+  }
+});
+
+app.patch("/api/crm/leads/:id/bot", requireSession, async (req, res) => {
+  const leadId = Number(req.params.id);
+  const enabled = req.body?.enabled;
+  if (!Number.isInteger(leadId) || leadId <= 0 || typeof enabled !== "boolean") {
+    res.status(400).json({ message: "Envie enabled como boolean." });
+    return;
+  }
+
+  try {
+    const lead = await prisma.contact.update({
+      where: { id: leadId },
+      data: { botEnabled: enabled },
+      include: { stage: true }
+    });
+    res.json({ message: "Modo bot atualizado.", lead: mapLeadDetails(lead) });
+  } catch (err) {
+    if (isPrismaNotFoundError(err)) {
+      res.status(404).json({ message: "Lead não encontrado." });
+      return;
+    }
+    throw err;
+  }
+});
+
+app.get("/api/crm/leads/:id/messages", requireSession, async (req, res) => {
+  const leadId = Number(req.params.id);
+  const limit = Math.max(1, Math.min(300, Number(req.query.limit || 100)));
+  if (!Number.isInteger(leadId) || leadId <= 0) {
+    res.status(400).json({ message: "ID de lead inválido." });
+    return;
+  }
+
+  const messages = await prisma.message.findMany({
+    where: { contactId: leadId },
+    orderBy: { createdAt: "asc" },
+    take: limit
+  });
+
+  res.json({ messages });
+});
+
+app.get("/api/crm/leads/:id/tasks", requireSession, async (req, res) => {
+  const leadId = Number(req.params.id);
+  if (!Number.isInteger(leadId) || leadId <= 0) {
+    res.status(400).json({ message: "ID de lead inválido." });
+    return;
+  }
+
+  const tasks = await prisma.task.findMany({
+    where: { contactId: leadId },
+    orderBy: [{ status: "asc" }, { dueAt: "asc" }]
+  });
+
+  res.json({ tasks });
+});
+
+app.post("/api/crm/leads/:id/tasks", requireSession, async (req, res) => {
+  const leadId = Number(req.params.id);
+  const title = typeof req.body?.title === "string" ? req.body.title.trim() : "";
+  const description = typeof req.body?.description === "string" ? req.body.description.trim() : null;
+  const dueAtRaw = typeof req.body?.dueAt === "string" ? req.body.dueAt : "";
+  const priority = typeof req.body?.priority === "string" && ["low", "medium", "high"].includes(req.body.priority) ? req.body.priority : "medium";
+  const dueAt = new Date(dueAtRaw);
+
+  if (!Number.isInteger(leadId) || leadId <= 0 || !title || Number.isNaN(dueAt.getTime())) {
+    res.status(400).json({ message: "Lead, título e vencimento são obrigatórios." });
+    return;
+  }
+
+  const task = await prisma.task.create({
+    data: {
+      contactId: leadId,
+      title,
+      description,
+      dueAt,
+      priority,
+      status: "open"
+    }
+  });
+
+  res.status(201).json({ message: "Tarefa criada com sucesso.", task });
+});
+
+app.put("/api/crm/tasks/:taskId", requireSession, async (req, res) => {
+  const taskId = Number(req.params.taskId);
+  if (!Number.isInteger(taskId) || taskId <= 0) {
+    res.status(400).json({ message: "ID de tarefa inválido." });
+    return;
+  }
+
+  const data: Record<string, unknown> = {};
+  if (typeof req.body?.title === "string") data.title = req.body.title.trim();
+  if (typeof req.body?.description === "string") data.description = req.body.description.trim() || null;
+  if (typeof req.body?.priority === "string" && ["low", "medium", "high"].includes(req.body.priority)) data.priority = req.body.priority;
+  if (typeof req.body?.dueAt === "string") {
+    const dueAt = new Date(req.body.dueAt);
+    if (Number.isNaN(dueAt.getTime())) {
+      res.status(400).json({ message: "Data de vencimento inválida." });
+      return;
+    }
+    data.dueAt = dueAt;
+  }
+
+  if (Object.keys(data).length === 0) {
+    res.status(400).json({ message: "Nenhuma alteração enviada." });
+    return;
+  }
+
+  try {
+    const task = await prisma.task.update({
+      where: { id: taskId },
+      data
+    });
+    res.json({ message: "Tarefa atualizada com sucesso.", task });
+  } catch (err) {
+    if (isPrismaNotFoundError(err)) {
+      res.status(404).json({ message: "Tarefa não encontrada." });
+      return;
+    }
+    throw err;
+  }
+});
+
+app.patch("/api/crm/tasks/:taskId/status", requireSession, async (req, res) => {
+  const taskId = Number(req.params.taskId);
+  const status = typeof req.body?.status === "string" ? req.body.status : "";
+  if (!Number.isInteger(taskId) || taskId <= 0 || !["open", "done", "canceled"].includes(status)) {
+    res.status(400).json({ message: "Status inválido." });
+    return;
+  }
+
+  try {
+    const task = await prisma.task.update({
+      where: { id: taskId },
+      data: {
+        status,
+        completedAt: status === "done" ? new Date() : null
+      }
+    });
+    res.json({ message: "Status da tarefa atualizado.", task });
+  } catch (err) {
+    if (isPrismaNotFoundError(err)) {
+      res.status(404).json({ message: "Tarefa não encontrada." });
+      return;
+    }
+    throw err;
+  }
+});
+
+app.delete("/api/crm/tasks/:taskId", requireSession, async (req, res) => {
+  const taskId = Number(req.params.taskId);
+  if (!Number.isInteger(taskId) || taskId <= 0) {
+    res.status(400).json({ message: "ID de tarefa inválido." });
+    return;
+  }
+
+  const deleted = await prisma.task.deleteMany({ where: { id: taskId } });
+  if (deleted.count === 0) {
+    res.status(404).json({ message: "Tarefa não encontrada." });
+    return;
+  }
+  res.json({ message: "Tarefa removida com sucesso." });
+});
+
+app.get("/api/crm/metrics/conversion", requireSession, async (_req, res) => {
+  const [stages, wonTotal, lostTotal, openTotal] = await Promise.all([
+    prisma.pipelineStage.findMany({
+      where: { isActive: true },
+      include: {
+        contacts: {
+          select: { id: true, leadStatus: true }
+        }
+      },
+      orderBy: { position: "asc" }
+    }),
+    prisma.contact.count({ where: { leadStatus: "won" } }),
+    prisma.contact.count({ where: { leadStatus: "lost" } }),
+    prisma.contact.count({ where: { leadStatus: "open" } })
+  ]);
+
+  const totalClosed = wonTotal + lostTotal;
+
+  res.json({
+    overall: {
+      won: wonTotal,
+      lost: lostTotal,
+      open: openTotal,
+      totalClosed,
+      conversionRate: totalClosed > 0 ? Number(((wonTotal / totalClosed) * 100).toFixed(2)) : 0
+    },
+    byStage: stages.map((stage) => {
+      const won = stage.contacts.filter((c) => c.leadStatus === "won").length;
+      const lost = stage.contacts.filter((c) => c.leadStatus === "lost").length;
+      const open = stage.contacts.filter((c) => c.leadStatus === "open").length;
+      const closed = won + lost;
+      return {
+        stageId: stage.id,
+        stageName: stage.name,
+        stageColor: stage.color,
+        total: stage.contacts.length,
+        won,
+        lost,
+        open,
+        conversionRate: closed > 0 ? Number(((won / closed) * 100).toFixed(2)) : 0
+      };
+    })
+  });
+});
+
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -382,212 +906,126 @@ app.get("/api/webhook", (req, res) => {
 app.post("/webhook", (req, res) => {
   res.sendStatus(200);
 
-  setImmediate(async () => {
-    try {
-      const msg = req.body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-      if (!msg) return;
-
-      const waId = msg.from as string | undefined;
-      const waMessageId = msg.id as string | undefined;
-      const profileNameRaw = req.body?.entry?.[0]?.changes?.[0]?.value?.contacts?.[0]?.profile?.name;
-      const profileName =
-        typeof profileNameRaw === "string" && profileNameRaw.trim()
-          ? profileNameRaw.trim()
-          : null;
-      if (!waId) return;
-
-      const contact = await prisma.contact.upsert({
-        where: { waId },
-        update: {},
-        create: { waId, name: profileName }
-      });
-
-      if (msg.type !== "text") {
-        await prisma.message.create({
-          data: {
-            contactId: contact.id,
-            direction: "in",
-            body: `[${msg.type}]`,
-            waMessageId: waMessageId || null
-          }
-        }).catch((err: unknown) => {
-          if (isPrismaUniqueError(err)) return;
-          throw err;
-        });
-
-        const fallback = "Por enquanto eu só entendo texto 🙂";
-        await sendWhatsAppText(waId, fallback);
-        await prisma.message.create({
-          data: {
-            contactId: contact.id,
-            direction: "out",
-            body: fallback,
-            waMessageId: null
-          }
-        });
-        return;
-      }
-
-      const textIn = msg.text?.body as string | undefined;
-      if (!textIn) return;
-
-      try {
-        await prisma.message.create({
-          data: {
-            contactId: contact.id,
-            direction: "in",
-            body: textIn,
-            waMessageId: waMessageId || null
-          }
-        });
-      } catch (err) {
-        if (isPrismaUniqueError(err)) {
-          return;
-        }
-        throw err;
-      }
-
-      const historyRows = await prisma.message.findMany({
-        where: { contactId: contact.id },
-        orderBy: { createdAt: "desc" },
-        take: HISTORY_LIMIT
-      });
-      const history: Array<{ role: "user" | "assistant"; content: string }> =
-        historyRows.reverse().map((m: { direction: string; body: string }) => ({
-          role: (m.direction === "in" ? "user" : "assistant") as
-            | "user"
-            | "assistant",
-          content: m.body
-        }));
-
-      const faqContext = await getFaqContextForInput(textIn);
-
-      await sendWhatsAppTypingIndicator(waMessageId);
-      const reply = await generateReplyWithTyping(history, faqContext, waMessageId).catch((err) => {
-        console.error("OpenAI error:", err);
-        return "Desculpe, tive um problema aqui. Pode repetir?";
-      });
-
-      await delay(getHumanDelayMs(reply));
-      await sendWhatsAppText(waId, reply);
-      await prisma.message.create({
-        data: {
-          contactId: contact.id,
-          direction: "out",
-          body: reply,
-          waMessageId: null
-        }
-      });
-    } catch (err) {
+  setImmediate(() => {
+    processIncomingWebhook(req.body).catch((err) => {
       console.error("Webhook processing error:", err);
-    }
+    });
   });
 });
 
 app.post("/api/webhook", (req, res) => {
   res.sendStatus(200);
 
-  setImmediate(async () => {
-    try {
-      const msg = req.body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-      if (!msg) return;
-
-      const waId = msg.from as string | undefined;
-      const waMessageId = msg.id as string | undefined;
-      const profileNameRaw = req.body?.entry?.[0]?.changes?.[0]?.value?.contacts?.[0]?.profile?.name;
-      const profileName =
-        typeof profileNameRaw === "string" && profileNameRaw.trim()
-          ? profileNameRaw.trim()
-          : null;
-      if (!waId) return;
-
-      const contact = await prisma.contact.upsert({
-        where: { waId },
-        update: {},
-        create: { waId, name: profileName }
-      });
-
-      if (msg.type !== "text") {
-        await prisma.message.create({
-          data: {
-            contactId: contact.id,
-            direction: "in",
-            body: `[${msg.type}]`,
-            waMessageId: waMessageId || null
-          }
-        }).catch((err: unknown) => {
-          if (isPrismaUniqueError(err)) return;
-          throw err;
-        });
-
-        const fallback = "Por enquanto eu só entendo texto 🙂";
-        await sendWhatsAppText(waId, fallback);
-        await prisma.message.create({
-          data: {
-            contactId: contact.id,
-            direction: "out",
-            body: fallback,
-            waMessageId: null
-          }
-        });
-        return;
-      }
-
-      const textIn = msg.text?.body as string | undefined;
-      if (!textIn) return;
-
-      try {
-        await prisma.message.create({
-          data: {
-            contactId: contact.id,
-            direction: "in",
-            body: textIn,
-            waMessageId: waMessageId || null
-          }
-        });
-      } catch (err) {
-        if (isPrismaUniqueError(err)) {
-          return;
-        }
-        throw err;
-      }
-
-      const historyRows = await prisma.message.findMany({
-        where: { contactId: contact.id },
-        orderBy: { createdAt: "desc" },
-        take: HISTORY_LIMIT
-      });
-      const history: Array<{ role: "user" | "assistant"; content: string }> =
-        historyRows.reverse().map((m: { direction: string; body: string }) => ({
-          role: (m.direction === "in" ? "user" : "assistant") as
-            | "user"
-            | "assistant",
-          content: m.body
-        }));
-
-      const faqContext = await getFaqContextForInput(textIn);
-
-      await sendWhatsAppTypingIndicator(waMessageId);
-      const reply = await generateReplyWithTyping(history, faqContext, waMessageId).catch((err) => {
-        console.error("OpenAI error:", err);
-        return "Desculpe, tive um problema aqui. Pode repetir?";
-      });
-
-      await delay(getHumanDelayMs(reply));
-      await sendWhatsAppText(waId, reply);
-      await prisma.message.create({
-        data: {
-          contactId: contact.id,
-          direction: "out",
-          body: reply,
-          waMessageId: null
-        }
-      });
-    } catch (err) {
+  setImmediate(() => {
+    processIncomingWebhook(req.body).catch((err) => {
       console.error("Webhook processing error:", err);
-    }
+    });
   });
 });
+
+async function processIncomingWebhook(payload: unknown): Promise<void> {
+  const msg = (payload as any)?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+  if (!msg) return;
+
+  const waIdRaw = msg.from as string | undefined;
+  const waId = normalizeWaId(waIdRaw || "");
+  const waMessageId = msg.id as string | undefined;
+  const profileNameRaw = (payload as any)?.entry?.[0]?.changes?.[0]?.value?.contacts?.[0]?.profile?.name;
+  const profileName = typeof profileNameRaw === "string" && profileNameRaw.trim() ? profileNameRaw.trim() : null;
+  if (!waId) return;
+
+  const defaultStageId = await getDefaultStageId();
+  const contact = await prisma.contact.upsert({
+    where: { waId },
+    update: {
+      name: profileName || undefined,
+      lastInteractionAt: new Date()
+    },
+    create: {
+      waId,
+      name: profileName,
+      stageId: defaultStageId,
+      leadStatus: "open",
+      botEnabled: true,
+      lastInteractionAt: new Date()
+    }
+  });
+
+  if (msg.type !== "text") {
+    await prisma.message.create({
+      data: {
+        contactId: contact.id,
+        direction: "in",
+        body: `[${msg.type}]`,
+        waMessageId: waMessageId || null
+      }
+    }).catch((err: unknown) => {
+      if (isPrismaUniqueError(err)) return;
+      throw err;
+    });
+
+    if (!contact.botEnabled) return;
+
+    const fallback = "Por enquanto eu só entendo texto 🙂";
+    await sendWhatsAppText(waId, fallback);
+    await prisma.message.create({
+      data: {
+        contactId: contact.id,
+        direction: "out",
+        body: fallback,
+        waMessageId: null
+      }
+    });
+    return;
+  }
+
+  const textIn = msg.text?.body as string | undefined;
+  if (!textIn) return;
+
+  try {
+    await prisma.message.create({
+      data: {
+        contactId: contact.id,
+        direction: "in",
+        body: textIn,
+        waMessageId: waMessageId || null
+      }
+    });
+  } catch (err) {
+    if (isPrismaUniqueError(err)) return;
+    throw err;
+  }
+
+  if (!contact.botEnabled) return;
+
+  const historyRows = await prisma.message.findMany({
+    where: { contactId: contact.id },
+    orderBy: { createdAt: "desc" },
+    take: HISTORY_LIMIT
+  });
+  const history: Array<{ role: "user" | "assistant"; content: string }> = historyRows.reverse().map((m: { direction: string; body: string }) => ({
+    role: (m.direction === "in" ? "user" : "assistant") as "user" | "assistant",
+    content: m.body
+  }));
+
+  const faqContext = await getFaqContextForInput(textIn);
+  await sendWhatsAppTypingIndicator(waMessageId);
+  const reply = await generateReplyWithTyping(history, faqContext, waMessageId).catch((err) => {
+    console.error("OpenAI error:", err);
+    return "Desculpe, tive um problema aqui. Pode repetir?";
+  });
+
+  await delay(getHumanDelayMs(reply));
+  await sendWhatsAppText(waId, reply);
+  await prisma.message.create({
+    data: {
+      contactId: contact.id,
+      direction: "out",
+      body: reply,
+      waMessageId: null
+    }
+  });
+}
 
 async function generateReply(
   history: Array<{ role: "user" | "assistant"; content: string }>,
@@ -848,6 +1286,95 @@ async function sendWhatsAppTypingIndicator(
   }
 }
 
+async function ensureDefaultStages(): Promise<void> {
+  const count = await prisma.pipelineStage.count();
+  if (count > 0) return;
+
+  await prisma.pipelineStage.createMany({
+    data: DEFAULT_PIPELINE_STAGES.map((stage) => ({
+      name: stage.name,
+      position: stage.position,
+      color: stage.color,
+      isActive: true
+    })),
+    skipDuplicates: true
+  });
+}
+
+async function getDefaultStageId(): Promise<number | null> {
+  await ensureDefaultStages();
+  const firstStage = await prisma.pipelineStage.findFirst({
+    where: { isActive: true },
+    orderBy: { position: "asc" },
+    select: { id: true }
+  });
+  return firstStage?.id || null;
+}
+
+function normalizeWaId(input: string): string {
+  const digits = input.replace(/[^\d]/g, "");
+  return digits;
+}
+
+function mapLeadSummary(
+  contact: {
+    id: number;
+    waId: string;
+    name: string | null;
+    stageId: number | null;
+    leadStatus: string;
+    source: string | null;
+    notes: string | null;
+    botEnabled: boolean;
+    lastInteractionAt: Date | null;
+    createdAt: Date;
+    stage?: { id: number; name: string; color: string; position: number } | null;
+    tasks?: Array<{ id: number; title: string; dueAt: Date; priority: string; status: string }>;
+    messages?: Array<{ id: number; direction: string; body: string; createdAt: Date }>;
+  }
+): Record<string, unknown> {
+  const latestMessage = contact.messages?.[0] || null;
+  return {
+    id: contact.id,
+    waId: contact.waId,
+    name: contact.name,
+    stageId: contact.stageId,
+    stage: contact.stage || null,
+    leadStatus: contact.leadStatus,
+    source: contact.source,
+    notes: contact.notes,
+    botEnabled: contact.botEnabled,
+    lastInteractionAt: contact.lastInteractionAt,
+    createdAt: contact.createdAt,
+    openTasks: contact.tasks || [],
+    latestMessage
+  };
+}
+
+function mapLeadDetails(
+  contact: {
+    id: number;
+    waId: string;
+    name: string | null;
+    stageId: number | null;
+    leadStatus: string;
+    source: string | null;
+    notes: string | null;
+    botEnabled: boolean;
+    lastInteractionAt: Date | null;
+    createdAt: Date;
+    stage?: { id: number; name: string; color: string; position: number } | null;
+    messages?: Array<{ id: number; direction: string; body: string; createdAt: Date }>;
+    tasks?: Array<{ id: number; title: string; description: string | null; dueAt: Date; priority: string; status: string; completedAt: Date | null }>;
+  }
+): Record<string, unknown> {
+  return {
+    ...mapLeadSummary(contact),
+    messages: (contact.messages || []).slice().reverse(),
+    tasks: contact.tasks || []
+  };
+}
+
 type SessionPayload = {
   username: string;
   role: string;
@@ -1011,3 +1538,5 @@ function isPrismaNotFoundError(err: unknown): boolean {
 app.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
 });
+
+
