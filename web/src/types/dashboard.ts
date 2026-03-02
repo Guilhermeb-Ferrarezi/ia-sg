@@ -122,9 +122,15 @@ export type ConfirmDialogState = {
   confirmText: string;
   tone: "danger" | "warning";
   action:
-    | { type: "delete-contact"; contact: ContactConversation }
-    | { type: "clear-contact-messages"; contact: ContactConversation }
-    | { type: "delete-message"; messageId: number }
-    | { type: "delete-faq"; faqId: number }
-    | { type: "delete-lead"; leadId: number; leadName: string | null; waId: string };
+  | { type: "delete-contact"; contact: ContactConversation }
+  | { type: "clear-contact-messages"; contact: ContactConversation }
+  | { type: "delete-message"; messageId: number }
+  | { type: "delete-faq"; faqId: number }
+  | { type: "delete-lead"; leadId: number; leadName: string | null; waId: string };
+};
+
+export type Toast = {
+  id: string;
+  message: string;
+  type: "success" | "error" | "info";
 };
