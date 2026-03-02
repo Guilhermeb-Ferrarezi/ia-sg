@@ -1,8 +1,13 @@
 ﻿
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { FormEvent } from "react";
 import ConfirmModal from "./components/ConfirmModal";
 import FaqManagerSection from "./components/FaqManagerSection";
+import ChatSection from "./components/ChatSection";
+import MessageNotifications from "./components/MessageNotifications";
+import AnalyticsSection from "./components/AnalyticsSection";
+import CalendarSection from "./components/CalendarSection";
 import PaginationControls from "./components/PaginationControls";
 import StatCard from "./components/StatCard";
 import { apiFetch } from "./lib/apiFetch";
@@ -21,12 +26,18 @@ export default function App() {
   const [submitting, setSubmitting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
-  const [activePanel, setActivePanel] = useState<"crm" | "faqs">("crm");
+  const [activePanel, setActivePanel] = useState<"crm" | "faqs" | "chat" | "analytics" | "calendar">("crm");
+  const [activeChatWaId, setActiveChatWaId] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
 
-  const addToast = useCallback((message: string, type: "success" | "error" | "info" = "info") => {
+  const addToast = useCallback((message: string, type: "success" | "error" | "info" | "loading" = "info") => {
     const id = Math.random().toString(36).substring(2, 9);
     setToasts((prev) => [...prev, { id, message, type }]);
+    return id;
+  }, []);
+
+  const updateToast = useCallback((id: string, message: string, type: "success" | "error" | "info" | "loading") => {
+    setToasts((prev) => prev.map((t) => (t.id === id ? { ...t, message, type } : t)));
   }, []);
 
   const removeToast = useCallback((id: string) => {
@@ -87,6 +98,9 @@ export default function App() {
   const [taskPriority, setTaskPriority] = useState<TaskPriority>("medium");
 
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
+
+  // Context menu state
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; lead: Lead; stageSubmenu?: boolean } | null>(null);
 
   const loadFaqs = useCallback(async () => {
     const result = await apiFetch<{ faqs: FaqItem[] }>("/dashboard/faqs");
@@ -293,6 +307,7 @@ export default function App() {
       return;
     }
     setTaskSubmitting(true);
+    const toastId = addToast("Agendando tarefa...", "loading");
     try {
       await apiFetch(`/crm/leads/${selectedLeadId}/tasks`, {
         method: "POST",
@@ -304,9 +319,9 @@ export default function App() {
       setTaskPriority("medium");
       await loadCrm();
       await loadLeadDetails(selectedLeadId);
-      addToast("Tarefa agendada!", "success");
+      updateToast(toastId, "Tarefa agendada com sucesso!", "success");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Falha ao criar tarefa.");
+      updateToast(toastId, err instanceof Error ? err.message : "Falha ao criar tarefa.", "error");
     } finally {
       setTaskSubmitting(false);
     }
@@ -691,6 +706,27 @@ export default function App() {
               >
                 FAQs
               </button>
+              <button
+                className={`rounded-lg px-5 py-2 text-xs font-bold uppercase tracking-wider transition-all ${activePanel === "chat" ? "bg-cyan-500 text-slate-950 shadow-lg shadow-cyan-500/20" : "text-slate-400 hover:text-slate-200"}`}
+                onClick={() => setActivePanel("chat")}
+                type="button"
+              >
+                Chat
+              </button>
+              <button
+                className={`rounded-lg px-5 py-2 text-xs font-bold uppercase tracking-wider transition-all ${activePanel === "analytics" ? "bg-violet-500 text-white shadow-lg shadow-violet-500/20" : "text-slate-400 hover:text-slate-200"}`}
+                onClick={() => setActivePanel("analytics")}
+                type="button"
+              >
+                Analytics
+              </button>
+              <button
+                className={`rounded-lg px-5 py-2 text-xs font-bold uppercase tracking-wider transition-all ${activePanel === "calendar" ? "bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/20" : "text-slate-400 hover:text-slate-200"}`}
+                onClick={() => setActivePanel("calendar")}
+                type="button"
+              >
+                Calendário
+              </button>
             </div>
             <div className="h-8 w-px bg-slate-800 mx-2 invisible sm:visible"></div>
             <button className="flex items-center gap-2 rounded-xl border border-cyan-500/20 bg-cyan-500/5 px-5 py-2.5 text-xs font-bold uppercase tracking-wider text-cyan-400 hover:bg-cyan-500/10 transition-all disabled:opacity-50" onClick={() => void refreshAll()} type="button" disabled={refreshing}>
@@ -806,8 +842,8 @@ export default function App() {
                 <div className="mt-8 space-y-2 max-h-[250px] overflow-y-auto pr-1 scrollbar-thin scrollbar-thumb-slate-800 scrollbar-track-transparent">
                   <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2 block sticky top-0 bg-[#161d2b] py-1">Organizar Etapas</label>
                   {stages.map((s) => (
-                    <div 
-                      key={s.id} 
+                    <div
+                      key={s.id}
                       draggable
                       onDragStart={() => setDraggedStageId(s.id)}
                       onDragOver={(e) => {
@@ -821,11 +857,10 @@ export default function App() {
                         e.preventDefault();
                         void handleDropStage(s.id);
                       }}
-                      className={`flex items-center gap-3 rounded-xl border p-3 transition-all group cursor-move ${
-                        dragOverStageOrder === s.id 
-                          ? "border-cyan-500 bg-cyan-500/10 scale-[1.02] z-10" 
-                          : "border-slate-800/50 bg-slate-950/50 hover:border-slate-700"
-                      } ${draggedStageId === s.id ? "opacity-30" : "opacity-100"}`}
+                      className={`flex items-center gap-3 rounded-xl border p-3 transition-all group cursor-move ${dragOverStageOrder === s.id
+                        ? "border-cyan-500 bg-cyan-500/10 scale-[1.02] z-10"
+                        : "border-slate-800/50 bg-slate-950/50 hover:border-slate-700"
+                        } ${draggedStageId === s.id ? "opacity-30" : "opacity-100"}`}
                     >
                       <div className="text-slate-600 group-hover:text-cyan-500 transition-colors">
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -837,12 +872,12 @@ export default function App() {
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
                         </svg>
                       </div>
-                      <input 
-                        key={`stage-name-${s.id}-${s.name}`} 
-                        className="flex-1 min-w-0 rounded border border-transparent bg-transparent px-1 py-0.5 text-xs font-semibold text-slate-100 outline-none focus:border-cyan-500/30 focus:bg-slate-950 transition-colors" 
-                        defaultValue={s.name} 
-                        onBlur={(e) => void handleSaveStageNameBlur(s.id, e.target.value, s.name)} 
-                        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); (e.target as HTMLInputElement).blur(); } }} 
+                      <input
+                        key={`stage-name-${s.id}-${s.name}`}
+                        className="flex-1 min-w-0 rounded border border-transparent bg-transparent px-1 py-0.5 text-xs font-semibold text-slate-100 outline-none focus:border-cyan-500/30 focus:bg-slate-950 transition-colors"
+                        defaultValue={s.name}
+                        onBlur={(e) => void handleSaveStageNameBlur(s.id, e.target.value, s.name)}
+                        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); (e.target as HTMLInputElement).blur(); } }}
                       />
                       <div className="flex flex-col gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
                         <button type="button" onClick={(e) => { e.stopPropagation(); void moveStage(s.id, "up"); }} className="text-slate-600 hover:text-cyan-400 p-0.5 transition-colors">
@@ -872,6 +907,39 @@ export default function App() {
                   </div>
                 </div>
                 <div className="flex items-center gap-4">
+                  {/* Search */}
+                  <div className="relative">
+                    <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                    </svg>
+                    <input
+                      type="text"
+                      value={search}
+                      onChange={(e) => setSearch(e.target.value)}
+                      placeholder="Buscar lead..."
+                      className="w-52 rounded-xl border border-slate-800 bg-slate-950 pl-10 pr-4 py-2 text-xs text-slate-100 placeholder:text-slate-500 outline-none focus:border-cyan-500/50 transition-all"
+                    />
+                  </div>
+                  {/* Status Filter */}
+                  <div className="flex items-center gap-1">
+                    {[
+                      { value: "all", label: "Todos", color: "text-slate-400 bg-slate-800/60 border-slate-700" },
+                      { value: "open", label: "Abertos", color: "text-cyan-400 bg-cyan-500/10 border-cyan-500/30" },
+                      { value: "won", label: "Ganhos", color: "text-emerald-400 bg-emerald-500/10 border-emerald-500/30" },
+                      { value: "lost", label: "Perdidos", color: "text-rose-400 bg-rose-500/10 border-rose-500/30" }
+                    ].map((opt) => (
+                      <button
+                        key={opt.value}
+                        onClick={() => setStatusFilter(opt.value)}
+                        className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-widest border transition-all ${statusFilter === opt.value
+                          ? opt.color + " ring-1 ring-current"
+                          : "text-slate-500 bg-transparent border-transparent hover:bg-slate-800/50"
+                          }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
                   <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest leading-none">Visibilidade</span>
                   <select
                     className="appearance-none rounded-xl border border-slate-800 bg-slate-950 px-4 py-2 text-xs font-bold text-slate-400 outline-none focus:border-cyan-500/50 transition-all hover:bg-slate-900 cursor-pointer"
@@ -967,11 +1035,15 @@ export default function App() {
                               setDragOverStageId(null);
                             }}
                             onClick={() => setSelectedLeadId(lead.id)}
-                            className={`group relative w-full rounded-xl border p-4 text-left transition-all hover:scale-[1.02] active:scale-95 ${
-                              selectedLeadId === lead.id 
-                                ? "border-cyan-500 bg-cyan-500/10 shadow-lg shadow-cyan-500/10" 
-                                : "border-slate-800 bg-slate-900/50 hover:border-slate-700 hover:bg-slate-900"
-                            } ${movingLeadId === lead.id ? "opacity-60 cursor-wait" : "cursor-grab"}`}
+                            onContextMenu={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setContextMenu({ x: e.pageX, y: e.pageY, lead });
+                            }}
+                            className={`group relative w-full rounded-xl border p-4 text-left transition-all hover:scale-[1.02] active:scale-95 ${selectedLeadId === lead.id
+                              ? "border-cyan-500 bg-cyan-500/10 shadow-lg shadow-cyan-500/10"
+                              : "border-slate-800 bg-slate-900/50 hover:border-slate-700 hover:bg-slate-900"
+                              } ${movingLeadId === lead.id ? "opacity-60 cursor-wait" : "cursor-grab"}`}
                           >
                             <div className="flex items-start justify-between gap-2">
                               <p className="font-bold text-slate-100 line-clamp-1">{lead.name || "Sem nome"}</p>
@@ -1055,7 +1127,7 @@ export default function App() {
                   </div>
                 </div>
                 {selectedLead && (
-                  <button 
+                  <button
                     onClick={() => setSelectedLeadId(null)}
                     className="p-2 rounded-lg hover:bg-slate-800 text-slate-500 hover:text-slate-300 transition-colors"
                   >
@@ -1098,7 +1170,7 @@ export default function App() {
                         </div>
                         <div className="rounded-xl border border-slate-800 bg-slate-950 p-3">
                           <span className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest">Etapa</span>
-                          <select 
+                          <select
                             className="bg-transparent text-sm font-medium text-cyan-400 outline-none w-full mt-1 appearance-none"
                             value={selectedLead.stageId ?? ""}
                             onChange={(e) => void updateLead(selectedLead.id, `/crm/leads/${selectedLead.id}/stage`, { stageId: Number(e.target.value) })}
@@ -1118,9 +1190,9 @@ export default function App() {
                           <span className="text-xs font-bold uppercase tracking-widest text-slate-300">Automação AI</span>
                         </div>
                         <label className="relative inline-flex items-center cursor-pointer">
-                          <input 
-                            type="checkbox" 
-                            className="sr-only peer" 
+                          <input
+                            type="checkbox"
+                            className="sr-only peer"
                             checked={selectedLead.botEnabled}
                             onChange={(e) => void updateLead(selectedLead.id, `/crm/leads/${selectedLead.id}/bot`, { enabled: e.target.checked })}
                           />
@@ -1135,6 +1207,17 @@ export default function App() {
                           defaultValue={selectedLead.notes || ""}
                           onBlur={(e) => void updateLead(selectedLead.id, `/crm/leads/${selectedLead.id}`, { notes: e.target.value }, "PUT")}
                           placeholder="Clique para adicionar notas sobre o lead..."
+                        />
+                      </div>
+
+                      {/* Bot Persona Custom */}
+                      <div className="space-y-2">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Persona do Bot (personalizada)</label>
+                        <textarea
+                          className="w-full min-h-[80px] rounded-xl border border-slate-800 bg-slate-950 px-4 py-3 text-sm text-slate-200 placeholder:text-slate-600 outline-none focus:border-violet-500/50 transition-all resize-none"
+                          defaultValue={selectedLead.customBotPersona || ""}
+                          onBlur={(e) => void updateLead(selectedLead.id, `/crm/leads/${selectedLead.id}/persona`, { persona: e.target.value }, "PATCH")}
+                          placeholder="Deixe vazio para usar a persona padrão. Ex: 'Responda de forma mais formal para este cliente VIP...'"
                         />
                       </div>
 
@@ -1163,9 +1246,18 @@ export default function App() {
                   {/* Conteúdo Principal (Mensagens e Tarefas) */}
                   <div className="p-0 flex flex-col h-[650px]">
                     {/* Tabs / Headers para o conteúdo principal */}
-                    <div className="flex border-b border-slate-800 px-6 pt-6 gap-8">
-                       <button className="pb-4 text-sm font-bold uppercase tracking-widest text-cyan-500 border-b-2 border-cyan-500">Histórico</button>
-                       <button className="pb-4 text-sm font-bold uppercase tracking-widest text-slate-500 hover:text-slate-300 transition-colors">Tarefas</button>
+                    <div className="flex items-center border-b border-slate-800 px-6 pt-6 gap-8">
+                      <button className="pb-4 text-sm font-bold uppercase tracking-widest text-cyan-500 border-b-2 border-cyan-500">Histórico</button>
+                      <button
+                        onClick={() => { setActiveChatWaId(selectedLead.waId); setActivePanel("chat"); }}
+                        className="pb-4 text-sm font-bold uppercase tracking-widest text-emerald-400 hover:text-emerald-300 transition-colors flex items-center gap-2 border-b-2 border-transparent hover:border-emerald-400"
+                      >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.102C3.512 15.046 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                        </svg>
+                        Conversar
+                      </button>
+                      <button className="pb-4 text-sm font-bold uppercase tracking-widest text-slate-500 hover:text-slate-300 transition-colors">Tarefas</button>
                     </div>
 
                     <div className="flex-1 overflow-hidden grid grid-cols-1 lg:grid-cols-[1fr_350px]">
@@ -1176,18 +1268,21 @@ export default function App() {
                             leadMessages.map((m) => (
                               <div
                                 key={m.id}
-                                className={`flex flex-col max-w-100% ${m.direction === "in" ? "self-start" : "self-end"}`}
+                                className={`flex ${m.direction === "in" ? "justify-start" : "justify-end"}`}
                               >
-                                <div className={`rounded-2xl px-4 py-3 text-sm shadow-sm ${
-                                  m.direction === "in" 
-                                    ? "bg-slate-800 text-slate-100 rounded-tl-none border border-slate-700/50" 
-                                    : "bg-cyan-600 text-white rounded-tr-none shadow-cyan-500/10"
-                                }`}>
-                                  <p className="leading-relaxed break-word whitespace-pre-wrap">{m.body}</p>
+                                <div
+                                  className={`flex flex-col max-w-[80%] ${m.direction === "in" ? "items-start" : "items-end"}`}
+                                >
+                                  <div className={`rounded-2xl px-5 py-3.5 text-sm shadow-md ${m.direction === "in"
+                                    ? "bg-slate-800 text-slate-100 rounded-tl-none border border-slate-700/50"
+                                    : "bg-cyan-600 text-white rounded-tr-none shadow-cyan-500/20"
+                                    }`}>
+                                    <p className="leading-relaxed whitespace-pre-wrap">{m.body}</p>
+                                  </div>
+                                  <span className={`text-[9px] mt-1.5 font-bold uppercase tracking-widest text-slate-500 ${m.direction === "in" ? "pl-1" : "pr-1"}`}>
+                                    {m.direction === "in" ? "Lead" : "AI Assistant"} • {new Date(m.createdAt).toLocaleTimeString("pt-BR", { hour: '2-digit', minute: '2-digit' })}
+                                  </span>
                                 </div>
-                                <span className={`text-[9px] mt-1 font-bold uppercase tracking-tighter text-slate-500 ${m.direction === "in" ? "" : "text-right"}`}>
-                                  {m.direction === "in" ? "Lead" : "AI Assistant"} • {new Date(m.createdAt).toLocaleTimeString("pt-BR", { hour: '2-digit', minute: '2-digit' })}
-                                </span>
                               </div>
                             ))
                           ) : (
@@ -1215,20 +1310,32 @@ export default function App() {
                       {/* Task Section */}
                       <div className="flex flex-col bg-slate-900/40">
                         <div className="p-5 border-b border-slate-800">
-                           <h4 className="text-xs font-bold uppercase tracking-widest text-slate-400">Próximos Passos</h4>
+                          <h4 className="text-xs font-bold uppercase tracking-widest text-slate-400">Próximos Passos</h4>
                         </div>
                         <div className="flex-1 p-5 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-800">
-                          <form className="mb-6 space-y-3" onSubmit={handleCreateTask}>
-                            <input className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-600 outline-none focus:border-cyan-500/50 transition-all" value={taskTitle} onChange={(e) => setTaskTitle(e.target.value)} placeholder="Título da tarefa..." required />
-                            <textarea className="w-full min-h-[60px] rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-600 outline-none focus:border-cyan-500/50 transition-all resize-none" value={taskDescription} onChange={(e) => setTaskDescription(e.target.value)} placeholder="Breve descrição..." />
-                            <div className="grid grid-cols-2 gap-2">
-                               <input className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-[10px] text-slate-100 outline-none focus:border-cyan-500/50 transition-all" type="datetime-local" value={taskDueAt} onChange={(e) => setTaskDueAt(e.target.value)} required />
-                               <select className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-[10px] text-slate-100 outline-none focus:border-cyan-500/50 transition-all font-bold uppercase tracking-widest" value={taskPriority} onChange={(e) => setTaskPriority(e.target.value as TaskPriority)}>
-                                 {TASK_PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
-                               </select>
+                          <form className="mb-6 space-y-4" onSubmit={handleCreateTask}>
+                            <div>
+                              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5 ml-1">Título da Tarefa</label>
+                              <input className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2.5 text-xs text-slate-100 placeholder:text-slate-600 outline-none focus:border-cyan-500/50 transition-all" value={taskTitle} onChange={(e) => setTaskTitle(e.target.value)} placeholder="Ex: Retornar a ligação de vendas, Enviar proposta..." required />
+                            </div>
+                            <div>
+                              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5 ml-1">Notas / Descrição (Opcional)</label>
+                              <textarea className="w-full min-h-[60px] rounded-xl border border-slate-800 bg-slate-950 px-3 py-2.5 text-xs text-slate-100 placeholder:text-slate-600 outline-none focus:border-cyan-500/50 transition-all resize-none" value={taskDescription} onChange={(e) => setTaskDescription(e.target.value)} placeholder="Detalhes de como executar essa tarefa e o que não esquecer..." />
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                              <div>
+                                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5 ml-1">Data e Hora Máxima</label>
+                                <input className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2.5 text-[10px] text-slate-100 outline-none focus:border-cyan-500/50 transition-all" type="datetime-local" value={taskDueAt} onChange={(e) => setTaskDueAt(e.target.value)} required />
+                              </div>
+                              <div>
+                                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5 ml-1">Relevância</label>
+                                <select className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2.5 text-[10px] text-slate-100 outline-none focus:border-cyan-500/50 transition-all font-bold uppercase tracking-widest" value={taskPriority} onChange={(e) => setTaskPriority(e.target.value as TaskPriority)}>
+                                  {TASK_PRIORITIES.map(p => <option key={p} value={p}>{p === "high" ? "Alta" : p === "medium" ? "Média" : "Baixa"}</option>)}
+                                </select>
+                              </div>
                             </div>
                             <button type="submit" disabled={taskSubmitting} className="w-full rounded-xl bg-slate-100 px-4 py-2.5 text-[10px] font-black text-slate-950 hover:bg-white transition-all disabled:opacity-50 uppercase tracking-widest">
-                               {taskSubmitting ? "Salvando..." : "Adicionar Tarefa"}
+                              {taskSubmitting ? "Salvando..." : "Adicionar Tarefa"}
                             </button>
                           </form>
 
@@ -1240,10 +1347,9 @@ export default function App() {
                                     <div>
                                       <p className={`text-xs font-bold ${task.status === 'done' ? 'text-slate-500 line-through' : 'text-slate-200'}`}>{task.title}</p>
                                       <div className="mt-1 flex items-center gap-2">
-                                        <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded ${
-                                          task.priority === 'high' ? 'bg-rose-500/10 text-rose-500' : 
+                                        <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded ${task.priority === 'high' ? 'bg-rose-500/10 text-rose-500' :
                                           task.priority === 'medium' ? 'bg-amber-500/10 text-amber-500' : 'bg-slate-800 text-slate-500'
-                                        }`}>{task.priority}</span>
+                                          }`}>{task.priority}</span>
                                         <span className="text-[9px] text-slate-500 font-medium">{new Date(task.dueAt).toLocaleDateString("pt-BR")}</span>
                                       </div>
                                     </div>
@@ -1252,7 +1358,7 @@ export default function App() {
                                     </button>
                                   </div>
                                   <div className="mt-3">
-                                    <select 
+                                    <select
                                       className="w-full rounded-lg border border-slate-800 bg-slate-900 px-2 py-1.5 text-[10px] font-bold text-slate-400 outline-none"
                                       value={task.status}
                                       onChange={(e) => void apiFetch(`/crm/tasks/${task.id}/status`, { method: "PATCH", body: JSON.stringify({ status: e.target.value }) }).then(async () => {
@@ -1276,28 +1382,118 @@ export default function App() {
                 </div>
               ) : (
                 <div className="flex h-[400px] flex-col items-center justify-center text-slate-600">
-                   <div className="mb-4 rounded-full bg-slate-900 p-6 border border-slate-800">
+                  <div className="mb-4 rounded-full bg-slate-900 p-6 border border-slate-800">
                     <svg className="w-12 h-12 opacity-20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122" />
                     </svg>
-                   </div>
-                   <p className="text-sm font-bold uppercase tracking-widest animate-pulse">Selecione um lead no pipeline para abrir o painel</p>
+                  </div>
+                  <p className="text-sm font-bold uppercase tracking-widest animate-pulse">Selecione um lead no pipeline para abrir o painel</p>
                 </div>
               )}
             </section>
           </section>
         ) : null}
 
-      <FaqManagerSection active={activePanel === "faqs"} faqs={faqs} faqQuestion={faqQuestion} faqAnswer={faqAnswer} faqSubmitting={faqSubmitting} editingFaqId={editingFaqId} editingFaqQuestion={editingFaqQuestion} editingFaqAnswer={editingFaqAnswer} editingFaqIsActive={editingFaqIsActive} faqUpdatingId={faqUpdatingId} faqDeletingId={faqDeletingId} onFaqQuestionChange={setFaqQuestion} onFaqAnswerChange={setFaqAnswer} onCreateFaqSubmit={handleCreateFaq} onStartEditFaq={startEditFaq} onCancelEditFaq={cancelEditFaq} onEditingFaqQuestionChange={setEditingFaqQuestion} onEditingFaqAnswerChange={setEditingFaqAnswer} onEditingFaqIsActiveChange={setEditingFaqIsActive} onSaveFaq={() => void handleSaveFaq()} onOpenConfirm={setConfirmDialog} />
+        <FaqManagerSection active={activePanel === "faqs"} faqs={faqs} faqQuestion={faqQuestion} faqAnswer={faqAnswer} faqSubmitting={faqSubmitting} editingFaqId={editingFaqId} editingFaqQuestion={editingFaqQuestion} editingFaqAnswer={editingFaqAnswer} editingFaqIsActive={editingFaqIsActive} faqUpdatingId={faqUpdatingId} faqDeletingId={faqDeletingId} onFaqQuestionChange={setFaqQuestion} onFaqAnswerChange={setFaqAnswer} onCreateFaqSubmit={handleCreateFaq} onStartEditFaq={startEditFaq} onCancelEditFaq={cancelEditFaq} onEditingFaqQuestionChange={setEditingFaqQuestion} onEditingFaqAnswerChange={setEditingFaqAnswer} onEditingFaqIsActiveChange={setEditingFaqIsActive} onSaveFaq={() => void handleSaveFaq()} onOpenConfirm={setConfirmDialog} />
 
-      <ConfirmModal open={Boolean(confirmDialog)} title={confirmDialog?.title || ""} description={confirmDialog?.description || ""} confirmText={confirmDialog?.confirmText || "Confirmar"} tone={confirmDialog?.tone || "danger"} loading={Boolean(faqDeletingId || faqUpdatingId || deletingLeadId)} onCancel={() => setConfirmDialog(null)} onConfirm={() => { handleConfirmAction().catch((err) => setError(err instanceof Error ? err.message : "Falha ao confirmar ação.")); }} />
+        {activePanel === "chat" && <ChatSection initialSelectedWaId={activeChatWaId} />}
 
-      <ToastContainer toasts={toasts} removeToast={removeToast} />
-    </section>
+        <AnalyticsSection active={activePanel === "analytics"} />
+        <CalendarSection active={activePanel === "calendar"} />
+
+        <ConfirmModal open={Boolean(confirmDialog)} title={confirmDialog?.title || ""} description={confirmDialog?.description || ""} confirmText={confirmDialog?.confirmText || "Confirmar"} tone={confirmDialog?.tone || "danger"} loading={Boolean(faqDeletingId || faqUpdatingId || deletingLeadId)} onCancel={() => setConfirmDialog(null)} onConfirm={() => { handleConfirmAction().catch((err) => setError(err instanceof Error ? err.message : "Falha ao confirmar ação.")); }} />
+
+        <ToastContainer toasts={toasts} removeToast={removeToast} />
+        <MessageNotifications />
+
+      </section>
+      {/* Context Menu - rendered as portal to avoid positioning issues from backdrop-blur */}
+      {contextMenu && createPortal(
+        <>
+          <div className="fixed inset-0 z-[9990]" onClick={() => setContextMenu(null)} onContextMenu={(e) => { e.preventDefault(); setContextMenu(null); }} />
+          <div
+            ref={(el) => {
+              if (el) {
+                const rect = el.getBoundingClientRect();
+                const docW = document.documentElement.scrollWidth;
+                const docH = document.documentElement.scrollHeight;
+                const maxX = Math.max(0, docW - rect.width - 8);
+                const maxY = Math.max(0, docH - rect.height - 8);
+                const clampedX = Math.min(contextMenu.x, maxX);
+                const clampedY = Math.min(contextMenu.y, maxY);
+                if (parseFloat(el.style.left) !== clampedX || parseFloat(el.style.top) !== clampedY) {
+                  el.style.left = `${clampedX}px`;
+                  el.style.top = `${clampedY}px`;
+                }
+              }
+            }}
+            className="absolute z-[9991] min-w-[220px] animate-in fade-in zoom-in-95 duration-150"
+            style={{
+              left: contextMenu.x,
+              top: contextMenu.y
+            }}
+          >
+            <div className="rounded-xl border border-slate-700 bg-slate-900 backdrop-blur-xl shadow-2xl shadow-black/40 overflow-hidden">
+              <div className="px-4 py-3 border-b border-slate-800 bg-slate-800/30">
+                <p className="text-sm font-bold text-white truncate">{contextMenu.lead.name || "Sem nome"}</p>
+                <p className="text-[10px] text-slate-500 font-mono">{contextMenu.lead.waId}</p>
+              </div>
+              <div className="p-1.5">
+                <button onClick={() => { setActiveChatWaId(contextMenu.lead.waId); setActivePanel("chat"); setContextMenu(null); }} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left text-sm text-slate-200 hover:bg-cyan-500/10 hover:text-cyan-400 transition-all group">
+                  <svg className="w-4 h-4 text-slate-500 group-hover:text-cyan-400 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>
+                  <span className="font-medium">Abrir Chat</span>
+                </button>
+                <button onClick={() => { setSelectedLeadId(contextMenu.lead.id); setContextMenu(null); }} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left text-sm text-slate-200 hover:bg-slate-700/50 transition-all group">
+                  <svg className="w-4 h-4 text-slate-500 group-hover:text-slate-300 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                  <span className="font-medium">Ver Detalhes</span>
+                </button>
+                <div className="h-px bg-slate-800 my-1 mx-2" />
+                <button onClick={() => { void updateLead(contextMenu.lead.id, `/crm/leads/${contextMenu.lead.id}/bot`, { enabled: !contextMenu.lead.botEnabled }); setContextMenu(null); }} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left text-sm text-slate-200 hover:bg-slate-700/50 transition-all">
+                  <svg className={`w-4 h-4 ${contextMenu.lead.botEnabled ? "text-cyan-400" : "text-slate-500"}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                  <span className="font-medium">{contextMenu.lead.botEnabled ? "Desativar Bot" : "Ativar Bot"}</span>
+                  <div className={`ml-auto w-2 h-2 rounded-full ${contextMenu.lead.botEnabled ? "bg-cyan-400" : "bg-slate-600"}`} />
+                </button>
+                <div className="h-px bg-slate-800 my-1 mx-2" />
+                <div className="px-3 py-1"><span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest">Status</span></div>
+                {[
+                  { value: "open", label: "Aberto", color: "text-cyan-400 hover:bg-cyan-500/10", dot: "bg-cyan-400" },
+                  { value: "won", label: "Ganho", color: "text-emerald-400 hover:bg-emerald-500/10", dot: "bg-emerald-400" },
+                  { value: "lost", label: "Perdido", color: "text-rose-400 hover:bg-rose-500/10", dot: "bg-rose-400" }
+                ].map((s) => (
+                  <button key={s.value} onClick={() => { void updateLead(contextMenu.lead.id, `/crm/leads/${contextMenu.lead.id}`, { leadStatus: s.value }, "PUT"); setContextMenu(null); }} className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-left text-sm transition-all ${s.color}`}>
+                    <div className={`w-2.5 h-2.5 rounded-full ${s.dot} ${contextMenu.lead.leadStatus === s.value ? "ring-2 ring-current ring-offset-1 ring-offset-slate-900" : "opacity-40"}`} />
+                    <span className={`font-medium ${contextMenu.lead.leadStatus === s.value ? "" : "text-slate-400"}`}>{s.label}</span>
+                    {contextMenu.lead.leadStatus === s.value && <svg className="w-3.5 h-3.5 ml-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}
+                  </button>
+                ))}
+                <div className="h-px bg-slate-800 my-1 mx-2" />
+                <button onClick={() => setContextMenu((prev) => prev ? { ...prev, stageSubmenu: !prev.stageSubmenu } : null)} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left text-sm text-slate-200 hover:bg-slate-700/50 transition-all group">
+                  <svg className="w-4 h-4 text-slate-500 group-hover:text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" /></svg>
+                  <span className="font-medium">Mover para Etapa</span>
+                  <svg className={`w-3.5 h-3.5 ml-auto text-slate-500 transition-transform ${contextMenu.stageSubmenu ? "rotate-90" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+                </button>
+                {contextMenu.stageSubmenu && (
+                  <div className="mx-2 mb-1 rounded-lg border border-slate-800 bg-slate-950 overflow-hidden">
+                    {stages.map((st) => (
+                      <button key={st.id} onClick={() => { void updateLead(contextMenu.lead.id, `/crm/leads/${contextMenu.lead.id}/stage`, { stageId: st.id }); setContextMenu(null); }} className={`w-full flex items-center gap-2.5 px-3 py-2 text-left text-xs transition-all hover:bg-slate-800 ${contextMenu.lead.stageId === st.id ? "text-white font-bold" : "text-slate-400"}`}>
+                        <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: st.color }} />
+                        <span className="truncate">{st.name}</span>
+                        {contextMenu.lead.stageId === st.id && <svg className="w-3 h-3 ml-auto text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <div className="h-px bg-slate-800 my-1 mx-2" />
+                <button onClick={() => { setConfirmDialog({ title: "Excluir permanentemente?", description: `Isso removerá "${contextMenu.lead.name || contextMenu.lead.waId}" e todo o histórico.`, confirmText: "Sim, excluir", tone: "danger", action: { type: "delete-lead", leadId: contextMenu.lead.id, leadName: contextMenu.lead.name, waId: contextMenu.lead.waId } }); setContextMenu(null); }} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left text-sm text-rose-400 hover:bg-rose-500/10 transition-all group">
+                  <svg className="w-4 h-4 text-rose-400/60 group-hover:text-rose-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                  <span className="font-medium">Excluir Lead</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </>,
+        document.body
+      )}
     </main>
   );
 }
-
-
-
-

@@ -88,6 +88,7 @@ export type Lead = {
   source: string | null;
   notes: string | null;
   botEnabled: boolean;
+  customBotPersona: string | null;
   lastInteractionAt: string | null;
   createdAt: string;
   openTasks?: LeadTask[];
@@ -132,5 +133,59 @@ export type ConfirmDialogState = {
 export type Toast = {
   id: string;
   message: string;
-  type: "success" | "error" | "info";
+  type: "success" | "error" | "info" | "loading";
+};
+
+export type MessageTemplate = {
+  id: number;
+  title: string;
+  body: string;
+  category: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type Tag = {
+  id: number;
+  name: string;
+  color: string;
+  contactCount?: number;
+  createdAt: string;
+};
+
+export type CalendarTask = {
+  id: number;
+  title: string;
+  description: string | null;
+  dueAt: string;
+  status: string;
+  priority: string;
+  contactName: string;
+  contactId: number;
+  completedAt: string | null;
+};
+
+export type AnalyticsOverview = {
+  totalContacts: number;
+  totalMessages: number;
+  todayMessages: number;
+  weekMessages: number;
+  avgResponseSeconds: number;
+};
+
+export type MessagesPerDay = {
+  date: string;
+  inbound: number;
+  outbound: number;
+  total: number;
+};
+
+export type TopContact = {
+  id: number;
+  name: string;
+  waId: string;
+  messageCount: number;
+  stage: string | null;
+  stageColor: string | null;
+  lastInteraction: string | null;
 };

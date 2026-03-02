@@ -17,10 +17,12 @@ model Contact {
   source            String?
   notes             String?
   botEnabled        Boolean        @default(true)
+  customBotPersona  String?
   lastInteractionAt DateTime?
   createdAt         DateTime       @default(now())
   messages          Message[]
   tasks             Task[]
+  tags              ContactTag[]
 
   @@index([stageId])
   @@index([leadStatus])
@@ -52,14 +54,14 @@ model Faq {
 }
 
 model PipelineStage {
-  id        Int       @id @default(autoincrement())
-  name      String    @unique
-  position  Int       @unique
-  color     String    @default("#06b6d4")
-  isActive  Boolean   @default(true)
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-  contacts  Contact[]
+  id              Int       @id @default(autoincrement())
+  name            String    @unique
+  position        Int       @unique
+  color           String    @default("#06b6d4")
+  isActive        Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  contacts        Contact[]
 }
 
 model Task {
@@ -77,4 +79,36 @@ model Task {
 
   @@index([contactId, status])
   @@index([dueAt, status])
+}
+
+model MessageTemplate {
+  id        Int      @id @default(autoincrement())
+  title     String
+  body      String
+  category  String   @default("geral")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([category])
+}
+
+model Tag {
+  id        Int          @id @default(autoincrement())
+  name      String       @unique
+  color     String       @default("#06b6d4")
+  createdAt DateTime     @default(now())
+  contacts  ContactTag[]
+}
+
+model ContactTag {
+  id        Int      @id @default(autoincrement())
+  contactId Int
+  tagId     Int
+  contact   Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  tag       Tag      @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([contactId, tagId])
+  @@index([contactId])
+  @@index([tagId])
 }

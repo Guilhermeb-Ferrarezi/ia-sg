@@ -936,6 +936,342 @@ app.get("/api/crm/metrics/conversion", requireSession, async (_req, res) => {
   });
 });
 
+// ============================================
+// ANALYTICS ENDPOINTS
+// ============================================
+
+app.get("/api/analytics/messages-per-day", requireSession, async (req, res) => {
+  const days = Math.max(1, Math.min(90, Number(req.query.days || 14)));
+  const since = new Date();
+  since.setDate(since.getDate() - days);
+  since.setHours(0, 0, 0, 0);
+
+  const messages = await prisma.message.findMany({
+    where: { createdAt: { gte: since } },
+    select: { direction: true, createdAt: true }
+  });
+
+  const byDay: Record<string, { inbound: number; outbound: number }> = {};
+  for (let i = 0; i < days; i++) {
+    const d = new Date();
+    d.setDate(d.getDate() - (days - 1 - i));
+    const key = d.toISOString().slice(0, 10);
+    byDay[key] = { inbound: 0, outbound: 0 };
+  }
+
+  for (const m of messages) {
+    const key = new Date(m.createdAt).toISOString().slice(0, 10);
+    if (byDay[key]) {
+      if (m.direction === "in") byDay[key].inbound++;
+      else byDay[key].outbound++;
+    }
+  }
+
+  res.json({
+    data: Object.entries(byDay).map(([date, counts]) => ({
+      date,
+      ...counts,
+      total: counts.inbound + counts.outbound
+    }))
+  });
+});
+
+app.get("/api/analytics/top-contacts", requireSession, async (_req, res) => {
+  const contacts = await prisma.contact.findMany({
+    take: 10,
+    orderBy: { lastInteractionAt: "desc" },
+    include: {
+      _count: { select: { messages: true } },
+      stage: { select: { name: true, color: true } }
+    }
+  });
+
+  res.json({
+    data: contacts.map((c) => ({
+      id: c.id,
+      name: c.name || c.waId,
+      waId: c.waId,
+      messageCount: c._count.messages,
+      stage: c.stage?.name || null,
+      stageColor: c.stage?.color || null,
+      lastInteraction: c.lastInteractionAt
+    }))
+  });
+});
+
+app.get("/api/analytics/overview", requireSession, async (_req, res) => {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const weekAgo = new Date(today);
+  weekAgo.setDate(weekAgo.getDate() - 7);
+
+  const [totalContacts, totalMessages, todayMessages, weekMessages, avgResponseMs] = await Promise.all([
+    prisma.contact.count(),
+    prisma.message.count(),
+    prisma.message.count({ where: { createdAt: { gte: today } } }),
+    prisma.message.count({ where: { createdAt: { gte: weekAgo } } }),
+    // Average response time approximation: avg gap between in and next out per contact
+    prisma.$queryRawUnsafe<Array<{ avg_seconds: number }>>(
+      `SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (o."createdAt" - i."createdAt"))), 0) as avg_seconds
+       FROM "Message" i
+       JOIN LATERAL (
+         SELECT "createdAt" FROM "Message" 
+         WHERE "contactId" = i."contactId" AND direction = 'out' AND "createdAt" > i."createdAt"
+         ORDER BY "createdAt" ASC LIMIT 1
+       ) o ON true
+       WHERE i.direction = 'in' AND i."createdAt" > NOW() - INTERVAL '7 days'`
+    ).catch(() => [{ avg_seconds: 0 }])
+  ]);
+
+  const avgResponseSeconds = Math.round(Number(avgResponseMs[0]?.avg_seconds || 0));
+
+  res.json({
+    totalContacts,
+    totalMessages,
+    todayMessages,
+    weekMessages,
+    avgResponseSeconds
+  });
+});
+
+// ============================================
+// MESSAGE TEMPLATES ENDPOINTS
+// ============================================
+
+app.get("/api/templates", requireSession, async (_req, res) => {
+  const templates = await prisma.messageTemplate.findMany({
+    orderBy: { updatedAt: "desc" }
+  });
+  res.json({ templates });
+});
+
+app.post("/api/templates", requireSession, async (req, res) => {
+  const title = typeof req.body?.title === "string" ? req.body.title.trim() : "";
+  const body = typeof req.body?.body === "string" ? req.body.body.trim() : "";
+  const category = typeof req.body?.category === "string" ? req.body.category.trim() : "geral";
+
+  if (!title || !body) {
+    res.status(400).json({ message: "Título e conteúdo são obrigatórios." });
+    return;
+  }
+
+  const template = await prisma.messageTemplate.create({
+    data: { title, body, category }
+  });
+  res.status(201).json({ message: "Template criado.", template });
+});
+
+app.put("/api/templates/:id", requireSession, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ message: "ID inválido." });
+    return;
+  }
+
+  const data: Record<string, unknown> = {};
+  if (typeof req.body?.title === "string") data.title = req.body.title.trim();
+  if (typeof req.body?.body === "string") data.body = req.body.body.trim();
+  if (typeof req.body?.category === "string") data.category = req.body.category.trim();
+
+  if (Object.keys(data).length === 0) {
+    res.status(400).json({ message: "Nenhuma alteração." });
+    return;
+  }
+
+  try {
+    const template = await prisma.messageTemplate.update({ where: { id }, data });
+    res.json({ message: "Template atualizado.", template });
+  } catch (err) {
+    if (isPrismaNotFoundError(err)) {
+      res.status(404).json({ message: "Template não encontrado." });
+      return;
+    }
+    throw err;
+  }
+});
+
+app.delete("/api/templates/:id", requireSession, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ message: "ID inválido." });
+    return;
+  }
+
+  const deleted = await prisma.messageTemplate.deleteMany({ where: { id } });
+  if (deleted.count === 0) {
+    res.status(404).json({ message: "Template não encontrado." });
+    return;
+  }
+  res.json({ message: "Template removido." });
+});
+
+// ============================================
+// TAGS ENDPOINTS
+// ============================================
+
+app.get("/api/tags", requireSession, async (_req, res) => {
+  const tags = await prisma.tag.findMany({
+    orderBy: { name: "asc" },
+    include: { _count: { select: { contacts: true } } }
+  });
+  res.json({
+    tags: tags.map((t) => ({
+      id: t.id,
+      name: t.name,
+      color: t.color,
+      contactCount: t._count.contacts,
+      createdAt: t.createdAt
+    }))
+  });
+});
+
+app.post("/api/tags", requireSession, async (req, res) => {
+  const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+  const color = typeof req.body?.color === "string" ? req.body.color.trim() : "#06b6d4";
+
+  if (!name) {
+    res.status(400).json({ message: "Nome da tag é obrigatório." });
+    return;
+  }
+
+  try {
+    const tag = await prisma.tag.create({ data: { name, color } });
+    res.status(201).json({ message: "Tag criada.", tag });
+  } catch (err) {
+    if (isPrismaUniqueError(err)) {
+      res.status(409).json({ message: "Tag já existe." });
+      return;
+    }
+    throw err;
+  }
+});
+
+app.delete("/api/tags/:id", requireSession, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ message: "ID inválido." });
+    return;
+  }
+
+  const deleted = await prisma.tag.deleteMany({ where: { id } });
+  if (deleted.count === 0) {
+    res.status(404).json({ message: "Tag não encontrada." });
+    return;
+  }
+  res.json({ message: "Tag removida." });
+});
+
+app.post("/api/crm/leads/:id/tags", requireSession, async (req, res) => {
+  const leadId = Number(req.params.id);
+  const tagId = Number(req.body?.tagId);
+  if (!Number.isInteger(leadId) || !Number.isInteger(tagId) || leadId <= 0 || tagId <= 0) {
+    res.status(400).json({ message: "Lead e tag são obrigatórios." });
+    return;
+  }
+
+  try {
+    await prisma.contactTag.create({ data: { contactId: leadId, tagId } });
+    res.status(201).json({ message: "Tag adicionada ao lead." });
+  } catch (err) {
+    if (isPrismaUniqueError(err)) {
+      res.status(409).json({ message: "Lead já possui essa tag." });
+      return;
+    }
+    throw err;
+  }
+});
+
+app.delete("/api/crm/leads/:id/tags/:tagId", requireSession, async (req, res) => {
+  const leadId = Number(req.params.id);
+  const tagId = Number(req.params.tagId);
+  if (!Number.isInteger(leadId) || !Number.isInteger(tagId)) {
+    res.status(400).json({ message: "Parâmetros inválidos." });
+    return;
+  }
+
+  await prisma.contactTag.deleteMany({ where: { contactId: leadId, tagId } });
+  res.json({ message: "Tag removida do lead." });
+});
+
+app.get("/api/crm/leads/:id/tags", requireSession, async (req, res) => {
+  const leadId = Number(req.params.id);
+  if (!Number.isInteger(leadId) || leadId <= 0) {
+    res.status(400).json({ message: "ID inválido." });
+    return;
+  }
+
+  const contactTags = await prisma.contactTag.findMany({
+    where: { contactId: leadId },
+    include: { tag: true }
+  });
+
+  res.json({ tags: contactTags.map((ct) => ct.tag) });
+});
+
+// ============================================
+// BOT PERSONA PER LEAD
+// ============================================
+
+app.patch("/api/crm/leads/:id/persona", requireSession, async (req, res) => {
+  const leadId = Number(req.params.id);
+  const persona = typeof req.body?.persona === "string" ? req.body.persona.trim() : null;
+  if (!Number.isInteger(leadId) || leadId <= 0) {
+    res.status(400).json({ message: "ID de lead inválido." });
+    return;
+  }
+
+  try {
+    const lead = await prisma.contact.update({
+      where: { id: leadId },
+      data: { customBotPersona: persona || null },
+      include: { stage: true }
+    });
+    res.json({ message: "Persona atualizada.", lead: mapLeadDetails(lead) });
+  } catch (err) {
+    if (isPrismaNotFoundError(err)) {
+      res.status(404).json({ message: "Lead não encontrado." });
+      return;
+    }
+    throw err;
+  }
+});
+
+// ============================================
+// CALENDAR / TASKS OVERVIEW
+// ============================================
+
+app.get("/api/calendar/tasks", requireSession, async (req, res) => {
+  const month = Number(req.query.month || (new Date().getMonth() + 1));
+  const year = Number(req.query.year || new Date().getFullYear());
+
+  const startDate = new Date(year, month - 1, 1);
+  const endDate = new Date(year, month, 0, 23, 59, 59);
+
+  const tasks = await prisma.task.findMany({
+    where: {
+      dueAt: { gte: startDate, lte: endDate }
+    },
+    include: {
+      contact: { select: { id: true, name: true, waId: true } }
+    },
+    orderBy: { dueAt: "asc" }
+  });
+
+  res.json({
+    tasks: tasks.map((t) => ({
+      id: t.id,
+      title: t.title,
+      description: t.description,
+      dueAt: t.dueAt,
+      status: t.status,
+      priority: t.priority,
+      contactName: t.contact.name || t.contact.waId,
+      contactId: t.contact.id,
+      completedAt: t.completedAt
+    }))
+  });
+});
+
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -1021,7 +1357,7 @@ async function processIncomingWebhook(payload: unknown): Promise<void> {
       throw err;
     });
 
-    if (!contact.botEnabled) return;
+    if (!(contact as any).botEnabled) return;
 
     const fallback = "Por enquanto eu só entendo texto 🙂";
     await sendWhatsAppText(waId, fallback);
@@ -1053,7 +1389,7 @@ async function processIncomingWebhook(payload: unknown): Promise<void> {
     throw err;
   }
 
-  if (!contact.botEnabled) return;
+  if (!(contact as any).botEnabled) return;
 
   const historyRows = await prisma.message.findMany({
     where: { contactId: contact.id },
@@ -1067,7 +1403,8 @@ async function processIncomingWebhook(payload: unknown): Promise<void> {
 
   const faqContext = await getFaqContextForInput(textIn);
   await sendWhatsAppTypingIndicator(waMessageId);
-  const reply = await generateReplyWithTyping(history, faqContext, waMessageId).catch((err) => {
+  const personaToUse = (contact as any).customBotPersona || BOT_PERSONA;
+  const reply = await generateReplyWithTyping(history, faqContext, personaToUse, waMessageId).catch((err) => {
     console.error("OpenAI error:", err);
     return "Desculpe, tive um problema aqui. Pode repetir?";
   });
@@ -1086,7 +1423,8 @@ async function processIncomingWebhook(payload: unknown): Promise<void> {
 
 async function generateReply(
   history: Array<{ role: "user" | "assistant"; content: string }>,
-  faqContext: string
+  faqContext: string,
+  persona?: string
 ): Promise<string> {
   if (!GROQ_API_KEY || !GROQ_MODEL) {
     return "Configuração incompleta da IA.";
@@ -1103,7 +1441,7 @@ async function generateReply(
       messages: [
         {
           role: "system",
-          content: BOT_PERSONA
+          content: persona || BOT_PERSONA
         },
         {
           role: "system",
@@ -1132,10 +1470,11 @@ async function generateReply(
 async function generateReplyWithTyping(
   history: Array<{ role: "user" | "assistant"; content: string }>,
   faqContext: string,
+  persona?: string,
   waMessageId?: string
 ): Promise<string> {
   if (!waMessageId) {
-    return generateReply(history, faqContext);
+    return generateReply(history, faqContext, persona);
   }
 
   const interval = setInterval(() => {
@@ -1145,7 +1484,7 @@ async function generateReplyWithTyping(
   }, 20000);
 
   try {
-    return await generateReply(history, faqContext);
+    return await generateReply(history, faqContext, persona);
   } finally {
     clearInterval(interval);
   }
@@ -1592,10 +1931,135 @@ function isPrismaNotFoundError(err: unknown): boolean {
   );
 }
 
+// ============================================
+// CHAT ENDPOINTS
+// ============================================
+
+class ChatService {
+  async sendMessage(waId: string, message: string) {
+    let contact = await prisma.contact.findUnique({
+      where: { waId }
+    });
+
+    if (!contact) {
+      const defaultStageId = await getDefaultStageId();
+      contact = await prisma.contact.create({
+        data: {
+          waId,
+          name: waId,
+          stageId: defaultStageId,
+          leadStatus: "open",
+          botEnabled: false
+        }
+      });
+    }
+
+    await sendWhatsAppText(waId, message);
+
+    const storedMessage = await prisma.message.create({
+      data: {
+        contactId: contact.id,
+        direction: "out",
+        body: message
+      }
+    });
+
+    await prisma.contact.update({
+      where: { id: contact.id },
+      data: { lastInteractionAt: new Date() }
+    });
+
+    return {
+      id: storedMessage.id,
+      contactId: contact.id,
+      direction: storedMessage.direction,
+      body: storedMessage.body,
+      createdAt: storedMessage.createdAt
+    };
+  }
+
+  async getHistory(waId: string, limit: number) {
+    const contact = await prisma.contact.findUnique({
+      where: { waId }
+    });
+
+    if (!contact) {
+      return [];
+    }
+
+    const messages = await prisma.message.findMany({
+      where: { contactId: contact.id },
+      orderBy: { createdAt: "desc" },
+      take: limit
+    });
+
+    return messages.reverse().map((m) => ({
+      id: m.id,
+      direction: m.direction,
+      body: m.body,
+      createdAt: m.createdAt
+    }));
+  }
+}
+
+class ChatController {
+  private chatService = new ChatService();
+
+  send = async (req: express.Request, res: express.Response): Promise<void> => {
+    const waIdRaw = typeof req.body?.wa_id === "string" ? req.body.wa_id.trim() : "";
+    const waId = normalizeWaId(waIdRaw);
+    const message = typeof req.body?.message === "string" ? req.body.message.trim() : "";
+
+    if (!waId) {
+      res.status(400).json({ message: "WhatsApp ID (wa_id) is required." });
+      return;
+    }
+
+    if (!message) {
+      res.status(400).json({ message: "Message is required." });
+      return;
+    }
+
+    try {
+      const data = await this.chatService.sendMessage(waId, message);
+      res.json({
+        success: true,
+        message: "Message sent successfully.",
+        data
+      });
+    } catch (err) {
+      console.error("Error sending chat message:", err);
+      res.status(500).json({ message: "Failed to send message." });
+    }
+  };
+
+  history = async (req: express.Request, res: express.Response): Promise<void> => {
+    const waId = normalizeWaId(req.params.waId || "");
+    const limit = Math.max(1, Math.min(100, Number(req.query.limit || 50)));
+
+    if (!waId) {
+      res.status(400).json({ message: "WhatsApp ID (waId) is required." });
+      return;
+    }
+
+    try {
+      const messages = await this.chatService.getHistory(waId, limit);
+      res.json({ success: true, messages });
+    } catch (err) {
+      console.error("Error fetching chat history:", err);
+      res.status(500).json({ message: "Failed to fetch chat history." });
+    }
+  };
+}
+
+const chatController = new ChatController();
+
+app.post("/api/chat/send", requireSession, chatController.send);
+app.get("/api/chat/history/:waId", requireSession, chatController.history);
+
 app.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
 });
-
 
 
 
