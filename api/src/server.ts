@@ -127,7 +127,11 @@ app.post("/api/auth/login", (req, res) => {
     return;
   }
 
+  console.log(`[AUTH] Login attempt: user=${username}`);
+  console.log(`[AUTH] Expected: user=${DASHBOARD_USER} pass=${DASHBOARD_PASS}`);
+
   if (username !== DASHBOARD_USER || password !== DASHBOARD_PASS) {
+    console.log("[AUTH] Credentials mismatch");
     res.status(401).json({ message: "Credenciais inválidas." });
     return;
   }
