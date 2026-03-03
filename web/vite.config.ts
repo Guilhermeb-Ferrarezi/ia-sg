@@ -17,6 +17,14 @@ export default defineConfig({
         target: "http://localhost:3009",
         changeOrigin: true,
       },
+      "/ws": {
+        target: "ws://localhost:3009",
+        ws: true,
+      },
+      "/webhook": {
+        target: "http://localhost:3009",
+        changeOrigin: true,
+      },
     },
   },
 })

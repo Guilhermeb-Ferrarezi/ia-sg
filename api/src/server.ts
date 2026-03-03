@@ -1,26 +1,28 @@
 ﻿import crypto from "crypto";
+import http from "http";
 import express from "express";
 import dotenv from "dotenv";
 import { PrismaClient } from "@prisma/client";
+import { WebSocketServer, WebSocket } from "ws";
 
 dotenv.config();
 
-const PORT = Number(process.env.PORT || 3000);
+const PORT = Number(process.env.PORT || null);
 const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || "";
-const HISTORY_LIMIT = Number(process.env.HISTORY_LIMIT || 20);
+const HISTORY_LIMIT = Number(process.env.HISTORY_LIMIT || null);
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN || "";
 const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID || "";
 const GROQ_API_KEY = process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY || "";
 const GROQ_MODEL = process.env.GROQ_MODEL || process.env.OPENAI_MODEL || "";
 const BOT_PERSONA = process.env.BOT_PERSONA || "";
-const HUMAN_DELAY_MIN_MS = Number(process.env.HUMAN_DELAY_MIN_MS || 1200);
-const HUMAN_DELAY_MAX_MS = Number(process.env.HUMAN_DELAY_MAX_MS || 6500);
+const HUMAN_DELAY_MIN_MS = Number(process.env.HUMAN_DELAY_MIN_MS || null);
+const HUMAN_DELAY_MAX_MS = Number(process.env.HUMAN_DELAY_MAX_MS || null);
 
-const SESSION_SECRET = process.env.SESSION_SECRET || process.env.JWT_SECRET || "dev-session-secret";
-const AUTH_COOKIE_NAME = process.env.AUTH_COOKIE_NAME || "ia_sg_auth";
-const SESSION_TTL_DAYS = Number(process.env.SESSION_TTL_DAYS || 7);
+const SESSION_SECRET = process.env.SESSION_SECRET || process.env.JWT_SECRET || "";
+const AUTH_COOKIE_NAME = process.env.AUTH_COOKIE_NAME || "";
+const SESSION_TTL_DAYS = Number(process.env.SESSION_TTL_DAYS || null);
 const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN || "";
-const COOKIE_SAMESITE = (process.env.COOKIE_SAMESITE || "lax").toLowerCase();
+const COOKIE_SAMESITE = (process.env.COOKIE_SAMESITE || "").toLowerCase();
 const COOKIE_SECURE = (process.env.COOKIE_SECURE || "").toLowerCase();
 const DASHBOARD_USER = process.env.DASHBOARD_USER || "";
 const DASHBOARD_PASS = process.env.DASHBOARD_PASS || "";
@@ -32,6 +34,58 @@ const allowedOrigins = (process.env.ALLOWED_ORIGINS || "http://localhost:5173")
 
 const prisma = new PrismaClient();
 const app = express();
+const httpServer = http.createServer(app);
+
+// ============================================
+// WEBSOCKET SERVER
+// ============================================
+
+const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
+
+const wsClients = new Set<WebSocket>();
+
+wss.on("connection", (ws, req) => {
+  // Authenticate WebSocket connection using session cookie
+  const cookies = parseCookies(req.headers.cookie);
+  const token = cookies[AUTH_COOKIE_NAME];
+  console.log(`[WS] Connection attempt. Token: ${token ? "exists" : "missing"}`);
+
+  if (!token || !verifySession(token)) {
+    console.log("[WS] Connection rejected: Unauthorized");
+    ws.close(4001, "Unauthorized");
+    return;
+  }
+
+  console.log("[WS] Connection accepted");
+  wsClients.add(ws);
+  ws.on("close", () => {
+    console.log("[WS] Client disconnected");
+    wsClients.delete(ws);
+  });
+  ws.on("error", (err) => {
+    console.error("[WS] Client error:", err);
+    wsClients.delete(ws);
+  });
+});
+
+function broadcastMessage(waId: string, message: { id: number; direction: string; body: string; createdAt: Date }) {
+  const payload = JSON.stringify({ type: "new_message", waId, message });
+  for (const client of wsClients) {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(payload);
+    }
+  }
+}
+
+function broadcastEvent(type: string, data?: Record<string, unknown>) {
+  const payload = JSON.stringify({ type, ...data });
+  for (const client of wsClients) {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(payload);
+    }
+  }
+}
+
 const DEFAULT_PIPELINE_STAGES = [
   { name: "Novo", position: 1, color: "#38bdf8" },
   { name: "Qualificado", position: 2, color: "#22c55e" },
@@ -391,6 +445,7 @@ app.post("/api/crm/stages", requireSession, async (req, res) => {
     const stage = await prisma.pipelineStage.create({
       data: { name, color, position, isActive: true }
     });
+    broadcastEvent("stage_updated");
     res.status(201).json({ message: "Etapa criada com sucesso.", stage });
   } catch (err) {
     if (isPrismaUniqueError(err)) {
@@ -423,6 +478,7 @@ app.put("/api/crm/stages/:id(\\d+)", requireSession, async (req, res) => {
       where: { id: stageId },
       data: payload
     });
+    broadcastEvent("stage_updated");
     res.json({ message: "Etapa atualizada com sucesso.", stage });
   } catch (err) {
     if (isPrismaNotFoundError(err)) {
@@ -466,6 +522,7 @@ app.put("/api/crm/stages/reorder", requireSession, async (req, res) => {
       where: { isActive: true },
       orderBy: { position: "asc" }
     });
+    broadcastEvent("stage_updated");
     res.json({ message: "Ordem de etapas atualizada.", stages });
   } catch (err) {
     console.error("Erro ao reordenar:", err);
@@ -562,6 +619,7 @@ app.post("/api/crm/leads", requireSession, async (req, res) => {
       include: { stage: true }
     });
 
+    broadcastEvent("lead_created", { lead: mapLeadDetails(lead) });
     res.status(201).json({ message: "Lead criado com sucesso.", lead: mapLeadDetails(lead) });
   } catch (err) {
     if (isPrismaUniqueError(err)) {
@@ -630,6 +688,7 @@ app.put("/api/crm/leads/:id", requireSession, async (req, res) => {
       data: updateData,
       include: { stage: true }
     });
+    broadcastEvent("lead_updated", { lead: mapLeadDetails(lead) });
     res.json({ message: "Lead atualizado com sucesso.", lead: mapLeadDetails(lead) });
   } catch (err) {
     if (isPrismaNotFoundError(err)) {
@@ -655,6 +714,7 @@ app.delete("/api/crm/leads/:id", requireSession, async (req, res) => {
     await prisma.contact.delete({
       where: { id: leadId }
     });
+    broadcastEvent("lead_deleted", { id: leadId });
     res.json({ message: "Lead excluído com sucesso." });
   } catch (err) {
     if (isPrismaNotFoundError(err)) {
@@ -679,6 +739,7 @@ app.patch("/api/crm/leads/:id/stage", requireSession, async (req, res) => {
       data: { stageId },
       include: { stage: true }
     });
+    broadcastEvent("lead_updated", { lead: mapLeadDetails(lead) });
     res.json({ message: "Etapa do lead atualizada.", lead: mapLeadDetails(lead) });
   } catch (err) {
     if (isPrismaNotFoundError(err)) {
@@ -703,6 +764,7 @@ app.patch("/api/crm/leads/:id/status", requireSession, async (req, res) => {
       data: { leadStatus },
       include: { stage: true }
     });
+    broadcastEvent("lead_updated", { lead: mapLeadDetails(lead) });
     res.json({ message: "Status do lead atualizado.", lead: mapLeadDetails(lead) });
   } catch (err) {
     if (isPrismaNotFoundError(err)) {
@@ -727,6 +789,7 @@ app.patch("/api/crm/leads/:id/bot", requireSession, async (req, res) => {
       data: { botEnabled: enabled },
       include: { stage: true }
     });
+    broadcastEvent("lead_updated", { lead: mapLeadDetails(lead) });
     res.json({ message: "Modo bot atualizado.", lead: mapLeadDetails(lead) });
   } catch (err) {
     if (isPrismaNotFoundError(err)) {
@@ -1345,7 +1408,7 @@ async function processIncomingWebhook(payload: unknown): Promise<void> {
   });
 
   if (msg.type !== "text") {
-    await prisma.message.create({
+    const inMsg = await prisma.message.create({
       data: {
         contactId: contact.id,
         direction: "in",
@@ -1353,15 +1416,17 @@ async function processIncomingWebhook(payload: unknown): Promise<void> {
         waMessageId: waMessageId || null
       }
     }).catch((err: unknown) => {
-      if (isPrismaUniqueError(err)) return;
+      if (isPrismaUniqueError(err)) return null;
       throw err;
     });
+
+    if (inMsg) broadcastMessage(waId, { id: inMsg.id, direction: "in", body: inMsg.body, createdAt: inMsg.createdAt });
 
     if (!(contact as any).botEnabled) return;
 
     const fallback = "Por enquanto eu só entendo texto 🙂";
     await sendWhatsAppText(waId, fallback);
-    await prisma.message.create({
+    const outFallback = await prisma.message.create({
       data: {
         contactId: contact.id,
         direction: "out",
@@ -1369,14 +1434,16 @@ async function processIncomingWebhook(payload: unknown): Promise<void> {
         waMessageId: null
       }
     });
+    broadcastMessage(waId, { id: outFallback.id, direction: "out", body: outFallback.body, createdAt: outFallback.createdAt });
     return;
   }
 
   const textIn = msg.text?.body as string | undefined;
   if (!textIn) return;
 
+  let inboundMsg: { id: number; direction: string; body: string; createdAt: Date } | null = null;
   try {
-    await prisma.message.create({
+    inboundMsg = await prisma.message.create({
       data: {
         contactId: contact.id,
         direction: "in",
@@ -1388,6 +1455,8 @@ async function processIncomingWebhook(payload: unknown): Promise<void> {
     if (isPrismaUniqueError(err)) return;
     throw err;
   }
+
+  if (inboundMsg) broadcastMessage(waId, { id: inboundMsg.id, direction: "in", body: inboundMsg.body, createdAt: inboundMsg.createdAt });
 
   if (!(contact as any).botEnabled) return;
 
@@ -1411,7 +1480,7 @@ async function processIncomingWebhook(payload: unknown): Promise<void> {
 
   await delay(getHumanDelayMs(reply));
   await sendWhatsAppText(waId, reply);
-  await prisma.message.create({
+  const outMsg = await prisma.message.create({
     data: {
       contactId: contact.id,
       direction: "out",
@@ -1419,6 +1488,9 @@ async function processIncomingWebhook(payload: unknown): Promise<void> {
       waMessageId: null
     }
   });
+
+  // Broadcast outbound reply via WebSocket
+  broadcastMessage(waId, { id: outMsg.id, direction: "out", body: reply, createdAt: outMsg.createdAt });
 }
 
 async function generateReply(
@@ -1969,6 +2041,14 @@ class ChatService {
       data: { lastInteractionAt: new Date() }
     });
 
+    // Broadcast via WebSocket
+    broadcastMessage(waId, {
+      id: storedMessage.id,
+      direction: storedMessage.direction,
+      body: storedMessage.body,
+      createdAt: storedMessage.createdAt
+    });
+
     return {
       id: storedMessage.id,
       contactId: contact.id,
@@ -2057,8 +2137,8 @@ const chatController = new ChatController();
 app.post("/api/chat/send", requireSession, chatController.send);
 app.get("/api/chat/history/:waId", requireSession, chatController.history);
 
-app.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
+httpServer.listen(PORT, () => {
+  console.log(`Server listening on port ${PORT} (HTTP + WebSocket)`);
 });
 
 

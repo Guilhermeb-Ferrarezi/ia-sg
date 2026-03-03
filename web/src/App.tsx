@@ -21,6 +21,7 @@ const DEFAULT_LEAD_MESSAGES_PAGE_SIZE = 5;
 export default function App() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -98,6 +99,17 @@ export default function App() {
   const [taskPriority, setTaskPriority] = useState<TaskPriority>("medium");
 
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const wsReconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const userRef = useRef<AuthUser | null>(user);
+  const selectedLeadIdRef = useRef<number | null>(selectedLeadId);
+  const leadsRef = useRef<Lead[]>(leads);
+
+  useEffect(() => {
+    userRef.current = user;
+    selectedLeadIdRef.current = selectedLeadId;
+    leadsRef.current = leads;
+  }, [user, selectedLeadId, leads]);
 
   // Context menu state
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; lead: Lead; stageSubmenu?: boolean } | null>(null);
@@ -176,6 +188,71 @@ export default function App() {
   useEffect(() => {
     checkSession().catch(() => setLoading(false));
   }, [checkSession]);
+
+  useEffect(() => {
+    function connect() {
+      if (!userRef.current) return;
+
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+
+      ws.onopen = () => console.log("[WS Pipeline] Connected");
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (["lead_created", "lead_deleted", "stage_updated", "new_message"].includes(data.type)) {
+            void loadCrm();
+            void loadFaqs(); // also refresh faqs just in case
+
+            // If the currently viewed lead was deleted, clear selection
+            if (data.type === "lead_deleted" && data.id === selectedLeadIdRef.current) {
+              setSelectedLeadId(null);
+            }
+          }
+
+          if (data.type === "lead_updated") {
+            const updatedLead = data.lead as Lead;
+            setLeads(prev => prev.map(l => l.id === updatedLead.id ? updatedLead : l));
+            if (selectedLeadIdRef.current === updatedLead.id) {
+              setSelectedLead(updatedLead);
+            }
+            void loadCrm(); // refresh metrics and full list order
+          }
+
+          if (data.type === "new_message") {
+            // If viewing this lead, refresh history
+            const leadWithNewMsg = leadsRef.current.find(l => l.waId === data.waId);
+            if (leadWithNewMsg && selectedLeadIdRef.current === leadWithNewMsg.id) {
+              void loadLeadMessages(leadWithNewMsg.id, 1);
+            }
+          }
+        } catch (err) {
+          console.error("[WS] Message error:", err);
+        }
+      };
+
+      ws.onclose = () => {
+        console.log("[WS Pipeline] Disconnected, retrying...");
+        wsReconnectRef.current = setTimeout(connect, 5000);
+      };
+
+      ws.onerror = () => ws.close();
+      wsRef.current = ws;
+    }
+
+    if (user) {
+      connect();
+    }
+
+    return () => {
+      if (wsReconnectRef.current) clearTimeout(wsReconnectRef.current);
+      if (wsRef.current) {
+        wsRef.current.onclose = null;
+        wsRef.current.close();
+      }
+    };
+  }, [user, loadCrm, loadFaqs, loadLeadMessages]); // Removed 'leads' dependency
 
   useEffect(() => {
     if (!selectedLeadId) {
@@ -660,17 +737,56 @@ export default function App() {
       setConfirmDialog(null);
     }
   };
-  if (loading) return <main className="flex min-h-screen items-center justify-center bg-slate-950 text-slate-100">Carregando sessão...</main>;
+  if (loading) return (
+    <main className="flex min-h-screen flex-col items-center justify-center bg-slate-950 text-slate-100">
+      <div className="flex flex-col items-center gap-6 scale-enter">
+        <div className="relative">
+          <div className="h-16 w-16 rounded-2xl bg-cyan-500/10 flex items-center justify-center float-animation">
+            <svg className="w-8 h-8 text-cyan-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+            </svg>
+          </div>
+          <div className="absolute inset-0 rounded-2xl pulse-glow"></div>
+        </div>
+        <div className="flex flex-col items-center gap-2">
+          <span className="text-lg font-bold tracking-tight bg-linear-to-r from-white to-slate-400 bg-clip-text text-transparent">CRM WhatsApp</span>
+          <div className="flex items-center gap-2">
+            <svg className="animate-spin h-4 w-4 text-cyan-500" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+            <span className="text-xs text-slate-500 font-medium uppercase tracking-widest">Carregando sessão...</span>
+          </div>
+        </div>
+      </div>
+    </main>
+  );
 
   if (!user) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-slate-950 px-4">
-        <form className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-8" onSubmit={handleLogin}>
+        <form className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-8 scale-enter" onSubmit={handleLogin}>
           <h1 className="text-2xl font-semibold text-slate-100">CRM WhatsApp</h1>
           <p className="mt-2 text-sm text-slate-400">Faça login para acessar o dashboard.</p>
           <div className="mt-6 space-y-3">
             <input className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Usuário" required />
-            <input className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Senha" required />
+            <div className="relative">
+              <input className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 pr-10 text-slate-100" type={showPassword ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Senha" required />
+              <button
+                type="button"
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200"
+                onClick={() => setShowPassword(!showPassword)}
+                title={showPassword ? "Ocultar senha" : "Mostrar senha"}
+              >
+                {showPassword ? (
+                  <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                  </svg>
+                ) : (
+                  <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                  </svg>
+                )}
+              </button>
+            </div>
             {error ? <p className="rounded border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">{error}</p> : null}
             <button className="w-full rounded-lg bg-cyan-500 px-4 py-2 font-medium text-slate-950 disabled:opacity-60" type="submit" disabled={submitting}>{submitting ? "Entrando..." : "Entrar"}</button>
           </div>
@@ -740,15 +856,15 @@ export default function App() {
         </header>
 
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-          <StatCard label="Leads abertos" value={metrics?.overall.open ?? 0} />
-          <StatCard label="Ganhos" value={metrics?.overall.won ?? 0} />
-          <StatCard label="Perdidos" value={metrics?.overall.lost ?? 0} />
-          <StatCard label="Fechados" value={metrics?.overall.totalClosed ?? 0} />
-          <StatCard label="Taxa de conversão" value={`${metrics?.overall.conversionRate ?? 0}%`} highlight />
+          <div className="fade-in-up stagger-1"><StatCard label="Leads abertos" value={metrics?.overall.open ?? 0} /></div>
+          <div className="fade-in-up stagger-2"><StatCard label="Ganhos" value={metrics?.overall.won ?? 0} /></div>
+          <div className="fade-in-up stagger-3"><StatCard label="Perdidos" value={metrics?.overall.lost ?? 0} /></div>
+          <div className="fade-in-up stagger-4"><StatCard label="Fechados" value={metrics?.overall.totalClosed ?? 0} /></div>
+          <div className="fade-in-up stagger-5"><StatCard label="Taxa de conversão" value={`${metrics?.overall.conversionRate ?? 0}%`} highlight /></div>
         </div>
 
         {activePanel === "crm" ? (
-          <section className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
+          <section key="crm" className="space-y-8 panel-enter">
             <div className="grid gap-6 lg:grid-cols-3">
               {/* Coluna Novo Lead */}
               <form className="group flex flex-col rounded-2xl border border-slate-800 bg-slate-900/50 p-6 transition-all hover:border-slate-700/80 shadow-sm" onSubmit={handleCreateLead}>

@@ -9,7 +9,7 @@ type ToastContainerProps = {
 
 export default function ToastContainer({ toasts, removeToast }: ToastContainerProps) {
     return (
-        <div className="fixed top-4 right-4 z-[9999] flex flex-col gap-2 w-full max-w-xs pointer-events-none">
+        <div className="fixed top-4 right-4 z-9999 flex flex-col gap-2.5 w-full max-w-sm pointer-events-none">
             {toasts.map((toast) => (
                 <ToastItem key={toast.id} toast={toast} onRemove={() => removeToast(toast.id)} />
             ))}
@@ -21,22 +21,40 @@ function ToastItem({ toast, onRemove }: { toast: Toast; onRemove: () => void }) 
     const [isVisible, setIsVisible] = useState(false);
 
     useEffect(() => {
-        setIsVisible(true);
+        // Trigger enter animation on next frame
+        const raf = requestAnimationFrame(() => setIsVisible(true));
         const timer = setTimeout(() => {
             setIsVisible(false);
-            setTimeout(onRemove, 300); // Wait for fade out animation
+            setTimeout(onRemove, 350);
         }, 5000);
-        return () => clearTimeout(timer);
+        return () => {
+            cancelAnimationFrame(raf);
+            clearTimeout(timer);
+        };
     }, [onRemove]);
 
-    const bgClass =
-        toast.type === "success"
-            ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-300"
-            : toast.type === "error"
-                ? "bg-rose-500/10 border-rose-500/20 text-rose-300"
-                : toast.type === "loading"
-                    ? "bg-violet-500/10 border-violet-500/20 text-violet-300 animate-pulse"
-                    : "bg-cyan-500/10 border-cyan-500/20 text-cyan-300";
+    const config = {
+        success: {
+            bg: "bg-emerald-500/10 border-emerald-500/20",
+            text: "text-emerald-300",
+            bar: "bg-emerald-500",
+        },
+        error: {
+            bg: "bg-rose-500/10 border-rose-500/20",
+            text: "text-rose-300",
+            bar: "bg-rose-500",
+        },
+        loading: {
+            bg: "bg-violet-500/10 border-violet-500/20",
+            text: "text-violet-300",
+            bar: "bg-violet-500",
+        },
+        info: {
+            bg: "bg-cyan-500/10 border-cyan-500/20",
+            text: "text-cyan-300",
+            bar: "bg-cyan-500",
+        },
+    }[toast.type];
 
     const icon =
         toast.type === "success" ? (
@@ -60,22 +78,32 @@ function ToastItem({ toast, onRemove }: { toast: Toast; onRemove: () => void }) 
 
     return (
         <div
-            className={`pointer-events-auto flex items-center gap-3 rounded-lg border p-4 shadow-xl transition-all duration-300 ${bgClass} ${isVisible ? "translate-x-0 opacity-100" : "translate-x-8 opacity-0"
+            className={`pointer-events-auto relative overflow-hidden rounded-xl border backdrop-blur-md shadow-2xl shadow-black/20 transition-all duration-350 ${config.bg} ${config.text} ${isVisible
+                ? "translate-x-0 opacity-100 scale-100"
+                : "translate-x-12 opacity-0 scale-95"
                 }`}
         >
-            <div className="flex-shrink-0">{icon}</div>
-            <p className="text-sm font-medium">{toast.message}</p>
-            <button
-                onClick={() => {
-                    setIsVisible(false);
-                    setTimeout(onRemove, 300);
-                }}
-                className="ml-auto flex-shrink-0 opacity-50 hover:opacity-100 transition-opacity"
-            >
-                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-            </button>
+            <div className="flex items-center gap-3 px-4 py-3.5">
+                <div className="shrink-0">{icon}</div>
+                <p className="text-sm font-medium flex-1">{toast.message}</p>
+                <button
+                    onClick={() => {
+                        setIsVisible(false);
+                        setTimeout(onRemove, 350);
+                    }}
+                    className="shrink-0 opacity-40 hover:opacity-100 transition-opacity p-1 rounded-lg hover:bg-white/5"
+                >
+                    <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+            {/* Progress bar */}
+            {toast.type !== "loading" && isVisible && (
+                <div className="h-0.5 w-full bg-white/5">
+                    <div className={`h-full ${config.bar} opacity-40 toast-progress`} />
+                </div>
+            )}
         </div>
     );
 }

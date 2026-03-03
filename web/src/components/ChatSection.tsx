@@ -24,10 +24,17 @@ export default function ChatSection({ initialSelectedWaId }: ChatSectionProps) {
   const [searchTerm, setSearchTerm] = useState("");
   const [togglingBot, setTogglingBot] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const lastMsgCountRef = useRef(0);
+  const wsRef = useRef<WebSocket | null>(null);
+  const wsReconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const selectedLeadRef = useRef<Lead | null>(null);
   const [templates, setTemplates] = useState<MessageTemplate[]>([]);
   const [showTemplates, setShowTemplates] = useState(false);
+  const [wsConnected, setWsConnected] = useState(false);
+
+  // Keep ref in sync with state
+  useEffect(() => {
+    selectedLeadRef.current = selectedLead;
+  }, [selectedLead]);
 
   const loadLeads = useCallback(async () => {
     setLeadsLoading(true);
@@ -48,25 +55,72 @@ export default function ChatSection({ initialSelectedWaId }: ChatSectionProps) {
     } catch { /* ignore */ }
   }, []);
 
-  const loadMessages = useCallback(async (waId: string, silent = false) => {
-    if (!silent) setLoading(true);
+  const loadMessages = useCallback(async (waId: string) => {
+    setLoading(true);
     try {
       const result = await apiFetch<{ success: boolean; messages: ChatMessage[] }>(
         `/chat/history/${waId}?limit=50`
       );
-      const newMessages = result.messages || [];
-      // Only update and scroll if message count changed (avoids unnecessary re-renders)
-      if (silent && newMessages.length === lastMsgCountRef.current) return;
-      lastMsgCountRef.current = newMessages.length;
-      setMessages(newMessages);
+      setMessages(result.messages || []);
     } catch (err) {
-      if (!silent) {
-        console.error("Failed to load messages:", err);
-        setMessages([]);
-      }
+      console.error("Failed to load messages:", err);
+      setMessages([]);
     } finally {
-      if (!silent) setLoading(false);
+      setLoading(false);
     }
+  }, []);
+
+  // WebSocket connection
+  useEffect(() => {
+    function connect() {
+      const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+      const ws = new WebSocket(`${protocol}//${location.host}/ws`);
+
+      ws.onopen = () => {
+        setWsConnected(true);
+        console.log("[WS] Connected");
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === "new_message" && data.waId && data.message) {
+            const currentLead = selectedLeadRef.current;
+            if (currentLead && currentLead.waId === data.waId) {
+              setMessages((prev) => {
+                // Avoid duplicates
+                if (prev.some((m) => m.id === data.message.id)) return prev;
+                return [...prev, data.message];
+              });
+            }
+          }
+        } catch {
+          // ignore parse errors
+        }
+      };
+
+      ws.onclose = () => {
+        setWsConnected(false);
+        console.log("[WS] Disconnected, reconnecting in 3s...");
+        wsReconnectRef.current = setTimeout(connect, 3000);
+      };
+
+      ws.onerror = () => {
+        ws.close();
+      };
+
+      wsRef.current = ws;
+    }
+
+    connect();
+
+    return () => {
+      if (wsReconnectRef.current) clearTimeout(wsReconnectRef.current);
+      if (wsRef.current) {
+        wsRef.current.onclose = null; // prevent reconnect on cleanup
+        wsRef.current.close();
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -76,28 +130,10 @@ export default function ChatSection({ initialSelectedWaId }: ChatSectionProps) {
 
   useEffect(() => {
     if (selectedLead) {
-      lastMsgCountRef.current = 0;
       loadMessages(selectedLead.waId);
-
-      // Real-time polling every 4 seconds
-      if (pollingRef.current) clearInterval(pollingRef.current);
-      pollingRef.current = setInterval(() => {
-        loadMessages(selectedLead.waId, true);
-      }, 4000);
     } else {
       setMessages([]);
-      if (pollingRef.current) {
-        clearInterval(pollingRef.current);
-        pollingRef.current = null;
-      }
     }
-
-    return () => {
-      if (pollingRef.current) {
-        clearInterval(pollingRef.current);
-        pollingRef.current = null;
-      }
-    };
   }, [selectedLead, loadMessages]);
 
   useEffect(() => {
@@ -303,8 +339,8 @@ export default function ChatSection({ initialSelectedWaId }: ChatSectionProps) {
                     <p className="text-sm text-cyan-400 font-mono">{selectedLead.waId}</p>
                     {/* Live Indicator */}
                     <div className="flex items-center gap-1">
-                      <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></div>
-                      <span className="text-[9px] text-emerald-400 font-bold uppercase tracking-widest">Live</span>
+                      <div className={`w-2 h-2 rounded-full ${wsConnected ? "bg-emerald-400 animate-pulse" : "bg-rose-400"}`}></div>
+                      <span className={`text-[9px] font-bold uppercase tracking-widest ${wsConnected ? "text-emerald-400" : "text-rose-400"}`}>{wsConnected ? "Live" : "Offline"}</span>
                     </div>
                   </div>
                 </div>
@@ -413,8 +449,8 @@ export default function ChatSection({ initialSelectedWaId }: ChatSectionProps) {
                 <button
                   onClick={() => setShowTemplates(!showTemplates)}
                   className={`shrink-0 p-3.5 rounded-xl border transition-all ${showTemplates
-                      ? "border-violet-500/50 bg-violet-500/10 text-violet-400"
-                      : "border-slate-700 bg-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-700"
+                    ? "border-violet-500/50 bg-violet-500/10 text-violet-400"
+                    : "border-slate-700 bg-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-700"
                     }`}
                   title="Templates de mensagem"
                 >
