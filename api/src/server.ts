@@ -20,7 +20,7 @@ const HUMAN_DELAY_MAX_MS = Number(process.env.HUMAN_DELAY_MAX_MS || null);
 
 const SESSION_SECRET = process.env.SESSION_SECRET || process.env.JWT_SECRET || "";
 const AUTH_COOKIE_NAME = process.env.AUTH_COOKIE_NAME || "";
-const SESSION_TTL_DAYS = Number(process.env.SESSION_TTL_DAYS || null);
+const SESSION_TTL_DAYS = Number(process.env.SESSION_TTL_DAYS || 7);
 const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN || "";
 const COOKIE_SAMESITE = (process.env.COOKIE_SAMESITE || "").toLowerCase();
 const COOKIE_SECURE = (process.env.COOKIE_SECURE || "").toLowerCase();
@@ -127,11 +127,7 @@ app.post("/api/auth/login", (req, res) => {
     return;
   }
 
-  console.log(`[AUTH] Login attempt: user=${username}`);
-  console.log(`[AUTH] Expected: user=${DASHBOARD_USER} pass=${DASHBOARD_PASS}`);
-
   if (username !== DASHBOARD_USER || password !== DASHBOARD_PASS) {
-    console.log("[AUTH] Credentials mismatch");
     res.status(401).json({ message: "Credenciais inválidas." });
     return;
   }
@@ -1411,7 +1407,7 @@ async function processIncomingWebhook(payload: unknown): Promise<void> {
     }
   });
 
-  if (msg.type !== "text") {
+  if (msg.type !== "text" && msg.type !== "audio") {
     const inMsg = await prisma.message.create({
       data: {
         contactId: contact.id,
@@ -1428,7 +1424,7 @@ async function processIncomingWebhook(payload: unknown): Promise<void> {
 
     if (!(contact as any).botEnabled) return;
 
-    const fallback = "Por enquanto eu só entendo texto 🙂";
+    const fallback = "Por enquanto eu só entendo texto e áudio 🙂";
     await sendWhatsAppText(waId, fallback);
     const outFallback = await prisma.message.create({
       data: {
@@ -1442,8 +1438,23 @@ async function processIncomingWebhook(payload: unknown): Promise<void> {
     return;
   }
 
-  const textIn = msg.text?.body as string | undefined;
-  if (!textIn) return;
+  let textIn = "";
+  if (msg.type === "audio") {
+    const audioId = msg.audio?.id;
+    if (audioId) {
+      await sendWhatsAppTypingIndicator(waMessageId);
+      textIn = await transcribeAudio(audioId).catch((err) => {
+        console.error("Transcription error:", err);
+        return "[Áudio não pôde ser transcrito]";
+      });
+    } else {
+      textIn = "[Áudio]";
+    }
+  } else {
+    textIn = (msg.text?.body as string | undefined) || "";
+  }
+
+  if (!textIn && msg.type === "text") return;
 
   let inboundMsg: { id: number; direction: string; body: string; createdAt: Date } | null = null;
   try {
@@ -1495,6 +1506,13 @@ async function processIncomingWebhook(payload: unknown): Promise<void> {
 
   // Broadcast outbound reply via WebSocket
   broadcastMessage(waId, { id: outMsg.id, direction: "out", body: reply, createdAt: outMsg.createdAt });
+
+  // Enrich lead in background
+  setImmediate(() => {
+    enrichLeadWithAI(contact.id).catch((err) => {
+      console.error("Enrichment error:", err);
+    });
+  });
 }
 
 async function generateReply(
@@ -1563,6 +1581,118 @@ async function generateReplyWithTyping(
     return await generateReply(history, faqContext, persona);
   } finally {
     clearInterval(interval);
+  }
+}
+
+async function enrichLeadWithAI(contactId: number): Promise<void> {
+  const contact = await prisma.contact.findUnique({
+    where: { id: contactId },
+    include: { messages: { orderBy: { createdAt: "desc" }, take: 30 } }
+  });
+
+  if (!contact || contact.messages.length === 0) return;
+
+  const history = contact.messages.slice().reverse().map(m =>
+    `${m.direction === "in" ? "Cliente" : "Atendente"}: ${m.body}`
+  ).join("\n");
+
+  const prompt = `Você é um analista de CRM de uma escola de cursos chamada Santos Tech. Com base na conversa abaixo, extraia informações estruturadas sobre o lead e gere um resumo.
+
+Conversa:
+${history}
+
+Formato de Resposta (JSON):
+{
+  "summary": "Resumo curto e profissional em 2 ou 3 linhas sobre a situação atual do lead",
+  "age": "Idade ou faixa etária (ex: 25 anos, Criança, Adulto)",
+  "level": "Nível de conhecimento (ex: Iniciante, Intermediário, Avançado)",
+  "objective": "Objetivo principal (ex: Aprender Python, Carreira, Hobby)"
+}
+
+Responda APENAS o JSON. Se não souber algum campo, coloque "Não informado".`;
+
+  try {
+    const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${GROQ_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: GROQ_MODEL,
+        messages: [
+          { role: "system", content: "Você é um assistente focado em extração de dados de CRM." },
+          { role: "user", content: prompt }
+        ],
+        response_format: { type: "json_object" }
+      })
+    });
+
+    if (!resp.ok) return;
+
+    const data = await resp.json();
+    const result = JSON.parse(data?.choices?.[0]?.message?.content || "{}");
+
+    const updatedLead = await prisma.contact.update({
+      where: { id: contactId },
+      data: {
+        aiSummary: result.summary && result.summary !== "Não informado" ? result.summary : undefined,
+        age: result.age && result.age !== "Não informado" ? result.age : undefined,
+        level: result.level && result.level !== "Não informado" ? result.level : undefined,
+        objective: result.objective && result.objective !== "Não informado" ? result.objective : undefined
+      },
+      include: { stage: true }
+    });
+
+    broadcastEvent("lead_updated", { lead: mapLeadDetails(updatedLead) });
+  } catch (err) {
+    console.error("Enrichment error:", err);
+  }
+}
+
+async function transcribeAudio(mediaId: string): Promise<string> {
+  if (!GROQ_API_KEY) return "[Transcrição desabilitada]";
+
+  try {
+    // 1. Get media URL from Meta
+    const mediaResp = await fetch(`https://graph.facebook.com/v19.0/${mediaId}`, {
+      headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` }
+    });
+    if (!mediaResp.ok) throw new Error("Falha ao obter URL do áudio");
+    const mediaData = await mediaResp.json();
+    const audioUrl = mediaData.url;
+
+    // 2. Download audio file
+    const audioContent = await fetch(audioUrl, {
+      headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` }
+    });
+    if (!audioContent.ok) throw new Error("Falha ao baixar áudio");
+    const blob = await audioContent.blob();
+
+    // 3. Send to Groq Whisper
+    const formData = new FormData();
+    formData.append("file", blob, "audio.ogg");
+    formData.append("model", "whisper-large-v3");
+
+    const groqResp = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${GROQ_API_KEY}`
+      },
+      body: formData
+    });
+
+    if (!groqResp.ok) {
+      const errText = await groqResp.text();
+      console.error("Groq Whisper error:", errText);
+      throw new Error("Falha na transcrição Groq");
+    }
+
+    const groqData = await groqResp.json();
+    return groqData.text || "[Áudio sem fala detectada]";
+  } catch (err) {
+    console.error("Transcription pipeline error:", err);
+    throw err;
   }
 }
 

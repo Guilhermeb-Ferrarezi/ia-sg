@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { apiFetch } from "../lib/apiFetch";
 
 const NOTIFICATION_DURATION_MS = 5000; // 5 seconds
 
@@ -10,13 +9,6 @@ type NotificationItem = {
     timestamp: string;
     createdAt: number;
     visible: boolean;
-};
-
-type DashboardSummaryLatest = {
-    body: string;
-    direction: string;
-    contact: string;
-    createdAt: string;
 };
 
 function playNotificationSound() {
@@ -111,8 +103,8 @@ function NotificationCard({
             onMouseEnter={() => setPaused(true)}
             onMouseLeave={() => setPaused(false)}
             className={`pointer-events-auto relative overflow-hidden rounded-2xl border border-emerald-500/20 bg-slate-900/95 backdrop-blur-xl shadow-2xl shadow-emerald-500/5 transition-all duration-300 ${notif.visible
-                    ? "translate-x-0 opacity-100 scale-100"
-                    : "translate-x-12 opacity-0 scale-95"
+                ? "translate-x-0 opacity-100 scale-100"
+                : "translate-x-12 opacity-0 scale-95"
                 }`}
         >
             <div className="flex items-start gap-3 p-4">
@@ -162,59 +154,31 @@ function NotificationCard({
 
 export default function MessageNotifications() {
     const [notifications, setNotifications] = useState<NotificationItem[]>([]);
-    const lastCheckRef = useRef<string | null>(null);
-    const isFirstLoadRef = useRef(true);
-
-    const checkForNewMessages = useCallback(async () => {
-        try {
-            const result = await apiFetch<{
-                metrics: { messages: number };
-                latest: DashboardSummaryLatest | null;
-            }>("/dashboard/summary");
-
-            if (!result.latest) return;
-
-            const latestKey = `${result.latest.createdAt}-${result.latest.body}`;
-
-            if (isFirstLoadRef.current) {
-                isFirstLoadRef.current = false;
-                lastCheckRef.current = latestKey;
-                return;
-            }
-
-            if (
-                result.latest.direction === "in" &&
-                latestKey !== lastCheckRef.current
-            ) {
-                lastCheckRef.current = latestKey;
-
-                const newNotif: NotificationItem = {
-                    id: Math.random().toString(36).substring(2, 9),
-                    contactName: result.latest.contact,
-                    message: result.latest.body,
-                    timestamp: new Date(result.latest.createdAt).toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit"
-                    }),
-                    createdAt: Date.now(),
-                    visible: true
-                };
-
-                setNotifications((prev) => [newNotif, ...prev].slice(0, 8));
-                playNotificationSound();
-            } else if (latestKey !== lastCheckRef.current) {
-                lastCheckRef.current = latestKey;
-            }
-        } catch {
-            // silently ignore
-        }
-    }, []);
 
     useEffect(() => {
-        checkForNewMessages();
-        const interval = setInterval(checkForNewMessages, 5000);
-        return () => clearInterval(interval);
-    }, [checkForNewMessages]);
+        const handleNewMessage = (event: any) => {
+            const data = event.detail;
+            if (!data) return;
+
+            const newNotif: NotificationItem = {
+                id: Math.random().toString(36).substring(2, 9),
+                contactName: data.contactName || data.waId,
+                message: data.body,
+                timestamp: new Date().toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit"
+                }),
+                createdAt: Date.now(),
+                visible: true
+            };
+
+            setNotifications((prev) => [newNotif, ...prev].slice(0, 8));
+            playNotificationSound();
+        };
+
+        window.addEventListener("ws-new-message", handleNewMessage);
+        return () => window.removeEventListener("ws-new-message", handleNewMessage);
+    }, []);
 
     const dismissNotification = useCallback((id: string) => {
         setNotifications((prev) =>
@@ -230,10 +194,8 @@ export default function MessageNotifications() {
         setTimeout(() => setNotifications([]), 300);
     };
 
-    if (notifications.length === 0) return null;
-
     return (
-        <div className="fixed bottom-6 right-6 z-[9999] flex flex-col gap-3 w-full max-w-sm pointer-events-none">
+        <div className="fixed bottom-6 right-6 z-9999 flex flex-col gap-3 w-full max-w-sm pointer-events-none">
             {notifications.length > 1 && (
                 <div className="pointer-events-auto flex justify-end">
                     <button

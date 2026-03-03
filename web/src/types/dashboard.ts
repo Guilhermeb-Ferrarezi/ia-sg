@@ -89,6 +89,10 @@ export type Lead = {
   notes: string | null;
   botEnabled: boolean;
   customBotPersona: string | null;
+  aiSummary: string | null;
+  age: string | null;
+  level: string | null;
+  objective: string | null;
   lastInteractionAt: string | null;
   createdAt: string;
   openTasks?: LeadTask[];

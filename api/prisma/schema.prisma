@@ -18,6 +18,10 @@ model Contact {
   notes             String?
   botEnabled        Boolean        @default(true)
   customBotPersona  String?
+  aiSummary         String?
+  age               String?
+  level             String?
+  objective         String?
   lastInteractionAt DateTime?
   createdAt         DateTime       @default(now())
   messages          Message[]
