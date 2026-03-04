@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { resolveWebSocketUrl } from "../lib/ws";
 
 const NOTIFICATION_DURATION_MS = 5000; // 5 seconds
 
@@ -11,9 +12,25 @@ type NotificationItem = {
     visible: boolean;
 };
 
+type IncomingPayload = {
+    waId?: string;
+    contactName?: string;
+    body?: string;
+    direction?: string;
+    message?: {
+        id?: number | string;
+        body?: string;
+        direction?: string;
+        createdAt?: string;
+    };
+};
+
 function playNotificationSound() {
     try {
         const ctx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+        if (ctx.state === "suspended") {
+            void ctx.resume().catch(() => undefined);
+        }
 
         const osc1 = ctx.createOscillator();
         const gain1 = ctx.createGain();
@@ -152,33 +169,112 @@ function NotificationCard({
     );
 }
 
+function parseIncomingPayload(raw: unknown): {
+    dedupeKey: string;
+    contactName: string;
+    body: string;
+} | null {
+    if (typeof raw !== "object" || raw === null) return null;
+    const data = raw as IncomingPayload;
+
+    const waId = typeof data.waId === "string" ? data.waId : "";
+    const body = data.body || data.message?.body || "";
+    const direction = (data.direction || data.message?.direction || "").toLowerCase();
+    if (!body) return null;
+    if (direction === "out") return null;
+
+    const messageIdRaw = data.message?.id;
+    const messageId = Number(messageIdRaw);
+    const contactName = data.contactName || waId || "Contato";
+    const fallbackKey = `${waId}:${body}:${data.message?.createdAt || ""}`;
+    const dedupeKey =
+        Number.isInteger(messageId) && messageId > 0
+            ? `${waId}:${messageId}`
+            : fallbackKey;
+
+    return {
+        dedupeKey,
+        contactName,
+        body
+    };
+}
+
 export default function MessageNotifications() {
     const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+    const seenKeysRef = useRef<Set<string>>(new Set());
+    const wsRef = useRef<WebSocket | null>(null);
+    const reconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    const notify = useCallback((raw: unknown) => {
+        const parsed = parseIncomingPayload(raw);
+        if (!parsed) return;
+
+        if (seenKeysRef.current.has(parsed.dedupeKey)) return;
+        seenKeysRef.current.add(parsed.dedupeKey);
+        if (seenKeysRef.current.size > 500) {
+            const oldest = seenKeysRef.current.values().next().value as string | undefined;
+            if (oldest) seenKeysRef.current.delete(oldest);
+        }
+
+        const newNotif: NotificationItem = {
+            id: Math.random().toString(36).substring(2, 9),
+            contactName: parsed.contactName,
+            message: parsed.body,
+            timestamp: new Date().toLocaleTimeString([], {
+                hour: "2-digit",
+                minute: "2-digit"
+            }),
+            createdAt: Date.now(),
+            visible: true
+        };
+
+        setNotifications((prev) => [newNotif, ...prev].slice(0, 8));
+        playNotificationSound();
+    }, []);
 
     useEffect(() => {
-        const handleNewMessage = (event: any) => {
-            const data = event.detail;
-            if (!data) return;
-
-            const newNotif: NotificationItem = {
-                id: Math.random().toString(36).substring(2, 9),
-                contactName: data.contactName || data.waId,
-                message: data.body,
-                timestamp: new Date().toLocaleTimeString([], {
-                    hour: "2-digit",
-                    minute: "2-digit"
-                }),
-                createdAt: Date.now(),
-                visible: true
-            };
-
-            setNotifications((prev) => [newNotif, ...prev].slice(0, 8));
-            playNotificationSound();
+        const handleNewMessage = (event: Event) => {
+            const customEvent = event as CustomEvent<unknown>;
+            notify(customEvent.detail);
         };
 
         window.addEventListener("ws-new-message", handleNewMessage);
         return () => window.removeEventListener("ws-new-message", handleNewMessage);
-    }, []);
+    }, [notify]);
+
+    useEffect(() => {
+        function connect() {
+            const ws = new WebSocket(resolveWebSocketUrl());
+
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(String(event.data));
+                    if (data?.type === "new_message") {
+                        notify(data);
+                    }
+                } catch {
+                    // ignore malformed messages
+                }
+            };
+
+            ws.onclose = () => {
+                reconnectRef.current = setTimeout(connect, 4000);
+            };
+
+            ws.onerror = () => ws.close();
+            wsRef.current = ws;
+        }
+
+        connect();
+
+        return () => {
+            if (reconnectRef.current) clearTimeout(reconnectRef.current);
+            if (wsRef.current) {
+                wsRef.current.onclose = null;
+                wsRef.current.close();
+            }
+        };
+    }, [notify]);
 
     const dismissNotification = useCallback((id: string) => {
         setNotifications((prev) =>
@@ -195,7 +291,7 @@ export default function MessageNotifications() {
     };
 
     return (
-        <div className="fixed bottom-6 right-6 z-9999 flex flex-col gap-3 w-full max-w-sm pointer-events-none">
+        <div className="fixed bottom-6 right-6 z-[9999] flex flex-col gap-3 w-full max-w-sm pointer-events-none">
             {notifications.length > 1 && (
                 <div className="pointer-events-auto flex justify-end">
                     <button

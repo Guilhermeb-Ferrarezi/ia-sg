@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiFetch } from "../lib/apiFetch";
+import { resolveWebSocketUrl } from "../lib/ws";
 import type { Lead, MessageTemplate } from "../types/dashboard";
 
 type ChatMessage = {
@@ -8,6 +9,10 @@ type ChatMessage = {
   body: string;
   createdAt: string;
 };
+
+function normalizeWaId(input: string): string {
+  return input.replace(/[^\d]/g, "");
+}
 
 interface ChatSectionProps {
   initialSelectedWaId?: string | null;
@@ -73,8 +78,7 @@ export default function ChatSection({ initialSelectedWaId }: ChatSectionProps) {
   // WebSocket connection
   useEffect(() => {
     function connect() {
-      const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-      const ws = new WebSocket(`${protocol}//${location.host}/ws`);
+      const ws = new WebSocket(resolveWebSocketUrl());
 
       ws.onopen = () => {
         setWsConnected(true);
@@ -86,7 +90,18 @@ export default function ChatSection({ initialSelectedWaId }: ChatSectionProps) {
           const data = JSON.parse(event.data);
           if (data.type === "new_message" && data.waId && data.message) {
             const currentLead = selectedLeadRef.current;
-            if (currentLead && currentLead.waId === data.waId) {
+            const incomingContactId = Number(data.contactId);
+            const matchesById =
+              currentLead &&
+              Number.isInteger(incomingContactId) &&
+              incomingContactId > 0 &&
+              currentLead.id === incomingContactId;
+            const matchesByWaId =
+              currentLead &&
+              typeof data.waId === "string" &&
+              normalizeWaId(currentLead.waId) === normalizeWaId(data.waId);
+
+            if (currentLead && (matchesById || matchesByWaId)) {
               setMessages((prev) => {
                 // Avoid duplicates
                 if (prev.some((m) => m.id === data.message.id)) return prev;

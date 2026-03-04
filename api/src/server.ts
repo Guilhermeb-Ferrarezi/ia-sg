@@ -1,4 +1,4 @@
-﻿import crypto from "crypto";
+import crypto from "crypto";
 import http from "http";
 import express from "express";
 import dotenv from "dotenv";
@@ -12,8 +12,10 @@ const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || "";
 const HISTORY_LIMIT = Number(process.env.HISTORY_LIMIT || null);
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN || "";
 const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID || "";
-const GROQ_API_KEY = process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY || "";
-const GROQ_MODEL = process.env.GROQ_MODEL || process.env.OPENAI_MODEL || "";
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
+const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
+const OPENAI_TRANSCRIPTION_MODEL = process.env.OPENAI_TRANSCRIPTION_MODEL || "whisper-1";
 const BOT_PERSONA = process.env.BOT_PERSONA || "";
 const HUMAN_DELAY_MIN_MS = Number(process.env.HUMAN_DELAY_MIN_MS || null);
 const HUMAN_DELAY_MAX_MS = Number(process.env.HUMAN_DELAY_MAX_MS || null);
@@ -43,6 +45,8 @@ const httpServer = http.createServer(app);
 const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
 
 const wsClients = new Set<WebSocket>();
+let wsLastBroadcastMessageId = 0;
+let wsSyncInProgress = false;
 
 wss.on("connection", (ws, req) => {
   // Authenticate WebSocket connection using session cookie
@@ -68,8 +72,15 @@ wss.on("connection", (ws, req) => {
   });
 });
 
-function broadcastMessage(waId: string, message: { id: number; direction: string; body: string; createdAt: Date }) {
-  const payload = JSON.stringify({ type: "new_message", waId, message });
+function broadcastMessage(
+  waId: string,
+  contactId: number,
+  message: { id: number; direction: string; body: string; createdAt: Date }
+) {
+  if (Number.isInteger(message.id) && message.id > wsLastBroadcastMessageId) {
+    wsLastBroadcastMessageId = message.id;
+  }
+  const payload = JSON.stringify({ type: "new_message", waId, contactId, message });
   for (const client of wsClients) {
     if (client.readyState === WebSocket.OPEN) {
       client.send(payload);
@@ -83,6 +94,46 @@ function broadcastEvent(type: string, data?: Record<string, unknown>) {
     if (client.readyState === WebSocket.OPEN) {
       client.send(payload);
     }
+  }
+}
+
+async function initializeWsMessageSync(): Promise<void> {
+  const latestMessage = await prisma.message.findFirst({
+    orderBy: { id: "desc" },
+    select: { id: true }
+  });
+  wsLastBroadcastMessageId = latestMessage?.id || 0;
+}
+
+async function syncMessagesFromDatabase(): Promise<void> {
+  if (wsSyncInProgress) return;
+  wsSyncInProgress = true;
+
+  try {
+    const freshMessages = await prisma.message.findMany({
+      where: { id: { gt: wsLastBroadcastMessageId } },
+      orderBy: { id: "asc" },
+      take: 200,
+      include: {
+        contact: {
+          select: { id: true, waId: true }
+        }
+      }
+    });
+
+    for (const message of freshMessages) {
+      if (!message.contact) continue;
+      broadcastMessage(message.contact.waId, message.contact.id, {
+        id: message.id,
+        direction: message.direction,
+        body: message.body,
+        createdAt: message.createdAt
+      });
+    }
+  } catch (err) {
+    console.error("[WS] DB sync error:", err);
+  } finally {
+    wsSyncInProgress = false;
   }
 }
 
@@ -1420,7 +1471,7 @@ async function processIncomingWebhook(payload: unknown): Promise<void> {
       throw err;
     });
 
-    if (inMsg) broadcastMessage(waId, { id: inMsg.id, direction: "in", body: inMsg.body, createdAt: inMsg.createdAt });
+    if (inMsg) broadcastMessage(waId, contact.id, { id: inMsg.id, direction: "in", body: inMsg.body, createdAt: inMsg.createdAt });
 
     if (!(contact as any).botEnabled) return;
 
@@ -1434,7 +1485,7 @@ async function processIncomingWebhook(payload: unknown): Promise<void> {
         waMessageId: null
       }
     });
-    broadcastMessage(waId, { id: outFallback.id, direction: "out", body: outFallback.body, createdAt: outFallback.createdAt });
+    broadcastMessage(waId, contact.id, { id: outFallback.id, direction: "out", body: outFallback.body, createdAt: outFallback.createdAt });
     return;
   }
 
@@ -1471,7 +1522,7 @@ async function processIncomingWebhook(payload: unknown): Promise<void> {
     throw err;
   }
 
-  if (inboundMsg) broadcastMessage(waId, { id: inboundMsg.id, direction: "in", body: inboundMsg.body, createdAt: inboundMsg.createdAt });
+  if (inboundMsg) broadcastMessage(waId, contact.id, { id: inboundMsg.id, direction: "in", body: inboundMsg.body, createdAt: inboundMsg.createdAt });
 
   if (!(contact as any).botEnabled) return;
 
@@ -1505,7 +1556,7 @@ async function processIncomingWebhook(payload: unknown): Promise<void> {
   });
 
   // Broadcast outbound reply via WebSocket
-  broadcastMessage(waId, { id: outMsg.id, direction: "out", body: reply, createdAt: outMsg.createdAt });
+  broadcastMessage(waId, contact.id, { id: outMsg.id, direction: "out", body: reply, createdAt: outMsg.createdAt });
 
   // Enrich lead in background
   setImmediate(() => {
@@ -1520,18 +1571,18 @@ async function generateReply(
   faqContext: string,
   persona?: string
 ): Promise<string> {
-  if (!GROQ_API_KEY || !GROQ_MODEL) {
+  if (!OPENAI_API_KEY || !OPENAI_MODEL) {
     return "Configuração incompleta da IA.";
   }
 
-  const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+  const resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${GROQ_API_KEY}`
+      Authorization: `Bearer ${OPENAI_API_KEY}`
     },
     body: JSON.stringify({
-      model: GROQ_MODEL,
+      model: OPENAI_MODEL,
       messages: [
         {
           role: "system",
@@ -1612,14 +1663,14 @@ Formato de Resposta (JSON):
 Responda APENAS o JSON. Se não souber algum campo, coloque "Não informado".`;
 
   try {
-    const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    const resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${GROQ_API_KEY}`
+        Authorization: `Bearer ${OPENAI_API_KEY}`
       },
       body: JSON.stringify({
-        model: GROQ_MODEL,
+        model: OPENAI_MODEL,
         messages: [
           { role: "system", content: "Você é um assistente focado em extração de dados de CRM." },
           { role: "user", content: prompt }
@@ -1651,7 +1702,7 @@ Responda APENAS o JSON. Se não souber algum campo, coloque "Não informado".`;
 }
 
 async function transcribeAudio(mediaId: string): Promise<string> {
-  if (!GROQ_API_KEY) return "[Transcrição desabilitada]";
+  if (!OPENAI_API_KEY) return "[Transcrição desabilitada]";
 
   try {
     // 1. Get media URL from Meta
@@ -1669,27 +1720,27 @@ async function transcribeAudio(mediaId: string): Promise<string> {
     if (!audioContent.ok) throw new Error("Falha ao baixar áudio");
     const blob = await audioContent.blob();
 
-    // 3. Send to Groq Whisper
+    // 3. Send to OpenAI transcription
     const formData = new FormData();
     formData.append("file", blob, "audio.ogg");
-    formData.append("model", "whisper-large-v3");
+    formData.append("model", OPENAI_TRANSCRIPTION_MODEL);
 
-    const groqResp = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
+    const openaiResp = await fetch(`${OPENAI_BASE_URL}/audio/transcriptions`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${GROQ_API_KEY}`
+        Authorization: `Bearer ${OPENAI_API_KEY}`
       },
       body: formData
     });
 
-    if (!groqResp.ok) {
-      const errText = await groqResp.text();
-      console.error("Groq Whisper error:", errText);
-      throw new Error("Falha na transcrição Groq");
+    if (!openaiResp.ok) {
+      const errText = await openaiResp.text();
+      console.error("OpenAI transcription error:", errText);
+      throw new Error("Falha na transcrição OpenAI");
     }
 
-    const groqData = await groqResp.json();
-    return groqData.text || "[Áudio sem fala detectada]";
+    const openaiData = await openaiResp.json();
+    return openaiData.text || "[Áudio sem fala detectada]";
   } catch (err) {
     console.error("Transcription pipeline error:", err);
     throw err;
@@ -2176,7 +2227,7 @@ class ChatService {
     });
 
     // Broadcast via WebSocket
-    broadcastMessage(waId, {
+    broadcastMessage(waId, contact.id, {
       id: storedMessage.id,
       direction: storedMessage.direction,
       body: storedMessage.body,
@@ -2273,7 +2324,14 @@ app.get("/api/chat/history/:waId", requireSession, chatController.history);
 
 httpServer.listen(PORT, () => {
   console.log(`Server listening on port ${PORT} (HTTP + WebSocket)`);
+  void (async () => {
+    await initializeWsMessageSync();
+    setInterval(() => {
+      void syncMessagesFromDatabase();
+    }, 1500);
+  })();
 });
+
 
 
 

@@ -11,12 +11,17 @@ import CalendarSection from "./components/CalendarSection";
 import PaginationControls from "./components/PaginationControls";
 import StatCard from "./components/StatCard";
 import { apiFetch } from "./lib/apiFetch";
+import { resolveWebSocketUrl } from "./lib/ws";
 import type { AuthUser, ConfirmDialogState, ContactMessage, ConversionMetrics, FaqItem, Lead, PaginationMeta, PipelineStage, TaskPriority, TaskStatus, Toast } from "./types/dashboard";
 import ToastContainer from "./components/ToastContainer";
 
 const TASK_PRIORITIES: TaskPriority[] = ["low", "medium", "high"];
 const TASK_STATUSES: TaskStatus[] = ["open", "done", "canceled"];
 const DEFAULT_LEAD_MESSAGES_PAGE_SIZE = 5;
+
+function normalizeWaIdClient(input: string): string {
+  return input.replace(/[^\d]/g, "");
+}
 
 export default function App() {
   const [username, setUsername] = useState("");
@@ -193,8 +198,7 @@ export default function App() {
     function connect() {
       if (!userRef.current) return;
 
-      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+      const ws = new WebSocket(resolveWebSocketUrl());
 
       ws.onopen = () => console.log("[WS Pipeline] Connected");
 
@@ -221,13 +225,68 @@ export default function App() {
           }
 
           if (data.type === "new_message") {
+            const incomingMessage =
+              typeof data.message === "object" && data.message !== null
+                ? (data.message as Record<string, unknown>)
+                : null;
+            const incomingBody =
+              incomingMessage && typeof incomingMessage.body === "string" ? incomingMessage.body : "";
+            const incomingDirection =
+              incomingMessage && typeof incomingMessage.direction === "string" ? incomingMessage.direction : "";
+
+            let contactName = typeof data.waId === "string" ? data.waId : "Contato";
+            const contactIdRaw = Number(data.contactId);
+            if (Number.isInteger(contactIdRaw) && contactIdRaw > 0) {
+              const knownLead = leadsRef.current.find((lead) => lead.id === contactIdRaw);
+              if (knownLead) contactName = knownLead.name || knownLead.waId;
+            }
+
             // Dispatch custom event for notifications
-            window.dispatchEvent(new CustomEvent("ws-new-message", { detail: data }));
+            window.dispatchEvent(
+              new CustomEvent("ws-new-message", {
+                detail: {
+                  ...data,
+                  body: incomingBody,
+                  direction: incomingDirection,
+                  contactName
+                }
+              })
+            );
 
             // If viewing this lead, refresh history
-            const leadWithNewMsg = leadsRef.current.find(l => l.waId === data.waId);
-            if (leadWithNewMsg && selectedLeadIdRef.current === leadWithNewMsg.id) {
-              void loadLeadMessages(leadWithNewMsg.id, 1);
+            let incomingLeadId: number | null = null;
+            if (Number.isInteger(contactIdRaw) && contactIdRaw > 0) {
+              incomingLeadId = contactIdRaw;
+            } else if (typeof data.waId === "string" && data.waId.trim()) {
+              const incomingWaId = normalizeWaIdClient(data.waId);
+              const leadWithNewMsg = leadsRef.current.find(
+                (lead) => normalizeWaIdClient(lead.waId) === incomingWaId
+              );
+              incomingLeadId = leadWithNewMsg?.id || null;
+            }
+
+            if (incomingLeadId && selectedLeadIdRef.current === incomingLeadId && incomingMessage) {
+              const incomingId = Number(incomingMessage.id);
+              const incomingCreatedAt =
+                typeof incomingMessage.createdAt === "string"
+                  ? incomingMessage.createdAt
+                  : new Date().toISOString();
+              setLeadMessages((prev) => {
+                if (!Number.isInteger(incomingId) || incomingId <= 0) return prev;
+                if (prev.some((message) => message.id === incomingId)) return prev;
+                return [
+                  ...prev,
+                  {
+                    id: incomingId,
+                    body: incomingBody,
+                    direction: incomingDirection || "in",
+                    createdAt: incomingCreatedAt
+                  }
+                ];
+              });
+              void loadLeadMessages(incomingLeadId, 1).catch((err) => {
+                console.error("[WS] Failed to refresh lead history:", err);
+              });
             }
           }
         } catch (err) {
