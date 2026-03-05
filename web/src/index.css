@@ -295,3 +295,34 @@
 .toast-progress {
   animation: progressBar 5s linear forwards;
 }
+
+.supabase-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(100, 116, 139, 0.45) transparent;
+}
+
+.supabase-scroll::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.supabase-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.supabase-scroll::-webkit-scrollbar-thumb {
+  min-height: 28px;
+  border: 3px solid transparent;
+  border-radius: 9999px;
+  background-color: rgba(100, 116, 139, 0.4);
+  background-clip: content-box;
+  transition: background-color 160ms ease;
+}
+
+.supabase-scroll:hover::-webkit-scrollbar-thumb {
+  background-color: rgba(148, 163, 184, 0.6);
+}
+
+.supabase-scroll::-webkit-scrollbar-corner {
+  background: transparent;
+}

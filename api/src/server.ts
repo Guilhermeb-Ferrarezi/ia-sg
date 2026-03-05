@@ -7,9 +7,15 @@ import { WebSocketServer, WebSocket } from "ws";
 
 dotenv.config();
 
-const PORT = Number(process.env.PORT || null);
+type RequestMeta = {
+  requestId: string;
+  rawBody?: Buffer;
+};
+
+const PORT = Number(process.env.PORT || "3000");
 const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || "";
-const HISTORY_LIMIT = Number(process.env.HISTORY_LIMIT || null);
+const META_APP_SECRET = process.env.META_APP_SECRET || "";
+const HISTORY_LIMIT = Number(process.env.HISTORY_LIMIT || "20");
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN || "";
 const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID || "";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
@@ -28,6 +34,34 @@ const COOKIE_SAMESITE = (process.env.COOKIE_SAMESITE || "").toLowerCase();
 const COOKIE_SECURE = (process.env.COOKIE_SECURE || "").toLowerCase();
 const DASHBOARD_USER = process.env.DASHBOARD_USER || "";
 const DASHBOARD_PASS = process.env.DASHBOARD_PASS || "";
+const WEBHOOK_WORKER_INTERVAL_MS = Number(process.env.WEBHOOK_WORKER_INTERVAL_MS || "2000");
+const WEBHOOK_MAX_RETRIES = Number(process.env.WEBHOOK_MAX_RETRIES || "5");
+
+const requiredEnv = [
+  "DATABASE_URL",
+  "PORT",
+  "WEBHOOK_VERIFY_TOKEN",
+  "META_APP_SECRET",
+  "WHATSAPP_TOKEN",
+  "WHATSAPP_PHONE_NUMBER_ID",
+  "DASHBOARD_USER",
+  "DASHBOARD_PASS",
+  "SESSION_SECRET",
+  "AUTH_COOKIE_NAME"
+];
+
+const missingEnv = requiredEnv.filter((key) => !process.env[key] || !String(process.env[key]).trim());
+if (missingEnv.length > 0) {
+  throw new Error(`Missing required env vars: ${missingEnv.join(", ")}`);
+}
+
+if (!Number.isFinite(PORT) || PORT <= 0) {
+  throw new Error("Invalid PORT env var.");
+}
+
+if (!Number.isFinite(HISTORY_LIMIT) || HISTORY_LIMIT <= 0) {
+  throw new Error("Invalid HISTORY_LIMIT env var.");
+}
 
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || "http://localhost:5173")
   .split(",")
@@ -147,6 +181,12 @@ const DEFAULT_PIPELINE_STAGES = [
 ] as const;
 
 app.use((req, res, next) => {
+  const requestId = typeof req.headers["x-request-id"] === "string" && req.headers["x-request-id"].trim()
+    ? req.headers["x-request-id"].trim()
+    : crypto.randomUUID();
+  (req as express.Request & { meta?: RequestMeta }).meta = { requestId };
+  res.setHeader("X-Request-Id", requestId);
+
   const origin = req.headers.origin;
   if (origin && allowedOrigins.includes(origin)) {
     res.header("Access-Control-Allow-Origin", origin);
@@ -164,10 +204,51 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.json());
+app.use(express.json({
+  verify: (req, _res, buffer) => {
+    (req as express.Request & { meta?: RequestMeta }).meta = {
+      ...(req as express.Request & { meta?: RequestMeta }).meta,
+      requestId: (req as express.Request & { meta?: RequestMeta }).meta?.requestId || crypto.randomUUID(),
+      rawBody: Buffer.from(buffer)
+    };
+  }
+}));
 
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
+});
+
+app.get("/api/system/readiness", async (_req, res) => {
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    res.json({ ok: true, db: "up" });
+  } catch (err) {
+    res.status(503).json({ ok: false, db: "down", error: formatError(err) });
+  }
+});
+
+app.get("/api/system/health-details", async (_req, res) => {
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    res.json({
+      ok: true,
+      uptimeSec: Math.floor(process.uptime()),
+      db: "up",
+      wsClients: wsClients.size,
+      worker: {
+        intervalMs: WEBHOOK_WORKER_INTERVAL_MS,
+        maxRetries: WEBHOOK_MAX_RETRIES
+      }
+    });
+  } catch (err) {
+    res.status(503).json({
+      ok: false,
+      uptimeSec: Math.floor(process.uptime()),
+      db: "down",
+      wsClients: wsClients.size,
+      error: formatError(err)
+    });
+  }
 });
 
 app.post("/api/auth/login", (req, res) => {
@@ -1410,27 +1491,325 @@ app.get("/api/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
-app.post("/webhook", (req, res) => {
-  res.sendStatus(200);
+app.post("/webhook", async (req, res) => {
+  const requestId = (req as express.Request & { meta?: RequestMeta }).meta?.requestId || "unknown";
+  const rawBody = (req as express.Request & { meta?: RequestMeta }).meta?.rawBody;
 
-  setImmediate(() => {
-    processIncomingWebhook(req.body).catch((err) => {
-      console.error("Webhook processing error:", err);
-    });
+  if (!isValidMetaWebhookSignature(req, rawBody)) {
+    logEvent("warn", "webhook.signature.invalid", { requestId });
+    res.sendStatus(403);
+    return;
+  }
+
+  const created = await enqueueWebhookEvent(req.body, requestId);
+  logEvent("info", "webhook.enqueued", {
+    requestId,
+    eventId: created?.id ?? null,
+    waId: created?.waId ?? null,
+    waMessageId: created?.waMessageId ?? null,
+    deduped: !created
+  });
+
+  res.sendStatus(200);
+});
+
+app.post("/api/webhook", async (req, res) => {
+  const requestId = (req as express.Request & { meta?: RequestMeta }).meta?.requestId || "unknown";
+  const rawBody = (req as express.Request & { meta?: RequestMeta }).meta?.rawBody;
+
+  if (!isValidMetaWebhookSignature(req, rawBody)) {
+    logEvent("warn", "webhook.signature.invalid", { requestId });
+    res.sendStatus(403);
+    return;
+  }
+
+  const created = await enqueueWebhookEvent(req.body, requestId);
+  logEvent("info", "webhook.enqueued", {
+    requestId,
+    eventId: created?.id ?? null,
+    waId: created?.waId ?? null,
+    waMessageId: created?.waMessageId ?? null,
+    deduped: !created
+  });
+
+  res.sendStatus(200);
+});
+
+app.get("/api/webhook/events", requireSession, async (req, res) => {
+  const status = typeof req.query.status === "string" ? req.query.status.trim() : "";
+  const page = Math.max(1, Number(req.query.page || 1));
+  const limit = Math.max(1, Math.min(100, Number(req.query.limit || 20)));
+
+  const where = status
+    ? { status }
+    : undefined;
+
+  const [total, events] = await Promise.all([
+    prisma.webhookEvent.count({ where }),
+    prisma.webhookEvent.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      skip: (page - 1) * limit,
+      take: limit
+    })
+  ]);
+
+  res.json({
+    page,
+    limit,
+    total,
+    events
   });
 });
 
-app.post("/api/webhook", (req, res) => {
-  res.sendStatus(200);
+app.post("/api/webhook/events/:id/replay", requireSession, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ message: "ID de evento inválido." });
+    return;
+  }
 
-  setImmediate(() => {
-    processIncomingWebhook(req.body).catch((err) => {
-      console.error("Webhook processing error:", err);
-    });
+  const existing = await prisma.webhookEvent.findUnique({ where: { id } });
+  if (!existing) {
+    res.status(404).json({ message: "Evento não encontrado." });
+    return;
+  }
+
+  if (existing.status === "processing") {
+    res.status(409).json({ message: "Evento em processamento." });
+    return;
+  }
+
+  const replay = await prisma.webhookEvent.update({
+    where: { id },
+    data: {
+      status: "pending",
+      nextAttemptAt: new Date(),
+      lastError: null,
+      processedAt: null,
+      lockedAt: null
+    }
   });
+
+  res.json({ message: "Replay agendado com sucesso.", event: replay });
 });
 
-async function processIncomingWebhook(payload: unknown): Promise<void> {
+let webhookWorkerInProgress = false;
+
+function logEvent(level: "info" | "warn" | "error", event: string, data?: Record<string, unknown>): void {
+  const output = {
+    ts: new Date().toISOString(),
+    level,
+    event,
+    ...data
+  };
+
+  const payload = JSON.stringify(output);
+  if (level === "error") {
+    console.error(payload);
+    return;
+  }
+
+  if (level === "warn") {
+    console.warn(payload);
+    return;
+  }
+
+  console.log(payload);
+}
+
+function formatError(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === "string") return err;
+  return "unknown_error";
+}
+
+function shouldRetryStatus(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
+async function fetchWithRetry(url: string, init: RequestInit, maxAttempts = 3): Promise<Response> {
+  let lastError: unknown = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const response = await fetch(url, init);
+      if (!shouldRetryStatus(response.status) || attempt === maxAttempts) {
+        return response;
+      }
+
+      const waitMs = Math.min(8000, 500 * 2 ** (attempt - 1));
+      await delay(waitMs);
+    } catch (err) {
+      lastError = err;
+      if (attempt >= maxAttempts) {
+        throw err;
+      }
+      const waitMs = Math.min(8000, 500 * 2 ** (attempt - 1));
+      await delay(waitMs);
+    }
+  }
+
+  throw new Error(formatError(lastError));
+}
+
+function utf8Text(input: string): string {
+  return Buffer.from(input, "utf8").toString("utf8").normalize("NFC");
+}
+
+function extractWebhookData(payload: unknown): { waId: string | null; waMessageId: string | null } {
+  const msg = (payload as any)?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+  const waId = normalizeWaId(String(msg?.from || ""));
+  const waMessageId = typeof msg?.id === "string" && msg.id.trim() ? msg.id.trim() : null;
+  return {
+    waId: waId || null,
+    waMessageId
+  };
+}
+
+function buildWebhookDedupeKey(payload: unknown, waMessageId: string | null): string {
+  if (waMessageId) {
+    return `wa:${waMessageId}`;
+  }
+
+  const hash = crypto.createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+  return `payload:${hash}`;
+}
+
+function isValidMetaWebhookSignature(req: express.Request, rawBody?: Buffer): boolean {
+  if (!rawBody || !META_APP_SECRET) return false;
+
+  const signatureHeader = req.headers["x-hub-signature-256"];
+  const rawSignature = Array.isArray(signatureHeader) ? signatureHeader[0] : signatureHeader;
+  if (!rawSignature || !rawSignature.startsWith("sha256=")) {
+    return false;
+  }
+
+  const digest = crypto
+    .createHmac("sha256", META_APP_SECRET)
+    .update(rawBody)
+    .digest("hex");
+
+  return safeEqual(rawSignature, `sha256=${digest}`);
+}
+
+async function enqueueWebhookEvent(payload: unknown, requestId: string) {
+  const { waId, waMessageId } = extractWebhookData(payload);
+  const dedupeKey = buildWebhookDedupeKey(payload, waMessageId);
+
+  try {
+    return await prisma.webhookEvent.create({
+      data: {
+        requestId,
+        waId,
+        waMessageId,
+        dedupeKey,
+        payload: payload as object,
+        status: "pending",
+        nextAttemptAt: new Date()
+      }
+    });
+  } catch (err) {
+    if (isPrismaUniqueError(err)) return null;
+    throw err;
+  }
+}
+
+function computeBackoffMs(attempt: number): number {
+  return Math.min(60000, 1000 * 2 ** Math.max(0, attempt - 1));
+}
+
+async function processWebhookQueueTick(): Promise<void> {
+  if (webhookWorkerInProgress) return;
+  webhookWorkerInProgress = true;
+
+  try {
+    for (let i = 0; i < 10; i++) {
+      const now = new Date();
+      const candidate = await prisma.webhookEvent.findFirst({
+        where: {
+          status: { in: ["pending", "failed"] },
+          OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }]
+        },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }]
+      });
+
+      if (!candidate) break;
+
+      const claimed = await prisma.webhookEvent.updateMany({
+        where: {
+          id: candidate.id,
+          status: candidate.status
+        },
+        data: {
+          status: "processing",
+          lockedAt: new Date()
+        }
+      });
+
+      if (claimed.count === 0) continue;
+
+      try {
+        await processIncomingWebhook(candidate.payload, {
+          requestId: candidate.requestId,
+          eventId: candidate.id
+        });
+
+        await prisma.webhookEvent.update({
+          where: { id: candidate.id },
+          data: {
+            status: "done",
+            processedAt: new Date(),
+            lockedAt: null,
+            lastError: null
+          }
+        });
+      } catch (err) {
+        const attemptCount = candidate.attemptCount + 1;
+        const dead = attemptCount >= WEBHOOK_MAX_RETRIES;
+        const nextAttemptAt = dead ? null : new Date(Date.now() + computeBackoffMs(attemptCount));
+
+        const updated = await prisma.webhookEvent.update({
+          where: { id: candidate.id },
+          data: {
+            status: dead ? "dead" : "failed",
+            attemptCount,
+            nextAttemptAt,
+            lockedAt: null,
+            lastError: formatError(err)
+          }
+        });
+
+        logEvent("error", "webhook.processing.failed", {
+          requestId: updated.requestId,
+          eventId: updated.id,
+          waId: updated.waId,
+          waMessageId: updated.waMessageId,
+          status: updated.status,
+          attemptCount: updated.attemptCount,
+          error: updated.lastError
+        });
+
+        broadcastEvent("webhook_event_failed", {
+          webhookEventId: updated.id,
+          status: updated.status,
+          attemptCount: updated.attemptCount,
+          waId: updated.waId,
+          waMessageId: updated.waMessageId,
+          error: updated.lastError
+        });
+      }
+    }
+  } finally {
+    webhookWorkerInProgress = false;
+  }
+}
+
+async function processIncomingWebhook(
+  payload: unknown,
+  context?: { requestId?: string; eventId?: number }
+): Promise<void> {
+  const requestId = context?.requestId || "system";
   const msg = (payload as any)?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
   if (!msg) return;
 
@@ -1438,7 +1817,7 @@ async function processIncomingWebhook(payload: unknown): Promise<void> {
   const waId = normalizeWaId(waIdRaw || "");
   const waMessageId = msg.id as string | undefined;
   const profileNameRaw = (payload as any)?.entry?.[0]?.changes?.[0]?.value?.contacts?.[0]?.profile?.name;
-  const profileName = typeof profileNameRaw === "string" && profileNameRaw.trim() ? profileNameRaw.trim() : null;
+  const profileName = typeof profileNameRaw === "string" && profileNameRaw.trim() ? utf8Text(profileNameRaw.trim()) : null;
   if (!waId) return;
 
   const defaultStageId = await getDefaultStageId();
@@ -1456,6 +1835,15 @@ async function processIncomingWebhook(payload: unknown): Promise<void> {
       botEnabled: true,
       lastInteractionAt: new Date()
     }
+  });
+
+  logEvent("info", "webhook.message.accepted", {
+    requestId,
+    eventId: context?.eventId ?? null,
+    waId,
+    waMessageId: waMessageId || null,
+    contactId: contact.id,
+    messageType: msg.type
   });
 
   if (msg.type !== "text" && msg.type !== "audio") {
@@ -1505,6 +1893,8 @@ async function processIncomingWebhook(payload: unknown): Promise<void> {
     textIn = (msg.text?.body as string | undefined) || "";
   }
 
+  textIn = utf8Text(textIn);
+
   if (!textIn && msg.type === "text") return;
 
   let inboundMsg: { id: number; direction: string; body: string; createdAt: Date } | null = null;
@@ -1544,19 +1934,20 @@ async function processIncomingWebhook(payload: unknown): Promise<void> {
     return "Desculpe, tive um problema aqui. Pode repetir?";
   });
 
-  await delay(getHumanDelayMs(reply));
-  await sendWhatsAppText(waId, reply);
+  const safeReply = utf8Text(reply);
+  await delay(getHumanDelayMs(safeReply));
+  await sendWhatsAppText(waId, safeReply);
   const outMsg = await prisma.message.create({
     data: {
       contactId: contact.id,
       direction: "out",
-      body: reply,
+      body: safeReply,
       waMessageId: null
     }
   });
 
   // Broadcast outbound reply via WebSocket
-  broadcastMessage(waId, contact.id, { id: outMsg.id, direction: "out", body: reply, createdAt: outMsg.createdAt });
+  broadcastMessage(waId, contact.id, { id: outMsg.id, direction: "out", body: safeReply, createdAt: outMsg.createdAt });
 
   // Enrich lead in background
   setImmediate(() => {
@@ -1575,7 +1966,7 @@ async function generateReply(
     return "Configuração incompleta da IA.";
   }
 
-  const resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
+  const resp = await fetchWithRetry(`${OPENAI_BASE_URL}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -1663,7 +2054,7 @@ Formato de Resposta (JSON):
 Responda APENAS o JSON. Se não souber algum campo, coloque "Não informado".`;
 
   try {
-    const resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
+    const resp = await fetchWithRetry(`${OPENAI_BASE_URL}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -1725,7 +2116,7 @@ async function transcribeAudio(mediaId: string): Promise<string> {
     formData.append("file", blob, "audio.ogg");
     formData.append("model", OPENAI_TRANSCRIPTION_MODEL);
 
-    const openaiResp = await fetch(`${OPENAI_BASE_URL}/audio/transcriptions`, {
+    const openaiResp = await fetchWithRetry(`${OPENAI_BASE_URL}/audio/transcriptions`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${OPENAI_API_KEY}`
@@ -1890,7 +2281,7 @@ async function sendWhatsAppText(to: string, body: string): Promise<void> {
 
   const url = `https://graph.facebook.com/v20.0/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
 
-  const resp = await fetch(url, {
+  const resp = await fetchWithRetry(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -2329,6 +2720,10 @@ httpServer.listen(PORT, () => {
     setInterval(() => {
       void syncMessagesFromDatabase();
     }, 1500);
+    setInterval(() => {
+      void processWebhookQueueTick();
+    }, WEBHOOK_WORKER_INTERVAL_MS);
+    void processWebhookQueueTick();
   })();
 });
 

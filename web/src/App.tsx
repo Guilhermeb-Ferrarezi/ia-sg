@@ -8,11 +8,16 @@ import ChatSection from "./components/ChatSection";
 import MessageNotifications from "./components/MessageNotifications";
 import AnalyticsSection from "./components/AnalyticsSection";
 import CalendarSection from "./components/CalendarSection";
+import SidebarNavigation, { type AppPanel } from "./components/SidebarNavigation";
+import SystemHealthSection from "./components/SystemHealthSection";
+import WebhookEventsSection from "./components/WebhookEventsSection";
 import PaginationControls from "./components/PaginationControls";
 import StatCard from "./components/StatCard";
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "./components/ui/sheet";
 import { apiFetch } from "./lib/apiFetch";
 import { resolveWebSocketUrl } from "./lib/ws";
-import type { AuthUser, ConfirmDialogState, ContactMessage, ConversionMetrics, FaqItem, Lead, PaginationMeta, PipelineStage, TaskPriority, TaskStatus, Toast } from "./types/dashboard";
+import { BarChart3, CalendarDays, LayoutGrid, Menu, MessageSquare, ShieldAlert, Sparkles, type LucideIcon } from "lucide-react";
+import type { AuthUser, ConfirmDialogState, ContactMessage, ConversionMetrics, FaqItem, Lead, PaginationMeta, PipelineStage, SystemHealthDetails, SystemReadiness, TaskPriority, TaskStatus, Toast, WebhookEvent, WebhookEventsResponse } from "./types/dashboard";
 import ToastContainer from "./components/ToastContainer";
 
 const TASK_PRIORITIES: TaskPriority[] = ["low", "medium", "high"];
@@ -32,7 +37,9 @@ export default function App() {
   const [submitting, setSubmitting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
-  const [activePanel, setActivePanel] = useState<"crm" | "faqs" | "chat" | "analytics" | "calendar">("crm");
+  const [activePanel, setActivePanel] = useState<AppPanel>("crm");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [activeChatWaId, setActiveChatWaId] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
 
@@ -109,12 +116,29 @@ export default function App() {
   const userRef = useRef<AuthUser | null>(user);
   const selectedLeadIdRef = useRef<number | null>(selectedLeadId);
   const leadsRef = useRef<Lead[]>(leads);
+  const activePanelRef = useRef<AppPanel>(activePanel);
+
+  const [systemReadiness, setSystemReadiness] = useState<SystemReadiness | null>(null);
+  const [systemHealthDetails, setSystemHealthDetails] = useState<SystemHealthDetails | null>(null);
+  const [systemLoading, setSystemLoading] = useState(false);
+  const [systemError, setSystemError] = useState("");
+  const [systemLastUpdated, setSystemLastUpdated] = useState<Date | null>(null);
+
+  const [webhookEvents, setWebhookEvents] = useState<WebhookEvent[]>([]);
+  const [webhookEventsLoading, setWebhookEventsLoading] = useState(false);
+  const [webhookEventsError, setWebhookEventsError] = useState("");
+  const [webhookEventsStatusFilter, setWebhookEventsStatusFilter] = useState("all");
+  const [webhookEventsPage, setWebhookEventsPage] = useState(1);
+  const [webhookEventsLimit] = useState(10);
+  const [webhookEventsTotal, setWebhookEventsTotal] = useState(0);
+  const [webhookReplayId, setWebhookReplayId] = useState<number | null>(null);
 
   useEffect(() => {
     userRef.current = user;
     selectedLeadIdRef.current = selectedLeadId;
     leadsRef.current = leads;
-  }, [user, selectedLeadId, leads]);
+    activePanelRef.current = activePanel;
+  }, [user, selectedLeadId, leads, activePanel]);
 
   // Context menu state
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; lead: Lead; stageSubmenu?: boolean } | null>(null);
@@ -135,6 +159,56 @@ export default function App() {
     setLeads(leadsRes.leads);
     setMetrics(metricsRes);
   }, []);
+
+  const loadSystemData = useCallback(async () => {
+    setSystemLoading(true);
+    try {
+      const [readiness, details] = await Promise.all([
+        apiFetch<SystemReadiness>("/system/readiness"),
+        apiFetch<SystemHealthDetails>("/system/health-details")
+      ]);
+      setSystemReadiness(readiness);
+      setSystemHealthDetails(details);
+      setSystemError("");
+      setSystemLastUpdated(new Date());
+    } catch (err) {
+      setSystemError(err instanceof Error ? err.message : "Falha ao consultar status do sistema.");
+    } finally {
+      setSystemLoading(false);
+    }
+  }, []);
+
+  const loadWebhookEvents = useCallback(async (page = webhookEventsPage, status = webhookEventsStatusFilter) => {
+    setWebhookEventsLoading(true);
+    try {
+      const statusQuery = status !== "all" ? `&status=${encodeURIComponent(status)}` : "";
+      const response = await apiFetch<WebhookEventsResponse>(
+        `/webhook/events?page=${page}&limit=${webhookEventsLimit}${statusQuery}`
+      );
+      setWebhookEvents(response.events);
+      setWebhookEventsPage(response.page);
+      setWebhookEventsTotal(response.total);
+      setWebhookEventsError("");
+    } catch (err) {
+      setWebhookEventsError(err instanceof Error ? err.message : "Falha ao carregar eventos de webhook.");
+    } finally {
+      setWebhookEventsLoading(false);
+    }
+  }, [webhookEventsLimit, webhookEventsPage, webhookEventsStatusFilter]);
+
+  const handleReplayWebhookEvent = useCallback(async (id: number) => {
+    setWebhookReplayId(id);
+    try {
+      await apiFetch(`/webhook/events/${id}/replay`, { method: "POST" });
+      addToast("Evento enviado para reprocessamento.", "success");
+      await loadWebhookEvents(webhookEventsPage, webhookEventsStatusFilter);
+    } catch (err) {
+      setWebhookEventsError(err instanceof Error ? err.message : "Falha ao reprocessar evento.");
+      addToast("Falha ao reprocessar evento.", "error");
+    } finally {
+      setWebhookReplayId(null);
+    }
+  }, [addToast, loadWebhookEvents, webhookEventsPage, webhookEventsStatusFilter]);
 
   const loadLeadDetails = useCallback(async (id: number) => {
     const requestId = ++leadDetailsRequestRef.current;
@@ -195,6 +269,20 @@ export default function App() {
   }, [checkSession]);
 
   useEffect(() => {
+    if (!user) return;
+    void loadSystemData();
+    const timer = window.setInterval(() => {
+      void loadSystemData();
+    }, 30000);
+    return () => window.clearInterval(timer);
+  }, [user, loadSystemData]);
+
+  useEffect(() => {
+    if (!user || activePanel !== "operation") return;
+    void loadWebhookEvents(webhookEventsPage, webhookEventsStatusFilter);
+  }, [user, activePanel, webhookEventsPage, webhookEventsStatusFilter, loadWebhookEvents]);
+
+  useEffect(() => {
     function connect() {
       if (!userRef.current) return;
 
@@ -222,6 +310,18 @@ export default function App() {
               setSelectedLead(updatedLead);
             }
             void loadCrm(); // refresh metrics and full list order
+          }
+
+          if (data.type === "webhook_event_failed") {
+            const eventId = typeof data.webhookEventId === "number" ? data.webhookEventId : null;
+            addToast(
+              eventId ? `Falha em evento webhook #${eventId}.` : "Falha em evento webhook detectada.",
+              "error"
+            );
+
+            if (activePanelRef.current === "operation") {
+              void loadWebhookEvents(1, webhookEventsStatusFilter);
+            }
           }
 
           if (data.type === "new_message") {
@@ -314,7 +414,7 @@ export default function App() {
         wsRef.current.close();
       }
     };
-  }, [user, loadCrm, loadFaqs, loadLeadMessages]); // Removed 'leads' dependency
+  }, [user, loadCrm, loadFaqs, loadLeadMessages, addToast, loadWebhookEvents, webhookEventsStatusFilter]); // Removed 'leads' dependency
 
   useEffect(() => {
     if (!selectedLeadId) {
@@ -393,6 +493,26 @@ export default function App() {
       setRefreshing(false);
     }
   };
+
+  const failedWebhookEventsCount = useMemo(
+    () => webhookEvents.filter((event) => event.status === "failed" || event.status === "dead").length,
+    [webhookEvents]
+  );
+  const isDbDown = (systemReadiness?.db === "down") || (systemHealthDetails?.db === "down");
+
+  const handleSelectPanel = useCallback((panel: AppPanel) => {
+    setActivePanel(panel);
+    setMobileNavOpen(false);
+  }, []);
+
+  const mobileNavItems: Array<{ panel: AppPanel; label: string; icon: LucideIcon }> = [
+    { panel: "crm", label: "CRM", icon: LayoutGrid },
+    { panel: "faqs", label: "FAQs", icon: Sparkles },
+    { panel: "chat", label: "Chat", icon: MessageSquare },
+    { panel: "analytics", label: "Analytics", icon: BarChart3 },
+    { panel: "calendar", label: "Calendário", icon: CalendarDays },
+    { panel: "operation", label: "Operação", icon: ShieldAlert }
+  ];
   const handleCreateLead = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!leadName.trim() || !leadWaId.trim()) {
@@ -858,64 +978,78 @@ export default function App() {
   }
 
   return (
-    <main className="min-h-screen bg-[#020617] px-4 py-8 text-slate-100 selection:bg-cyan-500/30">
-      <section className="mx-auto max-w-[1600px] space-y-6">
-        <header className="flex flex-wrap items-center justify-between gap-6 px-2">
-          <div className="space-y-1">
-            <h1 className="text-3xl font-bold tracking-tight bg-linear-to-r from-white to-slate-400 bg-clip-text text-transparent">CRM WhatsApp</h1>
-            <div className="flex items-center gap-2 text-xs font-medium text-slate-500 uppercase tracking-widest">
-              <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse"></span>
-              Sessão ativa: <span className="text-slate-300">{user.username}</span> ({user.role})
+    <main className="min-h-screen bg-[#020617] text-slate-100 selection:bg-cyan-500/30">
+      <SidebarNavigation
+        activePanel={activePanel}
+        onSelectPanel={handleSelectPanel}
+        collapsed={sidebarCollapsed}
+        onCollapsedChange={setSidebarCollapsed}
+        failedEventsCount={failedWebhookEventsCount}
+      />
+
+      <section className={`min-h-screen transition-[padding-left] duration-300 ${sidebarCollapsed ? "md:pl-20" : "md:pl-64"}`}>
+        <div className="min-w-0 space-y-6 px-3 py-4 md:px-4 md:py-4">
+          <header className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-800 bg-slate-900/50 px-4 py-3">
+            <div className="flex items-center gap-3">
+              <Sheet open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
+                <SheetTrigger asChild>
+                  <button
+                    type="button"
+                    className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-700 bg-slate-950 text-slate-200 md:hidden"
+                    aria-label="Abrir menu de navegação"
+                  >
+                    <Menu className="h-5 w-5" />
+                  </button>
+                </SheetTrigger>
+                <SheetContent>
+                  <SheetHeader className="border-b border-slate-800">
+                    <SheetTitle>Menu</SheetTitle>
+                  </SheetHeader>
+                  <nav className="space-y-1 p-3">
+                    {mobileNavItems.map(({ panel, label, icon: Icon }) => (
+                      <button
+                        key={panel}
+                        type="button"
+                        className={`flex w-full items-center justify-between rounded-xl border px-3 py-2.5 text-left text-sm ${activePanel === panel ? "border-cyan-500/30 bg-cyan-500/10 text-cyan-300" : "border-transparent text-slate-300 hover:border-slate-700 hover:bg-slate-900"}`}
+                        onClick={() => handleSelectPanel(panel)}
+                      >
+                        <span className="flex min-w-0 items-center gap-3">
+                          <Icon className="h-4 w-4 shrink-0" />
+                          <span className="truncate">{label}</span>
+                        </span>
+                        {panel === "operation" && failedWebhookEventsCount > 0 ? (
+                          <span className="rounded-full bg-rose-500/20 px-2 py-0.5 text-[10px] font-bold text-rose-300">
+                            {failedWebhookEventsCount}
+                          </span>
+                        ) : null}
+                      </button>
+                    ))}
+                  </nav>
+                </SheetContent>
+              </Sheet>
+
+              <div>
+                <h1 className="text-xl font-bold tracking-tight bg-linear-to-r from-white to-slate-400 bg-clip-text text-transparent md:text-2xl">CRM WhatsApp</h1>
+                <div className="flex items-center gap-2 text-[11px] font-medium text-slate-500 uppercase tracking-widest">
+                  <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                  Sessão: <span className="text-slate-300">{user.username}</span>
+                </div>
+              </div>
             </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <div className="flex items-center p-1 bg-slate-900/50 border border-slate-800 rounded-xl">
-              <button
-                className={`rounded-lg px-5 py-2 text-xs font-bold uppercase tracking-wider transition-all ${activePanel === "crm" ? "bg-cyan-500 text-slate-950 shadow-lg shadow-cyan-500/20" : "text-slate-400 hover:text-slate-200"}`}
-                onClick={() => setActivePanel("crm")}
-                type="button"
-              >
-                CRM
+
+            <div className="flex items-center gap-2">
+              <span className={`rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-widest ${isDbDown ? "border-rose-500/30 bg-rose-500/10 text-rose-300" : "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"}`}>
+                DB {isDbDown ? "down" : "up"}
+              </span>
+              <button className="flex items-center gap-2 rounded-xl border border-cyan-500/20 bg-cyan-500/5 px-4 py-2 text-xs font-bold uppercase tracking-wider text-cyan-400 hover:bg-cyan-500/10 transition-all disabled:opacity-50" onClick={() => void refreshAll()} type="button" disabled={refreshing}>
+                <svg className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                {refreshing ? "Atualizando..." : "Atualizar"}
               </button>
-              <button
-                className={`rounded-lg px-5 py-2 text-xs font-bold uppercase tracking-wider transition-all ${activePanel === "faqs" ? "bg-cyan-500 text-slate-950 shadow-lg shadow-cyan-500/20" : "text-slate-400 hover:text-slate-200"}`}
-                onClick={() => setActivePanel("faqs")}
-                type="button"
-              >
-                FAQs
-              </button>
-              <button
-                className={`rounded-lg px-5 py-2 text-xs font-bold uppercase tracking-wider transition-all ${activePanel === "chat" ? "bg-cyan-500 text-slate-950 shadow-lg shadow-cyan-500/20" : "text-slate-400 hover:text-slate-200"}`}
-                onClick={() => setActivePanel("chat")}
-                type="button"
-              >
-                Chat
-              </button>
-              <button
-                className={`rounded-lg px-5 py-2 text-xs font-bold uppercase tracking-wider transition-all ${activePanel === "analytics" ? "bg-violet-500 text-white shadow-lg shadow-violet-500/20" : "text-slate-400 hover:text-slate-200"}`}
-                onClick={() => setActivePanel("analytics")}
-                type="button"
-              >
-                Analytics
-              </button>
-              <button
-                className={`rounded-lg px-5 py-2 text-xs font-bold uppercase tracking-wider transition-all ${activePanel === "calendar" ? "bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/20" : "text-slate-400 hover:text-slate-200"}`}
-                onClick={() => setActivePanel("calendar")}
-                type="button"
-              >
-                Calendário
-              </button>
+              <button className="rounded-xl border border-slate-800 bg-slate-900/50 px-4 py-2 text-xs font-bold uppercase tracking-wider text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition-all" onClick={handleLogout} type="button">Sair</button>
             </div>
-            <div className="h-8 w-px bg-slate-800 mx-2 invisible sm:visible"></div>
-            <button className="flex items-center gap-2 rounded-xl border border-cyan-500/20 bg-cyan-500/5 px-5 py-2.5 text-xs font-bold uppercase tracking-wider text-cyan-400 hover:bg-cyan-500/10 transition-all disabled:opacity-50" onClick={() => void refreshAll()} type="button" disabled={refreshing}>
-              <svg className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-              </svg>
-              {refreshing ? "Atualizando..." : "Atualizar"}
-            </button>
-            <button className="rounded-xl border border-slate-800 bg-slate-900/50 px-5 py-2.5 text-xs font-bold uppercase tracking-wider text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition-all" onClick={handleLogout} type="button">Sair</button>
-          </div>
-        </header>
+          </header>
 
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
           <div className="fade-in-up stagger-1"><StatCard label="Leads abertos" value={metrics?.overall.open ?? 0} /></div>
@@ -1017,7 +1151,7 @@ export default function App() {
                 </div>
 
                 {/* Lista de Etapas (Drag and Drop) */}
-                <div className="mt-8 space-y-2 max-h-[250px] overflow-y-auto pr-1 scrollbar-thin scrollbar-thumb-slate-800 scrollbar-track-transparent">
+                <div className="supabase-scroll mt-8 max-h-[250px] space-y-2 overflow-y-auto pr-1">
                   <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2 block sticky top-0 bg-[#161d2b] py-1">Organizar Etapas</label>
                   {stages.map((s) => (
                     <div
@@ -1071,7 +1205,7 @@ export default function App() {
               </form>
             </div>
 
-            <div className="overflow-x-auto rounded-3xl border border-slate-800 bg-[#0f172a]/80 p-6 shadow-2xl backdrop-blur-sm">
+            <div className="supabase-scroll overflow-x-auto rounded-3xl border border-slate-800 bg-[#0f172a]/80 p-6 shadow-2xl backdrop-blur-sm">
               <div className="flex items-center justify-between border-b border-slate-800 pb-5 mb-6">
                 <div className="flex items-center gap-3">
                   <div className="p-2.5 rounded-xl bg-cyan-500 shadow-lg shadow-cyan-500/30 text-slate-950">
@@ -1479,7 +1613,7 @@ export default function App() {
                     <div className="flex-1 overflow-hidden grid grid-cols-1 lg:grid-cols-[1fr_350px]">
                       {/* Chat History */}
                       <div className="min-h-0 flex flex-col border-r border-slate-800">
-                        <div className="min-h-0 flex-1 p-4 space-y-3 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-800 scrollbar-track-transparent">
+                        <div className="supabase-scroll min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
                           {leadMessages.length > 0 ? (
                             leadMessages.map((m) => (
                               <div
@@ -1528,7 +1662,7 @@ export default function App() {
                         <div className="p-5 border-b border-slate-800">
                           <h4 className="text-xs font-bold uppercase tracking-widest text-slate-400">Próximos Passos</h4>
                         </div>
-                        <div className="flex-1 p-5 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-800">
+                        <div className="supabase-scroll flex-1 overflow-y-auto p-5">
                           <form className="mb-6 space-y-4" onSubmit={handleCreateTask}>
                             <div>
                               <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5 ml-1">Título da Tarefa</label>
@@ -1617,11 +1751,42 @@ export default function App() {
         <AnalyticsSection active={activePanel === "analytics"} />
         <CalendarSection active={activePanel === "calendar"} />
 
+        {activePanel === "operation" ? (
+          <section className="space-y-4 panel-enter">
+            <SystemHealthSection
+              readiness={systemReadiness}
+              details={systemHealthDetails}
+              loading={systemLoading}
+              error={systemError}
+              lastUpdated={systemLastUpdated}
+              onRefresh={() => void loadSystemData()}
+            />
+            <WebhookEventsSection
+              events={webhookEvents}
+              loading={webhookEventsLoading}
+              error={webhookEventsError}
+              statusFilter={webhookEventsStatusFilter}
+              page={webhookEventsPage}
+              limit={webhookEventsLimit}
+              total={webhookEventsTotal}
+              replayingId={webhookReplayId}
+              onStatusFilterChange={(value) => {
+                setWebhookEventsStatusFilter(value);
+                setWebhookEventsPage(1);
+              }}
+              onPageChange={(page) => setWebhookEventsPage(page)}
+              onRefresh={() => void loadWebhookEvents(webhookEventsPage, webhookEventsStatusFilter)}
+              onReplay={(id) => void handleReplayWebhookEvent(id)}
+            />
+          </section>
+        ) : null}
+
         <ConfirmModal open={Boolean(confirmDialog)} title={confirmDialog?.title || ""} description={confirmDialog?.description || ""} confirmText={confirmDialog?.confirmText || "Confirmar"} tone={confirmDialog?.tone || "danger"} loading={Boolean(faqDeletingId || faqUpdatingId || deletingLeadId)} onCancel={() => setConfirmDialog(null)} onConfirm={() => { handleConfirmAction().catch((err) => setError(err instanceof Error ? err.message : "Falha ao confirmar ação.")); }} />
 
         <ToastContainer toasts={toasts} removeToast={removeToast} />
         <MessageNotifications />
 
+        </div>
       </section>
       {/* Context Menu - rendered as portal to avoid positioning issues from backdrop-blur */}
       {contextMenu && createPortal(

@@ -193,3 +193,45 @@ export type TopContact = {
   stageColor: string | null;
   lastInteraction: string | null;
 };
+
+export type SystemReadiness = {
+  ok: boolean;
+  db: "up" | "down" | string;
+  error?: string;
+};
+
+export type SystemHealthDetails = {
+  ok: boolean;
+  uptimeSec: number;
+  db: "up" | "down" | string;
+  wsClients: number;
+  worker?: {
+    intervalMs: number;
+    maxRetries: number;
+  };
+  error?: string;
+};
+
+export type WebhookEvent = {
+  id: number;
+  requestId: string;
+  waId: string | null;
+  waMessageId: string | null;
+  dedupeKey: string;
+  payload: unknown;
+  status: "pending" | "processing" | "done" | "failed" | "dead" | string;
+  attemptCount: number;
+  nextAttemptAt: string | null;
+  lockedAt: string | null;
+  processedAt: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type WebhookEventsResponse = {
+  page: number;
+  limit: number;
+  total: number;
+  events: WebhookEvent[];
+};

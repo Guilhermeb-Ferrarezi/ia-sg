@@ -147,7 +147,7 @@ export default function AnalyticsSection({ active }: { active: boolean }) {
                     {/* Top Contacts */}
                     <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-6 shadow-sm">
                         <h3 className="text-sm font-bold uppercase tracking-widest text-slate-300 mb-4">Top 10 Contatos Mais Ativos</h3>
-                        <div className="overflow-x-auto">
+                        <div className="supabase-scroll overflow-x-auto">
                             <table className="w-full text-sm">
                                 <thead>
                                     <tr className="border-b border-slate-800">

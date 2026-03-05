@@ -4,5 +4,3 @@ node_modules
 docker-compose.yml
 *.sh
 
-*.bat
-*.md

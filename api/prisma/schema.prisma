@@ -116,3 +116,24 @@ model ContactTag {
   @@index([contactId])
   @@index([tagId])
 }
+
+model WebhookEvent {
+  id           Int      @id @default(autoincrement())
+  requestId    String
+  waId         String?
+  waMessageId  String?
+  dedupeKey    String   @unique
+  payload      Json
+  status       String   @default("pending")
+  attemptCount Int      @default(0)
+  nextAttemptAt DateTime?
+  lockedAt     DateTime?
+  processedAt  DateTime?
+  lastError    String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([status, nextAttemptAt])
+  @@index([waMessageId])
+  @@index([createdAt])
+}

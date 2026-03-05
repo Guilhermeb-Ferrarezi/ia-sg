@@ -285,7 +285,7 @@ export default function ChatSection({ initialSelectedWaId }: ChatSectionProps) {
             />
           </div>
         </div>
-        <div className="flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-800 scrollbar-track-transparent">
+        <div className="supabase-scroll flex-1 overflow-y-auto">
           {leadsLoading ? (
             <div className="flex h-full flex-col items-center justify-center gap-4 text-slate-500">
               <svg className="animate-spin h-8 w-8 text-cyan-500" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
@@ -391,7 +391,7 @@ export default function ChatSection({ initialSelectedWaId }: ChatSectionProps) {
             </div>
 
             {/* Messages */}
-            <div className="flex-1 overflow-y-auto p-6 space-y-6 scrollbar-thin scrollbar-thumb-slate-800 scrollbar-track-transparent">
+            <div className="supabase-scroll flex-1 space-y-6 overflow-y-auto p-6">
               {loading ? (
                 <div className="flex h-full flex-col items-center justify-center gap-4 text-slate-500">
                   <svg className="animate-spin h-8 w-8 text-cyan-500" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
@@ -501,7 +501,7 @@ export default function ChatSection({ initialSelectedWaId }: ChatSectionProps) {
               </div>
               {/* Templates Panel */}
               {showTemplates && (
-                <div className="mt-3 rounded-xl border border-violet-500/20 bg-slate-800/80 p-3 max-h-48 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-transparent">
+                <div className="supabase-scroll mt-3 max-h-48 overflow-y-auto rounded-xl border border-violet-500/20 bg-slate-800/80 p-3">
                   <div className="text-[10px] font-bold text-violet-400 uppercase tracking-widest mb-2">Templates Rápidos</div>
                   {templates.length === 0 ? (
                     <p className="text-xs text-slate-500">Nenhum template. Crie templates na aba de configurações.</p>
