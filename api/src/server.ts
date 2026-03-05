@@ -96,13 +96,17 @@ wss.on("connection", (ws, req) => {
 
   console.log("[WS] Connection accepted");
   wsClients.add(ws);
+  void sendSystemHealthSnapshotToClient(ws);
+  void broadcastSystemHealthSnapshot();
   ws.on("close", () => {
     console.log("[WS] Client disconnected");
     wsClients.delete(ws);
+    void broadcastSystemHealthSnapshot();
   });
   ws.on("error", (err) => {
     console.error("[WS] Client error:", err);
     wsClients.delete(ws);
+    void broadcastSystemHealthSnapshot();
   });
 });
 
@@ -120,6 +124,9 @@ function broadcastMessage(
       client.send(payload);
     }
   }
+
+  broadcastEvent("analytics_updated");
+  broadcastEvent("dashboard_updated");
 }
 
 function broadcastEvent(type: string, data?: Record<string, unknown>) {
@@ -129,6 +136,62 @@ function broadcastEvent(type: string, data?: Record<string, unknown>) {
       client.send(payload);
     }
   }
+}
+
+async function buildSystemHealthSnapshot(): Promise<{
+  readiness: { ok: boolean; db: "up" | "down"; error?: string };
+  details: {
+    ok: boolean;
+    uptimeSec: number;
+    db: "up" | "down";
+    wsClients: number;
+    worker: { intervalMs: number; maxRetries: number };
+    error?: string;
+  };
+}> {
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    return {
+      readiness: { ok: true, db: "up" },
+      details: {
+        ok: true,
+        uptimeSec: Math.floor(process.uptime()),
+        db: "up",
+        wsClients: wsClients.size,
+        worker: {
+          intervalMs: WEBHOOK_WORKER_INTERVAL_MS,
+          maxRetries: WEBHOOK_MAX_RETRIES
+        }
+      }
+    };
+  } catch (err) {
+    const error = formatError(err);
+    return {
+      readiness: { ok: false, db: "down", error },
+      details: {
+        ok: false,
+        uptimeSec: Math.floor(process.uptime()),
+        db: "down",
+        wsClients: wsClients.size,
+        worker: {
+          intervalMs: WEBHOOK_WORKER_INTERVAL_MS,
+          maxRetries: WEBHOOK_MAX_RETRIES
+        },
+        error
+      }
+    };
+  }
+}
+
+async function sendSystemHealthSnapshotToClient(ws: WebSocket): Promise<void> {
+  if (ws.readyState !== WebSocket.OPEN) return;
+  const snapshot = await buildSystemHealthSnapshot();
+  ws.send(JSON.stringify({ type: "system_health_updated", ...snapshot }));
+}
+
+async function broadcastSystemHealthSnapshot(): Promise<void> {
+  const snapshot = await buildSystemHealthSnapshot();
+  broadcastEvent("system_health_updated", snapshot);
 }
 
 async function initializeWsMessageSync(): Promise<void> {
@@ -404,6 +467,8 @@ app.post("/api/dashboard/faqs", requireSession, async (req, res) => {
         updatedAt: created.updatedAt
       }
     });
+    broadcastEvent("faqs_updated");
+    broadcastEvent("dashboard_updated");
   } catch (err: unknown) {
     if (isPrismaUniqueError(err)) {
       res.status(409).json({ message: "Já existe um FAQ com essa pergunta." });
@@ -452,6 +517,8 @@ app.put("/api/dashboard/faqs/:faqId", requireSession, async (req, res) => {
         updatedAt: updated.updatedAt
       }
     });
+    broadcastEvent("faqs_updated");
+    broadcastEvent("dashboard_updated");
   } catch (err: unknown) {
     if (isPrismaUniqueError(err)) {
       res.status(409).json({ message: "Já existe um FAQ com essa pergunta." });
@@ -481,6 +548,8 @@ app.delete("/api/dashboard/faqs/:faqId", requireSession, async (req, res) => {
     return;
   }
 
+  broadcastEvent("faqs_updated");
+  broadcastEvent("dashboard_updated");
   res.json({ message: "FAQ removido com sucesso." });
 });
 
@@ -500,6 +569,8 @@ app.delete("/api/dashboard/messages/:messageId", requireSession, async (req, res
     return;
   }
 
+  broadcastEvent("dashboard_updated");
+  broadcastEvent("analytics_updated");
   res.json({ message: "Mensagem removida com sucesso." });
 });
 
@@ -524,6 +595,8 @@ app.delete("/api/dashboard/contacts/:contactId/messages", requireSession, async 
     where: { contactId }
   });
 
+  broadcastEvent("dashboard_updated");
+  broadcastEvent("analytics_updated");
   res.json({
     message: "Mensagens removidas com sucesso.",
     deletedCount: deleted.count
@@ -546,6 +619,8 @@ app.delete("/api/dashboard/contacts/:contactId", requireSession, async (req, res
     return;
   }
 
+  broadcastEvent("dashboard_updated");
+  broadcastEvent("analytics_updated");
   res.json({ message: "Contato e histórico removidos com sucesso." });
 });
 
@@ -752,6 +827,8 @@ app.post("/api/crm/leads", requireSession, async (req, res) => {
     });
 
     broadcastEvent("lead_created", { lead: mapLeadDetails(lead) });
+    broadcastEvent("dashboard_updated");
+    broadcastEvent("analytics_updated");
     res.status(201).json({ message: "Lead criado com sucesso.", lead: mapLeadDetails(lead) });
   } catch (err) {
     if (isPrismaUniqueError(err)) {
@@ -847,6 +924,8 @@ app.delete("/api/crm/leads/:id", requireSession, async (req, res) => {
       where: { id: leadId }
     });
     broadcastEvent("lead_deleted", { id: leadId });
+    broadcastEvent("dashboard_updated");
+    broadcastEvent("analytics_updated");
     res.json({ message: "Lead excluído com sucesso." });
   } catch (err) {
     if (isPrismaNotFoundError(err)) {
@@ -1002,6 +1081,7 @@ app.post("/api/crm/leads/:id/tasks", requireSession, async (req, res) => {
     }
   });
 
+  broadcastEvent("calendar_tasks_updated");
   res.status(201).json({ message: "Tarefa criada com sucesso.", task });
 });
 
@@ -1035,6 +1115,7 @@ app.put("/api/crm/tasks/:taskId", requireSession, async (req, res) => {
       where: { id: taskId },
       data
     });
+    broadcastEvent("calendar_tasks_updated");
     res.json({ message: "Tarefa atualizada com sucesso.", task });
   } catch (err) {
     if (isPrismaNotFoundError(err)) {
@@ -1061,6 +1142,7 @@ app.patch("/api/crm/tasks/:taskId/status", requireSession, async (req, res) => {
         completedAt: status === "done" ? new Date() : null
       }
     });
+    broadcastEvent("calendar_tasks_updated");
     res.json({ message: "Status da tarefa atualizado.", task });
   } catch (err) {
     if (isPrismaNotFoundError(err)) {
@@ -1083,6 +1165,7 @@ app.delete("/api/crm/tasks/:taskId", requireSession, async (req, res) => {
     res.status(404).json({ message: "Tarefa não encontrada." });
     return;
   }
+  broadcastEvent("calendar_tasks_updated");
   res.json({ message: "Tarefa removida com sucesso." });
 });
 
@@ -1253,6 +1336,7 @@ app.post("/api/templates", requireSession, async (req, res) => {
   const template = await prisma.messageTemplate.create({
     data: { title, body, category }
   });
+  broadcastEvent("templates_updated");
   res.status(201).json({ message: "Template criado.", template });
 });
 
@@ -1275,6 +1359,7 @@ app.put("/api/templates/:id", requireSession, async (req, res) => {
 
   try {
     const template = await prisma.messageTemplate.update({ where: { id }, data });
+    broadcastEvent("templates_updated");
     res.json({ message: "Template atualizado.", template });
   } catch (err) {
     if (isPrismaNotFoundError(err)) {
@@ -1297,6 +1382,7 @@ app.delete("/api/templates/:id", requireSession, async (req, res) => {
     res.status(404).json({ message: "Template não encontrado." });
     return;
   }
+  broadcastEvent("templates_updated");
   res.json({ message: "Template removido." });
 });
 
@@ -1331,6 +1417,7 @@ app.post("/api/tags", requireSession, async (req, res) => {
 
   try {
     const tag = await prisma.tag.create({ data: { name, color } });
+    broadcastEvent("tags_updated");
     res.status(201).json({ message: "Tag criada.", tag });
   } catch (err) {
     if (isPrismaUniqueError(err)) {
@@ -1353,6 +1440,7 @@ app.delete("/api/tags/:id", requireSession, async (req, res) => {
     res.status(404).json({ message: "Tag não encontrada." });
     return;
   }
+  broadcastEvent("tags_updated");
   res.json({ message: "Tag removida." });
 });
 
@@ -1366,6 +1454,8 @@ app.post("/api/crm/leads/:id/tags", requireSession, async (req, res) => {
 
   try {
     await prisma.contactTag.create({ data: { contactId: leadId, tagId } });
+    broadcastEvent("tags_updated");
+    broadcastEvent("lead_profile_updated", { leadId });
     res.status(201).json({ message: "Tag adicionada ao lead." });
   } catch (err) {
     if (isPrismaUniqueError(err)) {
@@ -1385,6 +1475,8 @@ app.delete("/api/crm/leads/:id/tags/:tagId", requireSession, async (req, res) =>
   }
 
   await prisma.contactTag.deleteMany({ where: { contactId: leadId, tagId } });
+  broadcastEvent("tags_updated");
+  broadcastEvent("lead_profile_updated", { leadId });
   res.json({ message: "Tag removida do lead." });
 });
 
@@ -1502,6 +1594,15 @@ app.post("/webhook", async (req, res) => {
   }
 
   const created = await enqueueWebhookEvent(req.body, requestId);
+  if (created) {
+    broadcastEvent("webhook_event_updated", {
+      webhookEventId: created.id,
+      status: created.status,
+      attemptCount: created.attemptCount,
+      waId: created.waId,
+      waMessageId: created.waMessageId
+    });
+  }
   logEvent("info", "webhook.enqueued", {
     requestId,
     eventId: created?.id ?? null,
@@ -1524,6 +1625,15 @@ app.post("/api/webhook", async (req, res) => {
   }
 
   const created = await enqueueWebhookEvent(req.body, requestId);
+  if (created) {
+    broadcastEvent("webhook_event_updated", {
+      webhookEventId: created.id,
+      status: created.status,
+      attemptCount: created.attemptCount,
+      waId: created.waId,
+      waMessageId: created.waMessageId
+    });
+  }
   logEvent("info", "webhook.enqueued", {
     requestId,
     eventId: created?.id ?? null,
@@ -1591,6 +1701,13 @@ app.post("/api/webhook/events/:id/replay", requireSession, async (req, res) => {
     }
   });
 
+  broadcastEvent("webhook_event_updated", {
+    webhookEventId: replay.id,
+    status: replay.status,
+    attemptCount: replay.attemptCount,
+    waId: replay.waId,
+    waMessageId: replay.waMessageId
+  });
   res.json({ message: "Replay agendado com sucesso.", event: replay });
 });
 
@@ -1755,7 +1872,7 @@ async function processWebhookQueueTick(): Promise<void> {
           eventId: candidate.id
         });
 
-        await prisma.webhookEvent.update({
+        const updated = await prisma.webhookEvent.update({
           where: { id: candidate.id },
           data: {
             status: "done",
@@ -1763,6 +1880,13 @@ async function processWebhookQueueTick(): Promise<void> {
             lockedAt: null,
             lastError: null
           }
+        });
+        broadcastEvent("webhook_event_updated", {
+          webhookEventId: updated.id,
+          status: updated.status,
+          attemptCount: updated.attemptCount,
+          waId: updated.waId,
+          waMessageId: updated.waMessageId
         });
       } catch (err) {
         const attemptCount = candidate.attemptCount + 1;
@@ -1791,6 +1915,15 @@ async function processWebhookQueueTick(): Promise<void> {
         });
 
         broadcastEvent("webhook_event_failed", {
+          webhookEventId: updated.id,
+          status: updated.status,
+          attemptCount: updated.attemptCount,
+          waId: updated.waId,
+          waMessageId: updated.waMessageId,
+          error: updated.lastError
+        });
+
+        broadcastEvent("webhook_event_updated", {
           webhookEventId: updated.id,
           status: updated.status,
           attemptCount: updated.attemptCount,
@@ -2717,12 +2850,16 @@ httpServer.listen(PORT, () => {
   console.log(`Server listening on port ${PORT} (HTTP + WebSocket)`);
   void (async () => {
     await initializeWsMessageSync();
+    void broadcastSystemHealthSnapshot();
     setInterval(() => {
       void syncMessagesFromDatabase();
     }, 1500);
     setInterval(() => {
       void processWebhookQueueTick();
     }, WEBHOOK_WORKER_INTERVAL_MS);
+    setInterval(() => {
+      void broadcastSystemHealthSnapshot();
+    }, 30000);
     void processWebhookQueueTick();
   })();
 });

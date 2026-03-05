@@ -42,6 +42,16 @@ export default function CalendarSection({ active }: { active: boolean }) {
         if (active) load();
     }, [active, load]);
 
+    useEffect(() => {
+        const handleRealtimeUpdate = () => {
+            if (!active) return;
+            void load();
+        };
+
+        window.addEventListener("ws-calendar-tasks-updated", handleRealtimeUpdate);
+        return () => window.removeEventListener("ws-calendar-tasks-updated", handleRealtimeUpdate);
+    }, [active, load]);
+
     if (!active) return null;
 
     const firstDayOfMonth = new Date(currentYear, currentMonth, 1).getDay();

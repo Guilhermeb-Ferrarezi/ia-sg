@@ -41,6 +41,18 @@ Atualizado em: 2026-03-05
 - [x] Tipos frontend adicionados para `SystemReadiness`, `SystemHealthDetails`, `WebhookEvent`, `WebhookEventsResponse`.
 - [x] Padrao de scrollbar estilo "Supabase-like" (`.supabase-scroll`) aplicado nas areas com overflow.
 
+## Tempo real (WS) - Itens que estavam fora de WS
+
+- [x] Push WS de saude do sistema com evento `system_health_updated` (mantendo fallback por polling).
+- [x] Push WS de atualizacao da fila de webhook com evento `webhook_event_updated` (enqueue, replay, done, failed/dead).
+- [x] Push WS para analytics com evento `analytics_updated` e refresh automatico no painel.
+- [x] Push WS para calendario de tarefas com evento `calendar_tasks_updated` e refresh automatico no painel.
+- [x] Push WS para FAQs com evento `faqs_updated`.
+- [x] Push WS para templates com evento `templates_updated` e sincronizacao no chat.
+- [x] Push WS para tags e vinculacao de tags com eventos `tags_updated` e `lead_profile_updated`.
+- [x] Evento WS `dashboard_updated` para resumo/historico de dashboard.
+- [x] Envio manual no chat (`/api/chat/send`) sem reload HTTP obrigatorio apos acao (append otimista + WS).
+
 ## Seguranca, Sessao e Tempo Real
 
 - [x] Sessao com cookie assinado (HMAC) e validacao server-side.
@@ -69,5 +81,5 @@ Atualizado em: 2026-03-05
 - [ ] Campos de qualificacao no `Contact`: `interestedCourse`, `courseMode`, `availability`, `qualificationScore`, `handoffNeeded`.
 - [ ] Endpoint `PATCH /api/crm/leads/:id/handoff`.
 - [ ] Filtros planejados em `GET /api/crm/leads`: `course`, `modality`, `scoreMin`, `scoreMax`, `handoffNeeded`.
-- [ ] Evento WS `lead_profile_updated`.
+- [x] Evento WS `lead_profile_updated`.
 - [ ] Entregas de Sprint 3 em diante (qualificacao avancada, auditoria/exportacao/CI hardening).

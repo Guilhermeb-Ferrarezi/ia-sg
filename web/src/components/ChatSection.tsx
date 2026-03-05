@@ -88,6 +88,15 @@ export default function ChatSection({ initialSelectedWaId }: ChatSectionProps) {
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
+          if (data.type === "templates_updated") {
+            void loadTemplates();
+            return;
+          }
+
+          if (["lead_created", "lead_updated", "lead_deleted", "stage_updated", "lead_profile_updated"].includes(data.type)) {
+            void loadLeads();
+          }
+
           if (data.type === "new_message" && data.waId && data.message) {
             const currentLead = selectedLeadRef.current;
             const incomingContactId = Number(data.contactId);
@@ -136,7 +145,7 @@ export default function ChatSection({ initialSelectedWaId }: ChatSectionProps) {
         wsRef.current.close();
       }
     };
-  }, []);
+  }, [loadLeads, loadTemplates]);
 
   useEffect(() => {
     loadLeads();
@@ -173,7 +182,7 @@ export default function ChatSection({ initialSelectedWaId }: ChatSectionProps) {
 
     setSending(true);
     try {
-      await apiFetch("/chat/send", {
+      const result = await apiFetch<{ success: boolean; data?: ChatMessage }>("/chat/send", {
         method: "POST",
         body: JSON.stringify({
           wa_id: selectedLead.waId,
@@ -182,7 +191,13 @@ export default function ChatSection({ initialSelectedWaId }: ChatSectionProps) {
       });
 
       setInputMessage("");
-      await loadMessages(selectedLead.waId);
+      const sentMessage = result.data;
+      if (sentMessage) {
+        setMessages((prev) => {
+          if (prev.some((m) => m.id === sentMessage.id)) return prev;
+          return [...prev, sentMessage];
+        });
+      }
     } catch (err) {
       console.error("Failed to send message:", err);
     } finally {

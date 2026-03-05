@@ -293,6 +293,57 @@ export default function App() {
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
+
+          if (data.type === "system_health_updated") {
+            const readiness =
+              typeof data.readiness === "object" && data.readiness !== null
+                ? (data.readiness as SystemReadiness)
+                : null;
+            const details =
+              typeof data.details === "object" && data.details !== null
+                ? (data.details as SystemHealthDetails)
+                : null;
+
+            if (readiness) setSystemReadiness(readiness);
+            if (details) setSystemHealthDetails(details);
+            setSystemLastUpdated(new Date());
+            setSystemError("");
+          }
+
+          if (data.type === "faqs_updated") {
+            void loadFaqs();
+          }
+
+          if (data.type === "webhook_event_updated") {
+            if (activePanelRef.current === "operation") {
+              void loadWebhookEvents();
+            }
+          }
+
+          if (data.type === "analytics_updated") {
+            window.dispatchEvent(new CustomEvent("ws-analytics-updated"));
+          }
+
+          if (data.type === "calendar_tasks_updated") {
+            window.dispatchEvent(new CustomEvent("ws-calendar-tasks-updated"));
+          }
+
+          if (data.type === "templates_updated") {
+            window.dispatchEvent(new CustomEvent("ws-templates-updated"));
+          }
+
+          if (data.type === "dashboard_updated") {
+            window.dispatchEvent(new CustomEvent("ws-dashboard-updated"));
+          }
+
+          if (data.type === "lead_profile_updated") {
+            const leadId = Number(data.leadId);
+            if (Number.isInteger(leadId) && leadId > 0 && selectedLeadIdRef.current === leadId) {
+              void loadLeadDetails(leadId);
+            }
+            void loadCrm();
+          }
+
           if (["lead_created", "lead_deleted", "stage_updated", "new_message"].includes(data.type)) {
             void loadCrm();
             void loadFaqs(); // also refresh faqs just in case

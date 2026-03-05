@@ -100,3 +100,14 @@ Mitigação: limites por contato, cache de contexto e observabilidade de consumo
 5. Banco principal: PostgreSQL.
 6. Canais suportados no ciclo: texto e áudio.
 7. Timezone operacional: `America/Sao_Paulo`.
+
+## Itens fora de WS (tempo real) - status atualizado
+1. Saude do sistema agora possui push WS dedicado com evento `system_health_updated` (polling 30s mantido como fallback).
+2. Lista de eventos de webhook agora possui notificacao WS dedicada via `webhook_event_updated` (além de `webhook_event_failed`).
+3. Analytics agora possui evento WS `analytics_updated` para refresh automatico.
+4. Calendario de tarefas agora possui evento WS `calendar_tasks_updated` para refresh automatico.
+5. FAQs agora possuem sincronizacao WS dedicada com evento `faqs_updated`.
+6. Templates de mensagem agora possuem sincronizacao WS dedicada com evento `templates_updated`.
+7. Tags e vinculacao de tags agora possuem sincronizacao WS dedicada com eventos `tags_updated` e `lead_profile_updated`.
+8. Resumo historico de dashboard agora possui sinalizacao WS via evento `dashboard_updated`.
+9. Envio manual no chat (`/api/chat/send`) agora evita reload HTTP obrigatorio apos acao (append otimista + WS).

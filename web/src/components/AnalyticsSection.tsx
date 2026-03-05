@@ -31,6 +31,16 @@ export default function AnalyticsSection({ active }: { active: boolean }) {
         if (active) load();
     }, [active, load]);
 
+    useEffect(() => {
+        const handleRealtimeUpdate = () => {
+            if (!active) return;
+            void load();
+        };
+
+        window.addEventListener("ws-analytics-updated", handleRealtimeUpdate);
+        return () => window.removeEventListener("ws-analytics-updated", handleRealtimeUpdate);
+    }, [active, load]);
+
     if (!active) return null;
 
     const maxTotal = Math.max(1, ...messagesPerDay.map((d) => d.total));
