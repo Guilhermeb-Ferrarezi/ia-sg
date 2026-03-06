@@ -854,6 +854,11 @@ export default function App() {
         if (current === next) unchanged += 1;
       }
 
+      if ("botEnabled" in payload && typeof payload.botEnabled === "boolean") {
+        compared += 1;
+        if (lead.botEnabled === payload.botEnabled) unchanged += 1;
+      }
+
       if ("handoffNeeded" in payload && typeof payload.handoffNeeded === "boolean") {
         compared += 1;
         if (lead.handoffNeeded === payload.handoffNeeded) unchanged += 1;
@@ -926,6 +931,44 @@ export default function App() {
       setError(err instanceof Error ? err.message : "Falha ao salvar perfil do lead.");
     } finally {
       setSavingLeadDraft(false);
+    }
+  };
+
+  const handleToggleBotEnabled = async (enabled: boolean) => {
+    if (!selectedLead || !leadDraft) return;
+
+    setLeadDraft((prev) => prev ? { ...prev, botEnabled: enabled } : prev);
+
+    try {
+      await apiFetch(`/crm/leads/${selectedLead.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ botEnabled: enabled })
+      });
+      await loadCrm();
+      await loadLeadDetails(selectedLead.id);
+      addToast(enabled ? "Automação IA ativada!" : "Automação IA desativada.", "success");
+    } catch (err) {
+      setLeadDraft((prev) => prev ? { ...prev, botEnabled: !enabled } : prev);
+      setError(err instanceof Error ? err.message : "Falha ao atualizar automação IA.");
+    }
+  };
+
+  const handleToggleHandoffNeeded = async (needed: boolean) => {
+    if (!selectedLead || !leadDraft) return;
+
+    setLeadDraft((prev) => prev ? { ...prev, handoffNeeded: needed } : prev);
+
+    try {
+      await apiFetch(`/crm/leads/${selectedLead.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ handoffNeeded: needed })
+      });
+      await loadCrm();
+      await loadLeadDetails(selectedLead.id);
+      addToast(needed ? "Handoff humano ativado!" : "Handoff humano desativado.", "success");
+    } catch (err) {
+      setLeadDraft((prev) => prev ? { ...prev, handoffNeeded: !needed } : prev);
+      setError(err instanceof Error ? err.message : "Falha ao atualizar handoff humano.");
     }
   };
 
@@ -2063,7 +2106,7 @@ export default function App() {
 
                       <div className="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-950 p-4">
                         <div className="flex items-center gap-2">
-                          <div className={`p-1.5 rounded-lg ${selectedLead.botEnabled ? "bg-cyan-500/20 text-cyan-500" : "bg-slate-800 text-slate-500"}`}>
+                          <div className={`p-1.5 rounded-lg ${leadDraft?.botEnabled ? "bg-cyan-500/20 text-cyan-500" : "bg-slate-800 text-slate-500"}`}>
                             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
                             </svg>
@@ -2075,7 +2118,7 @@ export default function App() {
                             type="checkbox"
                             className="sr-only peer"
                             checked={leadDraft?.botEnabled ?? false}
-                            onChange={(e) => setLeadDraft((prev) => prev ? { ...prev, botEnabled: e.target.checked } : prev)}
+                            onChange={(e) => void handleToggleBotEnabled(e.target.checked)}
                           />
                           <div className="w-9 h-5 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-cyan-500"></div>
                         </label>
@@ -2083,7 +2126,7 @@ export default function App() {
 
                       <div className="flex items-center justify-between rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
                         <div className="flex items-center gap-2">
-                          <div className={`p-1.5 rounded-lg ${selectedLead.handoffNeeded ? "bg-amber-500/20 text-amber-400" : "bg-slate-800 text-slate-500"}`}>
+                          <div className={`p-1.5 rounded-lg ${leadDraft?.handoffNeeded ? "bg-amber-500/20 text-amber-400" : "bg-slate-800 text-slate-500"}`}>
                             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 8h2a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2v-9a2 2 0 012-2h2m10 0V6a4 4 0 10-8 0v2m8 0H7" />
                             </svg>
@@ -2095,7 +2138,7 @@ export default function App() {
                             type="checkbox"
                             className="sr-only peer"
                             checked={leadDraft?.handoffNeeded ?? false}
-                            onChange={(e) => setLeadDraft((prev) => prev ? { ...prev, handoffNeeded: e.target.checked } : prev)}
+                            onChange={(e) => void handleToggleHandoffNeeded(e.target.checked)}
                           />
                           <div className="w-9 h-5 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-amber-500"></div>
                         </label>
