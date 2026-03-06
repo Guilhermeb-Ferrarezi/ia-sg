@@ -1,24 +1,28 @@
 import * as Collapsible from "@radix-ui/react-collapsible";
-import { CalendarDays, ChevronLeft, ChevronRight, LayoutGrid, MessageSquare, ShieldAlert, Sparkles, BarChart3 } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight, LayoutGrid, LogOut, MessageSquare, ShieldAlert, Sparkles, BarChart3, ScrollText } from "lucide-react";
 import SidebarItem from "./SidebarItem";
 import { TooltipProvider } from "./ui/tooltip";
 import { cn } from "../lib/utils";
 
-export type AppPanel = "crm" | "faqs" | "chat" | "analytics" | "calendar" | "operation";
+export type AppPanel = "crm" | "faqs" | "chat" | "analytics" | "calendar" | "operation" | "logs";
 
 type SidebarNavigationProps = {
   activePanel: AppPanel;
   onSelectPanel: (panel: AppPanel) => void;
+  onLogout: () => void;
   collapsed: boolean;
   onCollapsedChange: (collapsed: boolean) => void;
+  logoutSubmitting?: boolean;
   failedEventsCount: number;
 };
 
 export default function SidebarNavigation({
   activePanel,
   onSelectPanel,
+  onLogout,
   collapsed,
   onCollapsedChange,
+  logoutSubmitting = false,
   failedEventsCount
 }: SidebarNavigationProps) {
   return (
@@ -45,7 +49,7 @@ export default function SidebarNavigation({
                 )}
               >
                 <p className="truncate text-sm font-semibold text-slate-100">CRM WhatsApp</p>
-                <p className="truncate text-xs text-slate-500">Navegacao</p>
+                <p className="truncate text-xs text-slate-500">Navegação</p>
               </div>
             </div>
           </div>
@@ -61,9 +65,10 @@ export default function SidebarNavigation({
             <SidebarItem label="FAQs" icon={Sparkles} isActive={activePanel === "faqs"} isCollapsed={collapsed} onClick={() => onSelectPanel("faqs")} />
             <SidebarItem label="Chat" icon={MessageSquare} isActive={activePanel === "chat"} isCollapsed={collapsed} onClick={() => onSelectPanel("chat")} />
             <SidebarItem label="Analytics" icon={BarChart3} isActive={activePanel === "analytics"} isCollapsed={collapsed} onClick={() => onSelectPanel("analytics")} />
-            <SidebarItem label="Calendario" icon={CalendarDays} isActive={activePanel === "calendar"} isCollapsed={collapsed} onClick={() => onSelectPanel("calendar")} />
+            <SidebarItem label="Calendário" icon={CalendarDays} isActive={activePanel === "calendar"} isCollapsed={collapsed} onClick={() => onSelectPanel("calendar")} />
+            <SidebarItem label="Logs" icon={ScrollText} isActive={activePanel === "logs"} isCollapsed={collapsed} onClick={() => onSelectPanel("logs")} />
             <SidebarItem
-              label="Operacao"
+              label="Operação"
               icon={ShieldAlert}
               isActive={activePanel === "operation"}
               isCollapsed={collapsed}
@@ -93,6 +98,27 @@ export default function SidebarNavigation({
               </span>
             </button>
           </Collapsible.Trigger>
+
+          <button
+            type="button"
+            onClick={onLogout}
+            disabled={logoutSubmitting}
+            className={cn(
+              "mt-2 flex h-10 w-full items-center rounded-xl border border-rose-500/25 bg-rose-500/5 text-xs font-semibold text-rose-300 transition-colors hover:bg-rose-500/10 disabled:opacity-50",
+              collapsed ? "justify-center px-0" : "justify-center gap-2 px-3"
+            )}
+            aria-label="Encerrar sessão"
+          >
+            <LogOut className="h-4 w-4 shrink-0" />
+            <span
+              className={cn(
+                "overflow-hidden text-ellipsis whitespace-nowrap transition-[max-width,opacity] duration-200",
+                collapsed ? "max-w-0 opacity-0" : "max-w-[140px] opacity-100"
+              )}
+            >
+              Sair
+            </span>
+          </button>
         </div>
       </Collapsible.Root>
     </TooltipProvider>

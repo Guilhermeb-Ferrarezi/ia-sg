@@ -23,6 +23,7 @@ const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
 const OPENAI_TRANSCRIPTION_MODEL = process.env.OPENAI_TRANSCRIPTION_MODEL || "whisper-1";
 const BOT_PERSONA = process.env.BOT_PERSONA || "";
+const AI_REPLY_DEBOUNCE_MS = Math.max(0, Number(process.env.AI_REPLY_DEBOUNCE_MS || ""));
 const HUMAN_DELAY_MIN_MS = Number(process.env.HUMAN_DELAY_MIN_MS || null);
 const HUMAN_DELAY_MAX_MS = Number(process.env.HUMAN_DELAY_MAX_MS || null);
 
@@ -36,6 +37,11 @@ const DASHBOARD_USER = process.env.DASHBOARD_USER || "";
 const DASHBOARD_PASS = process.env.DASHBOARD_PASS || "";
 const WEBHOOK_WORKER_INTERVAL_MS = Number(process.env.WEBHOOK_WORKER_INTERVAL_MS || "2000");
 const WEBHOOK_MAX_RETRIES = Number(process.env.WEBHOOK_MAX_RETRIES || "5");
+const LOG_DELETE_REAUTH_WINDOW_MS = 150000;
+const LOG_SKIP_GET_PATH_PREFIXES = (process.env.LOG_SKIP_GET_PATH_PREFIXES || "/api/health,/api/system/readiness,/api/system/health-details,/api/logs,/api/crm/leads,/api/dashboard/summary")
+  .split(",")
+  .map((entry) => entry.trim())
+  .filter(Boolean);
 
 const requiredEnv = [
   "DATABASE_URL",
@@ -81,6 +87,10 @@ const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
 const wsClients = new Set<WebSocket>();
 let wsLastBroadcastMessageId = 0;
 let wsSyncInProgress = false;
+const logDeleteAuthByUser = new Map<string, number>();
+const autoReplyTimers = new Map<number, ReturnType<typeof setTimeout>>();
+const autoReplyProcessingContacts = new Set<number>();
+const autoReplyContextByContact = new Map<number, { waId: string; waMessageId?: string }>();
 
 wss.on("connection", (ws, req) => {
   // Authenticate WebSocket connection using session cookie
@@ -277,6 +287,42 @@ app.use(express.json({
   }
 }));
 
+app.use((req, res, next) => {
+  const startedAt = Date.now();
+  const requestId = (req as express.Request & { meta?: RequestMeta }).meta?.requestId || "unknown";
+
+  res.on("finish", () => {
+    const durationMs = Date.now() - startedAt;
+    const statusCode = res.statusCode;
+    const level: "info" | "warn" | "error" = statusCode >= 500 ? "error" : statusCode >= 400 ? "warn" : "info";
+    const userAgent = req.get("user-agent") || null;
+
+    if (shouldSkipHttpRequestLog(req.method, req.path, statusCode)) {
+      return;
+    }
+
+    const body = req.body && typeof req.body === "object"
+      ? redactSensitive(req.body as Record<string, unknown>)
+      : undefined;
+
+    logEvent(level, "http.request.completed", {
+      requestId,
+      method: req.method,
+      path: req.path,
+      statusCode,
+      durationMs,
+      ip: req.ip,
+      userAgent,
+      clientOs: inferClientOs(userAgent),
+      query: req.query,
+      params: req.params,
+      body
+    });
+  });
+
+  next();
+});
+
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
 });
@@ -312,6 +358,113 @@ app.get("/api/system/health-details", async (_req, res) => {
       error: formatError(err)
     });
   }
+});
+
+app.get("/api/logs", requireSession, async (req, res) => {
+  const page = Math.max(1, Number(req.query.page || 1));
+  const limit = Math.max(1, Math.min(100, Number(req.query.limit || 20)));
+  const where = buildLogsWhereFromQuery(req.query);
+
+  const [total, logs] = await Promise.all([
+    prisma.appLog.count({ where }),
+    prisma.appLog.findMany({
+      where,
+      orderBy: [{ ts: "desc" }, { id: "desc" }],
+      skip: (page - 1) * limit,
+      take: limit
+    })
+  ]);
+
+  res.json({
+    page,
+    limit,
+    total,
+    totalPages: Math.max(1, Math.ceil(total / limit)),
+    availablePageSizes: [10, 20, 50, 100],
+    filterLabels: {
+      level: "Nível do log (info/warn/error)",
+      status: "Status da requisição (sucesso/falha)",
+      path: "Trecho da rota HTTP",
+      event: "Nome técnico do evento",
+      requestId: "ID de correlação da requisição",
+      waId: "WhatsApp ID do contato",
+      contactId: "ID interno do lead/contato",
+      statusCode: "Status HTTP (100-599)",
+      ip: "IP de origem da requisição",
+      clientOs: "Sistema operacional inferido via User-Agent",
+      from: "Data/hora inicial",
+      to: "Data/hora final",
+      search: "Busca geral em evento, rota, mensagem e IDs"
+    },
+    logs
+  });
+});
+
+app.post("/api/logs/delete-auth", requireSession, (req, res) => {
+  const password = typeof req.body?.password === "string" ? req.body.password : "";
+  const session = (req as express.Request & { user?: SessionPayload }).user;
+
+  if (!password.trim()) {
+    res.status(400).json({ message: "Senha é obrigatória." });
+    return;
+  }
+
+  if (!session || session.username !== DASHBOARD_USER || password !== DASHBOARD_PASS) {
+    res.status(401).json({ message: "Senha inválida." });
+    return;
+  }
+
+  const expiresAtMs = Date.now() + LOG_DELETE_REAUTH_WINDOW_MS;
+  logDeleteAuthByUser.set(session.username, expiresAtMs);
+
+  res.json({
+    ok: true,
+    expiresAt: new Date(expiresAtMs).toISOString(),
+    ttlMs: LOG_DELETE_REAUTH_WINDOW_MS
+  });
+});
+
+app.delete("/api/logs", requireSession, async (req, res) => {
+  const session = (req as express.Request & { user?: SessionPayload }).user;
+  const nowMs = Date.now();
+  const validUntilMs = session ? logDeleteAuthByUser.get(session.username) || 0 : 0;
+  const hasDeletePermission = Boolean(session && validUntilMs > nowMs);
+
+  if (!hasDeletePermission) {
+    res.status(403).json({
+      message: "Reautenticação necessária para excluir logs.",
+      requiresPassword: true,
+      ttlMs: LOG_DELETE_REAUTH_WINDOW_MS
+    });
+    return;
+  }
+
+  const where = buildLogsWhereFromQuery(req.query);
+  const hasFilters = Object.keys(where).length > 0;
+  const deleteAll = String(req.query.all || "").toLowerCase() === "true";
+
+  if (!hasFilters && !deleteAll) {
+    res.status(400).json({
+      message: "Para evitar exclusão acidental, aplique filtros ou envie ?all=true."
+    });
+    return;
+  }
+
+  const deleted = await prisma.appLog.deleteMany({ where: hasFilters ? where : {} });
+  const requestId = (req as express.Request & { meta?: RequestMeta }).meta?.requestId || "unknown";
+
+  logEvent("warn", "logs.bulk_deleted", {
+    requestId,
+    deletedCount: deleted.count,
+    scope: hasFilters ? "filtered" : "all",
+    deletedBy: session?.username || "unknown"
+  });
+
+  res.json({
+    message: "Logs removidos com sucesso.",
+    deletedCount: deleted.count,
+    scope: hasFilters ? "filtered" : "all"
+  });
 });
 
 app.post("/api/auth/login", (req, res) => {
@@ -749,6 +902,13 @@ app.get("/api/crm/leads", requireSession, async (req, res) => {
   const stageId = req.query.stageId ? Number(req.query.stageId) : undefined;
   const status = typeof req.query.status === "string" ? req.query.status : undefined;
   const search = typeof req.query.search === "string" ? req.query.search.trim() : "";
+  const course = typeof req.query.course === "string" ? req.query.course.trim() : "";
+  const modality = typeof req.query.modality === "string" ? req.query.modality.trim() : "";
+  const scoreMin = req.query.scoreMin !== undefined ? Number(req.query.scoreMin) : undefined;
+  const scoreMax = req.query.scoreMax !== undefined ? Number(req.query.scoreMax) : undefined;
+  const handoffNeededQuery = typeof req.query.handoffNeeded === "string"
+    ? req.query.handoffNeeded.trim().toLowerCase()
+    : "";
   const page = Math.max(1, Number(req.query.page || 1));
   const limit = Math.max(1, Math.min(100, Number(req.query.limit || 20)));
   const skip = (page - 1) * limit;
@@ -756,11 +916,24 @@ app.get("/api/crm/leads", requireSession, async (req, res) => {
   const where: Record<string, unknown> = {};
   if (stageId && Number.isInteger(stageId) && stageId > 0) where.stageId = stageId;
   if (status && ["open", "won", "lost"].includes(status)) where.leadStatus = status;
+  if (course) where.interestedCourse = { contains: course, mode: "insensitive" };
+  if (modality) where.courseMode = { contains: modality, mode: "insensitive" };
+  if (handoffNeededQuery === "true") where.handoffNeeded = true;
+  if (handoffNeededQuery === "false") where.handoffNeeded = false;
+  if (Number.isFinite(scoreMin) || Number.isFinite(scoreMax)) {
+    where.qualificationScore = {
+      ...(Number.isFinite(scoreMin) ? { gte: Number(scoreMin) } : {}),
+      ...(Number.isFinite(scoreMax) ? { lte: Number(scoreMax) } : {})
+    };
+  }
   if (search) {
     where.OR = [
       { waId: { contains: search, mode: "insensitive" } },
       { name: { contains: search, mode: "insensitive" } },
-      { notes: { contains: search, mode: "insensitive" } }
+      { notes: { contains: search, mode: "insensitive" } },
+      { interestedCourse: { contains: search, mode: "insensitive" } },
+      { courseMode: { contains: search, mode: "insensitive" } },
+      { availability: { contains: search, mode: "insensitive" } }
     ];
   }
 
@@ -885,6 +1058,19 @@ app.put("/api/crm/leads/:id", requireSession, async (req, res) => {
   }
   if (typeof req.body?.source === "string") updateData.source = req.body.source.trim() || null;
   if (typeof req.body?.notes === "string") updateData.notes = req.body.notes.trim() || null;
+  if (typeof req.body?.leadStatus === "string" && ["open", "won", "lost"].includes(req.body.leadStatus)) {
+    updateData.leadStatus = req.body.leadStatus;
+  }
+  if (typeof req.body?.botEnabled === "boolean") updateData.botEnabled = req.body.botEnabled;
+  if (typeof req.body?.customBotPersona === "string") updateData.customBotPersona = req.body.customBotPersona.trim() || null;
+  if (typeof req.body?.interestedCourse === "string") updateData.interestedCourse = req.body.interestedCourse.trim() || null;
+  if (typeof req.body?.courseMode === "string") updateData.courseMode = req.body.courseMode.trim() || null;
+  if (typeof req.body?.availability === "string") updateData.availability = req.body.availability.trim() || null;
+  if (req.body?.qualificationScore === null) updateData.qualificationScore = null;
+  if (typeof req.body?.qualificationScore === "number" && Number.isFinite(req.body.qualificationScore)) {
+    updateData.qualificationScore = Math.max(0, Math.min(100, Math.round(req.body.qualificationScore)));
+  }
+  if (typeof req.body?.handoffNeeded === "boolean") updateData.handoffNeeded = req.body.handoffNeeded;
 
   if (Object.keys(updateData).length === 0) {
     res.status(400).json({ message: "Nenhuma alteração enviada." });
@@ -906,6 +1092,38 @@ app.put("/api/crm/leads/:id", requireSession, async (req, res) => {
     }
     if (isPrismaUniqueError(err)) {
       res.status(409).json({ message: "Já existe lead com este WhatsApp." });
+      return;
+    }
+    throw err;
+  }
+});
+
+app.patch("/api/crm/leads/:id/handoff", requireSession, async (req, res) => {
+  const leadId = Number(req.params.id);
+  const handoffNeeded = req.body?.handoffNeeded;
+
+  if (!Number.isInteger(leadId) || leadId <= 0) {
+    res.status(400).json({ message: "ID de lead inválido." });
+    return;
+  }
+
+  if (typeof handoffNeeded !== "boolean") {
+    res.status(400).json({ message: "Campo handoffNeeded deve ser booleano." });
+    return;
+  }
+
+  try {
+    const lead = await prisma.contact.update({
+      where: { id: leadId },
+      data: { handoffNeeded },
+      include: { stage: true }
+    });
+    broadcastEvent("lead_profile_updated", { leadId, handoffNeeded });
+    broadcastEvent("lead_updated", { lead: mapLeadDetails(lead) });
+    res.json({ message: "Handoff do lead atualizado.", lead: mapLeadDetails(lead) });
+  } catch (err) {
+    if (isPrismaNotFoundError(err)) {
+      res.status(404).json({ message: "Lead não encontrado." });
       return;
     }
     throw err;
@@ -1724,21 +1942,164 @@ function logEvent(level: "info" | "warn" | "error", event: string, data?: Record
   const payload = JSON.stringify(output);
   if (level === "error") {
     console.error(payload);
-    return;
-  }
-
-  if (level === "warn") {
+  } else if (level === "warn") {
     console.warn(payload);
-    return;
+  } else {
+    console.log(payload);
   }
 
-  console.log(payload);
+  const requestId = typeof data?.requestId === "string" ? data.requestId : null;
+  const waId = typeof data?.waId === "string" ? data.waId : null;
+  const contactId = typeof data?.contactId === "number" && Number.isInteger(data.contactId) ? data.contactId : null;
+  const webhookEventId = typeof data?.eventId === "number" && Number.isInteger(data.eventId) ? data.eventId : null;
+  const message = typeof data?.message === "string" ? data.message : null;
+  const method = typeof data?.method === "string" ? data.method : null;
+  const path = typeof data?.path === "string" ? data.path : null;
+  const statusCode = typeof data?.statusCode === "number" && Number.isInteger(data.statusCode) ? data.statusCode : null;
+  const durationMs = typeof data?.durationMs === "number" && Number.isInteger(data.durationMs) ? data.durationMs : null;
+  const ip = typeof data?.ip === "string" ? data.ip : null;
+  const userAgent = typeof data?.userAgent === "string" ? data.userAgent : null;
+  const clientOsRaw = typeof data?.clientOs === "string" ? data.clientOs : null;
+  const clientOs = clientOsRaw || inferClientOs(userAgent);
+
+  void prisma.appLog.create({
+    data: {
+      level,
+      event,
+      method,
+      path,
+      statusCode,
+      durationMs,
+      ip,
+      userAgent,
+      clientOs,
+      requestId,
+      waId,
+      contactId,
+      webhookEventId,
+      message,
+      data: (data || {}) as object
+    }
+  }).catch((err) => {
+    console.error("[LOG_PERSIST_ERROR]", formatError(err));
+  });
+}
+
+function redactSensitive(input: Record<string, unknown>): Record<string, unknown> {
+  const redacted: Record<string, unknown> = {};
+  const sensitiveKeys = new Set([
+    "password",
+    "pass",
+    "token",
+    "authorization",
+    "apiKey",
+    "openai_api_key",
+    "whatsapp_token",
+    "session_secret"
+  ]);
+
+  for (const [key, value] of Object.entries(input)) {
+    const lowerKey = key.toLowerCase();
+    if (sensitiveKeys.has(lowerKey) || lowerKey.includes("token") || lowerKey.includes("secret") || lowerKey.includes("password")) {
+      redacted[key] = "[REDACTED]";
+      continue;
+    }
+
+    if (typeof value === "string") {
+      redacted[key] = value.length > 300 ? `${value.slice(0, 300)}...[TRUNCATED]` : value;
+      continue;
+    }
+
+    redacted[key] = value;
+  }
+
+  return redacted;
 }
 
 function formatError(err: unknown): string {
   if (err instanceof Error) return err.message;
   if (typeof err === "string") return err;
   return "unknown_error";
+}
+
+function buildLogsWhereFromQuery(query: Record<string, unknown>): Record<string, unknown> {
+  const level = typeof query.level === "string" ? query.level.trim().toLowerCase() : "";
+  const status = typeof query.status === "string" ? query.status.trim().toLowerCase() : "";
+  const event = typeof query.event === "string" ? query.event.trim() : "";
+  const method = typeof query.method === "string" ? query.method.trim().toUpperCase() : "";
+  const path = typeof query.path === "string" ? query.path.trim() : "";
+  const requestId = typeof query.requestId === "string" ? query.requestId.trim() : "";
+  const waId = typeof query.waId === "string" ? query.waId.trim() : "";
+  const ip = typeof query.ip === "string" ? query.ip.trim() : "";
+  const clientOs = typeof query.clientOs === "string" ? query.clientOs.trim() : "";
+  const search = typeof query.search === "string" ? query.search.trim() : "";
+  const from = typeof query.from === "string" ? query.from.trim() : "";
+  const to = typeof query.to === "string" ? query.to.trim() : "";
+  const contactId = query.contactId !== undefined ? Number(query.contactId) : undefined;
+  const statusCode = query.statusCode !== undefined ? Number(query.statusCode) : undefined;
+
+  const where: Record<string, unknown> = {};
+  if (level && ["info", "warn", "error"].includes(level)) where.level = level;
+  if (event) where.event = { contains: event, mode: "insensitive" };
+  if (method) where.method = method;
+  if (path) where.path = { contains: path, mode: "insensitive" };
+  if (requestId) where.requestId = { contains: requestId, mode: "insensitive" };
+  if (waId) where.waId = { contains: waId, mode: "insensitive" };
+  if (ip) where.ip = { contains: ip, mode: "insensitive" };
+  if (clientOs) where.clientOs = { contains: clientOs, mode: "insensitive" };
+  if (Number.isInteger(contactId) && Number(contactId) > 0) where.contactId = Number(contactId);
+  if (Number.isInteger(statusCode) && Number(statusCode) >= 100 && Number(statusCode) <= 599) where.statusCode = Number(statusCode);
+  if (status === "success" || status === "sucesso") {
+    where.statusCode = { gte: 100, lt: 400 };
+  }
+  if (status === "fail" || status === "falha") {
+    where.statusCode = { gte: 400, lte: 599 };
+  }
+
+  const tsFilter: Record<string, unknown> = {};
+  if (from) {
+    const fromDate = new Date(from);
+    if (!Number.isNaN(fromDate.getTime())) tsFilter.gte = fromDate;
+  }
+  if (to) {
+    const toDate = new Date(to);
+    if (!Number.isNaN(toDate.getTime())) tsFilter.lte = toDate;
+  }
+  if (Object.keys(tsFilter).length > 0) where.ts = tsFilter;
+
+  if (search) {
+    where.OR = [
+      { event: { contains: search, mode: "insensitive" } },
+      { path: { contains: search, mode: "insensitive" } },
+      { message: { contains: search, mode: "insensitive" } },
+      { requestId: { contains: search, mode: "insensitive" } },
+      { waId: { contains: search, mode: "insensitive" } },
+      { ip: { contains: search, mode: "insensitive" } },
+      { clientOs: { contains: search, mode: "insensitive" } }
+    ];
+  }
+
+  return where;
+}
+
+function shouldSkipHttpRequestLog(method: string, path: string, statusCode: number): boolean {
+  if (method.toUpperCase() === "GET" && statusCode < 400) return true;
+  if (method.toUpperCase() !== "GET") return false;
+  if (statusCode >= 400) return false;
+  return LOG_SKIP_GET_PATH_PREFIXES.some((prefix) => path === prefix || path.startsWith(prefix));
+}
+
+function inferClientOs(userAgent?: string | null): string | null {
+  if (!userAgent) return null;
+  const source = userAgent.toLowerCase();
+
+  if (source.includes("windows")) return "Windows";
+  if (source.includes("android")) return "Android";
+  if (source.includes("iphone") || source.includes("ipad") || source.includes("ios")) return "iOS";
+  if (source.includes("mac os") || source.includes("macintosh")) return "macOS";
+  if (source.includes("linux")) return "Linux";
+
+  return "Other";
 }
 
 function shouldRetryStatus(status: number): boolean {
@@ -2048,46 +2409,148 @@ async function processIncomingWebhook(
   if (inboundMsg) broadcastMessage(waId, contact.id, { id: inboundMsg.id, direction: "in", body: inboundMsg.body, createdAt: inboundMsg.createdAt });
 
   if (!(contact as any).botEnabled) return;
+  scheduleAutoReply(contact.id, waId, waMessageId);
+}
 
-  const historyRows = await prisma.message.findMany({
-    where: { contactId: contact.id },
-    orderBy: { createdAt: "desc" },
-    take: HISTORY_LIMIT
+function scheduleAutoReply(contactId: number, waId: string, waMessageId?: string): void {
+  autoReplyContextByContact.set(contactId, { waId, waMessageId });
+
+  const existingTimer = autoReplyTimers.get(contactId);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+  }
+
+  const timer = setTimeout(() => {
+    autoReplyTimers.delete(contactId);
+    void runAutoReplyForContact(contactId);
+  }, AI_REPLY_DEBOUNCE_MS);
+
+  autoReplyTimers.set(contactId, timer);
+}
+
+async function buildHistoryForAutoReply(contactId: number): Promise<{
+  history: Array<{ role: "user" | "assistant"; content: string }>;
+  pendingInput: string;
+  pendingCount: number;
+}> {
+  const rows = await prisma.message.findMany({
+    where: { contactId },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    take: 120
   });
-  const history: Array<{ role: "user" | "assistant"; content: string }> = historyRows.reverse().map((m: { direction: string; body: string }) => ({
-    role: (m.direction === "in" ? "user" : "assistant") as "user" | "assistant",
-    content: m.body
+
+  if (rows.length === 0) {
+    return { history: [], pendingInput: "", pendingCount: 0 };
+  }
+
+  let lastOutboundIndex = -1;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (rows[i].direction === "out") {
+      lastOutboundIndex = i;
+      break;
+    }
+  }
+
+  const pendingInbound = rows
+    .slice(lastOutboundIndex + 1)
+    .filter((message) => message.direction === "in");
+
+  if (pendingInbound.length === 0) {
+    return { history: [], pendingInput: "", pendingCount: 0 };
+  }
+
+  const pendingToRespond = pendingInbound.slice(0, 2);
+  const keepFromHistory = Math.max(0, HISTORY_LIMIT - pendingToRespond.length);
+  const historyBeforePending = rows.slice(0, lastOutboundIndex + 1).slice(-keepFromHistory);
+  const promptRows = [...historyBeforePending, ...pendingToRespond];
+
+  const history = promptRows.map((message) => ({
+    role: (message.direction === "in" ? "user" : "assistant") as "user" | "assistant",
+    content: message.body
   }));
 
-  const faqContext = await getFaqContextForInput(textIn);
-  await sendWhatsAppTypingIndicator(waMessageId);
-  const personaToUse = (contact as any).customBotPersona || BOT_PERSONA;
-  const reply = await generateReplyWithTyping(history, faqContext, personaToUse, waMessageId).catch((err) => {
-    console.error("OpenAI error:", err);
-    return "Desculpe, tive um problema aqui. Pode repetir?";
-  });
+  return {
+    history,
+    pendingInput: pendingToRespond.map((message) => message.body).join("\n"),
+    pendingCount: pendingInbound.length
+  };
+}
 
-  const safeReply = utf8Text(reply);
-  await delay(getHumanDelayMs(safeReply));
-  await sendWhatsAppText(waId, safeReply);
-  const outMsg = await prisma.message.create({
-    data: {
-      contactId: contact.id,
+async function runAutoReplyForContact(contactId: number): Promise<void> {
+  if (autoReplyProcessingContacts.has(contactId)) {
+    return;
+  }
+
+  const context = autoReplyContextByContact.get(contactId);
+  if (!context) {
+    return;
+  }
+
+  autoReplyProcessingContacts.add(contactId);
+  try {
+    const contact = await prisma.contact.findUnique({
+      where: { id: contactId },
+      select: {
+        id: true,
+        waId: true,
+        botEnabled: true,
+        customBotPersona: true
+      }
+    });
+
+    if (!contact || !contact.botEnabled) {
+      return;
+    }
+
+    const { history, pendingInput, pendingCount } = await buildHistoryForAutoReply(contactId);
+    if (!pendingInput || history.length === 0) {
+      return;
+    }
+
+    if (pendingCount > 2) {
+      logEvent("info", "ai.reply.pending_messages_capped", {
+        contactId,
+        waId: contact.waId,
+        pendingCount,
+        usedCount: 2
+      });
+    }
+
+    const faqContext = await getFaqContextForInput(pendingInput);
+    await sendWhatsAppTypingIndicator(context.waMessageId);
+    const personaToUse = contact.customBotPersona || BOT_PERSONA;
+    const reply = await generateReplyWithTyping(history, faqContext, personaToUse, context.waMessageId).catch((err) => {
+      console.error("OpenAI error:", err);
+      return "Desculpe, tive um problema aqui. Pode repetir?";
+    });
+
+    const safeReply = utf8Text(reply);
+    await delay(getHumanDelayMs(safeReply));
+    await sendWhatsAppText(contact.waId, safeReply);
+    const outMsg = await prisma.message.create({
+      data: {
+        contactId: contact.id,
+        direction: "out",
+        body: safeReply,
+        waMessageId: null
+      }
+    });
+
+    broadcastMessage(contact.waId, contact.id, {
+      id: outMsg.id,
       direction: "out",
       body: safeReply,
-      waMessageId: null
-    }
-  });
-
-  // Broadcast outbound reply via WebSocket
-  broadcastMessage(waId, contact.id, { id: outMsg.id, direction: "out", body: safeReply, createdAt: outMsg.createdAt });
-
-  // Enrich lead in background
-  setImmediate(() => {
-    enrichLeadWithAI(contact.id).catch((err) => {
-      console.error("Enrichment error:", err);
+      createdAt: outMsg.createdAt
     });
-  });
+
+    setImmediate(() => {
+      enrichLeadWithAI(contact.id).catch((err) => {
+        console.error("Enrichment error:", err);
+      });
+    });
+  } finally {
+    autoReplyProcessingContacts.delete(contactId);
+  }
 }
 
 async function generateReply(
@@ -2503,6 +2966,16 @@ function mapLeadSummary(
     source: string | null;
     notes: string | null;
     botEnabled: boolean;
+    customBotPersona: string | null;
+    aiSummary: string | null;
+    age: string | null;
+    level: string | null;
+    objective: string | null;
+    interestedCourse: string | null;
+    courseMode: string | null;
+    availability: string | null;
+    qualificationScore: number | null;
+    handoffNeeded: boolean;
     lastInteractionAt: Date | null;
     createdAt: Date;
     stage?: { id: number; name: string; color: string; position: number } | null;
@@ -2521,6 +2994,16 @@ function mapLeadSummary(
     source: contact.source,
     notes: contact.notes,
     botEnabled: contact.botEnabled,
+    customBotPersona: contact.customBotPersona,
+    aiSummary: contact.aiSummary,
+    age: contact.age,
+    level: contact.level,
+    objective: contact.objective,
+    interestedCourse: contact.interestedCourse,
+    courseMode: contact.courseMode,
+    availability: contact.availability,
+    qualificationScore: contact.qualificationScore,
+    handoffNeeded: contact.handoffNeeded,
     lastInteractionAt: contact.lastInteractionAt,
     createdAt: contact.createdAt,
     openTasks: contact.tasks || [],
@@ -2538,6 +3021,16 @@ function mapLeadDetails(
     source: string | null;
     notes: string | null;
     botEnabled: boolean;
+    customBotPersona: string | null;
+    aiSummary: string | null;
+    age: string | null;
+    level: string | null;
+    objective: string | null;
+    interestedCourse: string | null;
+    courseMode: string | null;
+    availability: string | null;
+    qualificationScore: number | null;
+    handoffNeeded: boolean;
     lastInteractionAt: Date | null;
     createdAt: Date;
     stage?: { id: number; name: string; color: string; position: number } | null;

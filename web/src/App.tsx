@@ -11,21 +11,54 @@ import CalendarSection from "./components/CalendarSection";
 import SidebarNavigation, { type AppPanel } from "./components/SidebarNavigation";
 import SystemHealthSection from "./components/SystemHealthSection";
 import WebhookEventsSection from "./components/WebhookEventsSection";
+import LogsSection from "./components/LogsSection";
 import PaginationControls from "./components/PaginationControls";
 import StatCard from "./components/StatCard";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "./components/ui/sheet";
 import { apiFetch } from "./lib/apiFetch";
 import { resolveWebSocketUrl } from "./lib/ws";
-import { BarChart3, CalendarDays, LayoutGrid, Menu, MessageSquare, ShieldAlert, Sparkles, type LucideIcon } from "lucide-react";
-import type { AuthUser, ConfirmDialogState, ContactMessage, ConversionMetrics, FaqItem, Lead, PaginationMeta, PipelineStage, SystemHealthDetails, SystemReadiness, TaskPriority, TaskStatus, Toast, WebhookEvent, WebhookEventsResponse } from "./types/dashboard";
+import { BarChart3, CalendarDays, LayoutGrid, Menu, MessageSquare, ScrollText, ShieldAlert, Sparkles, type LucideIcon } from "lucide-react";
+import type { AppLog, AuthUser, ConfirmDialogState, ContactMessage, ConversionMetrics, FaqItem, Lead, LogsResponse, PaginationMeta, PipelineStage, SystemHealthDetails, SystemReadiness, TaskPriority, TaskStatus, Toast, WebhookEvent, WebhookEventsResponse } from "./types/dashboard";
 import ToastContainer from "./components/ToastContainer";
 
 const TASK_PRIORITIES: TaskPriority[] = ["low", "medium", "high"];
 const TASK_STATUSES: TaskStatus[] = ["open", "done", "canceled"];
-const DEFAULT_LEAD_MESSAGES_PAGE_SIZE = 5;
+const DEFAULT_LEAD_MESSAGES_PAGE_SIZE = 20;
 
 function normalizeWaIdClient(input: string): string {
   return input.replace(/[^\d]/g, "");
+}
+
+function normalizeNullableText(value: unknown): string | null {
+  if (typeof value !== "string") return value == null ? null : String(value);
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+type LeadProfileDraft = {
+  stageId: number | null;
+  botEnabled: boolean;
+  handoffNeeded: boolean;
+  interestedCourse: string;
+  courseMode: string;
+  availability: string;
+  qualificationScore: string;
+  notes: string;
+  customBotPersona: string;
+};
+
+function buildLeadProfileDraft(lead: Lead): LeadProfileDraft {
+  return {
+    stageId: lead.stageId,
+    botEnabled: lead.botEnabled,
+    handoffNeeded: lead.handoffNeeded,
+    interestedCourse: lead.interestedCourse || "",
+    courseMode: lead.courseMode || "",
+    availability: lead.availability || "",
+    qualificationScore: lead.qualificationScore == null ? "" : String(lead.qualificationScore),
+    notes: lead.notes || "",
+    customBotPersona: lead.customBotPersona || ""
+  };
 }
 
 export default function App() {
@@ -74,6 +107,8 @@ export default function App() {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [selectedLeadId, setSelectedLeadId] = useState<number | null>(null);
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
+  const [leadDraft, setLeadDraft] = useState<LeadProfileDraft | null>(null);
+  const [savingLeadDraft, setSavingLeadDraft] = useState(false);
   const [leadDetailsLoading, setLeadDetailsLoading] = useState(false);
   const [leadMessages, setLeadMessages] = useState<ContactMessage[]>([]);
   const [leadMessagesLoading, setLeadMessagesLoading] = useState(false);
@@ -94,6 +129,11 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [stageFilter, setStageFilter] = useState("all");
+  const [courseFilter, setCourseFilter] = useState("");
+  const [modalityFilter, setModalityFilter] = useState("");
+  const [scoreMinFilter, setScoreMinFilter] = useState("");
+  const [scoreMaxFilter, setScoreMaxFilter] = useState("");
+  const [handoffFilter, setHandoffFilter] = useState<"all" | "true" | "false">("all");
   const [kanbanPageSize, setKanbanPageSize] = useState(5);
   const [kanbanStagePage, setKanbanStagePage] = useState<Record<number, number>>({});
 
@@ -116,6 +156,7 @@ export default function App() {
   const userRef = useRef<AuthUser | null>(user);
   const selectedLeadIdRef = useRef<number | null>(selectedLeadId);
   const leadsRef = useRef<Lead[]>(leads);
+  const movingLeadIdRef = useRef<number | null>(movingLeadId);
   const activePanelRef = useRef<AppPanel>(activePanel);
 
   const [systemReadiness, setSystemReadiness] = useState<SystemReadiness | null>(null);
@@ -133,12 +174,33 @@ export default function App() {
   const [webhookEventsTotal, setWebhookEventsTotal] = useState(0);
   const [webhookReplayId, setWebhookReplayId] = useState<number | null>(null);
 
+  const [logs, setLogs] = useState<AppLog[]>([]);
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [logsError, setLogsError] = useState("");
+  const [logsLevelFilter, setLogsLevelFilter] = useState("all");
+  const [logsStatusFilter, setLogsStatusFilter] = useState("all");
+  const [logsSearchFilter, setLogsSearchFilter] = useState("");
+  const [logsPathFilter, setLogsPathFilter] = useState("");
+  const [logsRequestIdFilter, setLogsRequestIdFilter] = useState("");
+  const [logsWaIdFilter, setLogsWaIdFilter] = useState("");
+  const [logsIpFilter, setLogsIpFilter] = useState("");
+  const [logsClientOsFilter, setLogsClientOsFilter] = useState("");
+  const [logsPage, setLogsPage] = useState(1);
+  const [logsLimit, setLogsLimit] = useState(10);
+  const [logsTotal, setLogsTotal] = useState(0);
+  const [logsFilterLabels, setLogsFilterLabels] = useState<Record<string, string>>({});
+  const [logsDeletePassword, setLogsDeletePassword] = useState("");
+  const [logsDeleteAuthExpiresAt, setLogsDeleteAuthExpiresAt] = useState<string | null>(null);
+  const [logsDeleteAuthSubmitting, setLogsDeleteAuthSubmitting] = useState(false);
+  const [logsDeleteSubmitting, setLogsDeleteSubmitting] = useState(false);
+
   useEffect(() => {
     userRef.current = user;
     selectedLeadIdRef.current = selectedLeadId;
     leadsRef.current = leads;
+    movingLeadIdRef.current = movingLeadId;
     activePanelRef.current = activePanel;
-  }, [user, selectedLeadId, leads, activePanel]);
+  }, [user, selectedLeadId, leads, movingLeadId, activePanel]);
 
   // Context menu state
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; lead: Lead; stageSubmenu?: boolean } | null>(null);
@@ -149,16 +211,37 @@ export default function App() {
   }, []);
 
   const loadCrm = useCallback(async () => {
+    const params = new URLSearchParams({ limit: "200" });
+    if (courseFilter.trim()) params.set("course", courseFilter.trim());
+    if (modalityFilter.trim()) params.set("modality", modalityFilter.trim());
+    if (scoreMinFilter.trim()) params.set("scoreMin", scoreMinFilter.trim());
+    if (scoreMaxFilter.trim()) params.set("scoreMax", scoreMaxFilter.trim());
+    if (handoffFilter !== "all") params.set("handoffNeeded", handoffFilter);
+
     const [stagesRes, leadsRes, metricsRes] = await Promise.all([
       apiFetch<{ stages: PipelineStage[] }>("/crm/stages"),
-      apiFetch<{ leads: Lead[] }>("/crm/leads?limit=200"),
+      apiFetch<{ leads: Lead[] }>(`/crm/leads?${params.toString()}`),
       apiFetch<ConversionMetrics>("/crm/metrics/conversion")
     ]);
     const sortedStages = stagesRes.stages.slice().sort((a, b) => a.position - b.position);
     setStages(sortedStages);
-    setLeads(leadsRes.leads);
+    setLeads((currentLeads) => {
+      const movingId = movingLeadIdRef.current;
+      if (!movingId) return leadsRes.leads;
+      const optimisticLead = currentLeads.find((lead) => lead.id === movingId);
+      if (!optimisticLead) return leadsRes.leads;
+      return leadsRes.leads.map((lead) =>
+        lead.id === movingId
+          ? {
+            ...lead,
+            stageId: optimisticLead.stageId,
+            stage: optimisticLead.stage || lead.stage
+          }
+          : lead
+      );
+    });
     setMetrics(metricsRes);
-  }, []);
+  }, [courseFilter, modalityFilter, scoreMinFilter, scoreMaxFilter, handoffFilter]);
 
   const loadSystemData = useCallback(async () => {
     setSystemLoading(true);
@@ -195,6 +278,108 @@ export default function App() {
       setWebhookEventsLoading(false);
     }
   }, [webhookEventsLimit, webhookEventsPage, webhookEventsStatusFilter]);
+
+  const loadLogs = useCallback(async (
+    page = logsPage,
+    level = logsLevelFilter,
+    status = logsStatusFilter,
+    search = logsSearchFilter,
+    path = logsPathFilter,
+    requestId = logsRequestIdFilter,
+    waId = logsWaIdFilter,
+    ip = logsIpFilter,
+    clientOs = logsClientOsFilter,
+    limit = logsLimit
+  ) => {
+    setLogsLoading(true);
+    try {
+      const params = new URLSearchParams({ page: String(page), limit: String(limit) });
+      if (level !== "all") params.set("level", level);
+      if (status !== "all") params.set("status", status);
+      if (search.trim()) params.set("search", search.trim());
+      if (path.trim()) params.set("path", path.trim());
+      if (requestId.trim()) params.set("requestId", requestId.trim());
+      if (waId.trim()) params.set("waId", waId.trim());
+      if (ip.trim()) params.set("ip", ip.trim());
+      if (clientOs.trim()) params.set("clientOs", clientOs.trim());
+      const response = await apiFetch<LogsResponse>(`/logs?${params.toString()}`);
+      setLogs(response.logs);
+      setLogsPage(response.page);
+      setLogsTotal(response.total);
+      setLogsFilterLabels(response.filterLabels || {});
+      setLogsError("");
+    } catch (err) {
+      setLogsError(err instanceof Error ? err.message : "Falha ao carregar logs.");
+    } finally {
+      setLogsLoading(false);
+    }
+  }, [logsLimit, logsPage, logsLevelFilter, logsStatusFilter, logsSearchFilter, logsPathFilter, logsRequestIdFilter, logsWaIdFilter, logsIpFilter, logsClientOsFilter]);
+
+  const handleClearLogFilters = useCallback(() => {
+    setLogsLevelFilter("all");
+    setLogsStatusFilter("all");
+    setLogsSearchFilter("");
+    setLogsPathFilter("");
+    setLogsRequestIdFilter("");
+    setLogsWaIdFilter("");
+    setLogsIpFilter("");
+    setLogsClientOsFilter("");
+    setLogsPage(1);
+  }, []);
+
+  const handleAuthorizeLogDelete = useCallback(async () => {
+    if (!logsDeletePassword.trim()) {
+      setLogsError("Informe a senha para autorizar exclusão de logs.");
+      return;
+    }
+
+    setLogsDeleteAuthSubmitting(true);
+    try {
+      const result = await apiFetch<{ expiresAt: string }>("/logs/delete-auth", {
+        method: "POST",
+        body: JSON.stringify({ password: logsDeletePassword })
+      });
+      setLogsDeleteAuthExpiresAt(result.expiresAt);
+      setLogsDeletePassword("");
+      setLogsError("");
+      addToast("Exclusão de logs autorizada por 2m30.", "success");
+    } catch (err) {
+      setLogsError(err instanceof Error ? err.message : "Falha ao autorizar exclusão de logs.");
+    } finally {
+      setLogsDeleteAuthSubmitting(false);
+    }
+  }, [addToast, logsDeletePassword]);
+
+  const handleDeleteLogs = useCallback(async (deleteAll = false) => {
+    setLogsDeleteSubmitting(true);
+    try {
+      const params = new URLSearchParams();
+      if (deleteAll) {
+        params.set("all", "true");
+      } else {
+        if (logsLevelFilter !== "all") params.set("level", logsLevelFilter);
+        if (logsStatusFilter !== "all") params.set("status", logsStatusFilter);
+        if (logsSearchFilter.trim()) params.set("search", logsSearchFilter.trim());
+        if (logsPathFilter.trim()) params.set("path", logsPathFilter.trim());
+        if (logsRequestIdFilter.trim()) params.set("requestId", logsRequestIdFilter.trim());
+        if (logsWaIdFilter.trim()) params.set("waId", logsWaIdFilter.trim());
+        if (logsIpFilter.trim()) params.set("ip", logsIpFilter.trim());
+        if (logsClientOsFilter.trim()) params.set("clientOs", logsClientOsFilter.trim());
+      }
+
+      const query = params.toString();
+      const result = await apiFetch<{ deletedCount: number }>(`/logs${query ? `?${query}` : ""}`, {
+        method: "DELETE"
+      });
+
+      addToast(`${result.deletedCount} log(s) removido(s).`, "success");
+      await loadLogs(1, logsLevelFilter, logsStatusFilter, logsSearchFilter, logsPathFilter, logsRequestIdFilter, logsWaIdFilter, logsIpFilter, logsClientOsFilter, logsLimit);
+    } catch (err) {
+      setLogsError(err instanceof Error ? err.message : "Falha ao excluir logs.");
+    } finally {
+      setLogsDeleteSubmitting(false);
+    }
+  }, [addToast, loadLogs, logsClientOsFilter, logsIpFilter, logsLevelFilter, logsLimit, logsPathFilter, logsRequestIdFilter, logsSearchFilter, logsStatusFilter, logsWaIdFilter]);
 
   const handleReplayWebhookEvent = useCallback(async (id: number) => {
     setWebhookReplayId(id);
@@ -283,6 +468,19 @@ export default function App() {
   }, [user, activePanel, webhookEventsPage, webhookEventsStatusFilter, loadWebhookEvents]);
 
   useEffect(() => {
+    if (!user || activePanel !== "operation") return;
+    const timer = window.setInterval(() => {
+      void loadWebhookEvents(webhookEventsPage, webhookEventsStatusFilter);
+    }, 10000);
+    return () => window.clearInterval(timer);
+  }, [user, activePanel, loadWebhookEvents, webhookEventsPage, webhookEventsStatusFilter]);
+
+  useEffect(() => {
+    if (!user || activePanel !== "logs") return;
+    void loadLogs(logsPage, logsLevelFilter, logsStatusFilter, logsSearchFilter, logsPathFilter, logsRequestIdFilter, logsWaIdFilter, logsIpFilter, logsClientOsFilter, logsLimit);
+  }, [user, activePanel, logsPage, logsLevelFilter, logsStatusFilter, logsSearchFilter, logsPathFilter, logsRequestIdFilter, logsWaIdFilter, logsIpFilter, logsClientOsFilter, logsLimit, loadLogs]);
+
+  useEffect(() => {
     function connect() {
       if (!userRef.current) return;
 
@@ -356,11 +554,14 @@ export default function App() {
 
           if (data.type === "lead_updated") {
             const updatedLead = data.lead as Lead;
+            const isMovingCurrentLead = movingLeadIdRef.current === updatedLead.id;
             setLeads(prev => prev.map(l => l.id === updatedLead.id ? updatedLead : l));
             if (selectedLeadIdRef.current === updatedLead.id) {
               setSelectedLead(updatedLead);
             }
-            void loadCrm(); // refresh metrics and full list order
+            if (!isMovingCurrentLead) {
+              void loadCrm(); // refresh metrics and full list order
+            }
           }
 
           if (data.type === "webhook_event_failed") {
@@ -470,6 +671,7 @@ export default function App() {
   useEffect(() => {
     if (!selectedLeadId) {
       setSelectedLead(null);
+      setLeadDraft(null);
       setLeadDetailsLoading(false);
       setLeadMessages([]);
       setLeadMessagesPagination(null);
@@ -477,12 +679,17 @@ export default function App() {
       setLeadMessagesLoading(false);
       return;
     }
-    setLeadMessages([]);
-    setLeadMessagesPagination(null);
-    setLeadMessagesPage(1);
     loadLeadDetails(selectedLeadId).catch(() => setError("Falha ao carregar lead."));
     loadLeadMessages(selectedLeadId, 1).catch(() => setError("Falha ao carregar mensagens do lead."));
   }, [selectedLeadId, loadLeadDetails, loadLeadMessages]);
+
+  useEffect(() => {
+    if (!selectedLead) {
+      setLeadDraft(null);
+      return;
+    }
+    setLeadDraft(buildLeadProfileDraft(selectedLead));
+  }, [selectedLead]);
 
   useEffect(() => {
     if (!error) return;
@@ -562,6 +769,7 @@ export default function App() {
     { panel: "chat", label: "Chat", icon: MessageSquare },
     { panel: "analytics", label: "Analytics", icon: BarChart3 },
     { panel: "calendar", label: "Calendário", icon: CalendarDays },
+    { panel: "logs", label: "Logs", icon: ScrollText },
     { panel: "operation", label: "Operação", icon: ShieldAlert }
   ];
   const handleCreateLead = async (event: FormEvent<HTMLFormElement>) => {
@@ -591,7 +799,86 @@ export default function App() {
     }
   };
 
+  const isLeadUpdateNoop = (
+    lead: Lead | null | undefined,
+    path: string,
+    body: unknown,
+    method: "PATCH" | "PUT"
+  ): boolean => {
+    if (!lead || typeof body !== "object" || body === null) return false;
+    const payload = body as Record<string, unknown>;
+
+    if (path.endsWith("/stage") && typeof payload.stageId === "number") {
+      return lead.stageId === payload.stageId;
+    }
+
+    if (path.endsWith("/bot") && typeof payload.enabled === "boolean") {
+      return lead.botEnabled === payload.enabled;
+    }
+
+    if (path.endsWith("/handoff") && typeof payload.handoffNeeded === "boolean") {
+      return lead.handoffNeeded === payload.handoffNeeded;
+    }
+
+    if (path.endsWith("/persona") && method === "PATCH" && "persona" in payload) {
+      return normalizeNullableText(lead.customBotPersona) === normalizeNullableText(payload.persona);
+    }
+
+    if (method === "PUT" && path === `/crm/leads/${lead.id}`) {
+      let compared = 0;
+      let unchanged = 0;
+
+      const compareText = (key: keyof Lead, payloadKey: string) => {
+        if (!(payloadKey in payload)) return;
+        compared += 1;
+        if (normalizeNullableText(lead[key]) === normalizeNullableText(payload[payloadKey])) unchanged += 1;
+      };
+
+      compareText("name", "name");
+      compareText("waId", "waId");
+      compareText("source", "source");
+      compareText("notes", "notes");
+      compareText("interestedCourse", "interestedCourse");
+      compareText("courseMode", "courseMode");
+      compareText("availability", "availability");
+
+      if ("leadStatus" in payload) {
+        compared += 1;
+        if (String(lead.leadStatus) === String(payload.leadStatus)) unchanged += 1;
+      }
+
+      if ("qualificationScore" in payload) {
+        compared += 1;
+        const current = lead.qualificationScore ?? null;
+        const next = payload.qualificationScore === null ? null : Number(payload.qualificationScore);
+        if (current === next) unchanged += 1;
+      }
+
+      if ("handoffNeeded" in payload && typeof payload.handoffNeeded === "boolean") {
+        compared += 1;
+        if (lead.handoffNeeded === payload.handoffNeeded) unchanged += 1;
+      }
+
+      if ("stageId" in payload && typeof payload.stageId === "number") {
+        compared += 1;
+        if (lead.stageId === payload.stageId) unchanged += 1;
+      }
+
+      return compared > 0 && compared === unchanged;
+    }
+
+    return false;
+  };
+
   const updateLead = async (leadId: number, path: string, body: unknown, method: "PATCH" | "PUT" = "PATCH") => {
+    const currentLead = selectedLead?.id === leadId
+      ? selectedLead
+      : leadsRef.current.find((lead) => lead.id === leadId);
+
+    if (isLeadUpdateNoop(currentLead, path, body, method)) {
+      return;
+    }
+
     try {
       await apiFetch(path, { method, body: JSON.stringify(body) });
       await loadCrm();
@@ -599,6 +886,46 @@ export default function App() {
       addToast("Lead atualizado!", "success");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Falha ao atualizar lead.");
+    }
+  };
+
+  const handleSaveLeadProfileDraft = async () => {
+    if (!selectedLead || !leadDraft) return;
+
+    const parsedScore = leadDraft.qualificationScore.trim() === ""
+      ? null
+      : Number(leadDraft.qualificationScore);
+
+    const payload = {
+      stageId: leadDraft.stageId,
+      botEnabled: leadDraft.botEnabled,
+      handoffNeeded: leadDraft.handoffNeeded,
+      interestedCourse: leadDraft.interestedCourse,
+      courseMode: leadDraft.courseMode,
+      availability: leadDraft.availability,
+      qualificationScore: Number.isFinite(parsedScore as number) ? Math.max(0, Math.min(100, Math.round(parsedScore as number))) : null,
+      notes: leadDraft.notes,
+      customBotPersona: leadDraft.customBotPersona
+    };
+
+    if (isLeadUpdateNoop(selectedLead, `/crm/leads/${selectedLead.id}`, payload, "PUT")) {
+      addToast("Nenhuma alteração para salvar.", "info");
+      return;
+    }
+
+    setSavingLeadDraft(true);
+    try {
+      await apiFetch(`/crm/leads/${selectedLead.id}`, {
+        method: "PUT",
+        body: JSON.stringify(payload)
+      });
+      await loadCrm();
+      await loadLeadDetails(selectedLead.id);
+      addToast("Lead atualizado uma única vez.", "success");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Falha ao salvar perfil do lead.");
+    } finally {
+      setSavingLeadDraft(false);
     }
   };
 
@@ -734,7 +1061,6 @@ export default function App() {
       if (selectedLeadId === leadId) {
         void loadLeadDetails(leadId);
       }
-      void loadCrm();
       addToast("Etapa do lead alterada.", "success");
     } catch (err) {
       setLeads((currentLeads) =>
@@ -1029,18 +1355,20 @@ export default function App() {
   }
 
   return (
-    <main className="min-h-screen bg-[#020617] text-slate-100 selection:bg-cyan-500/30">
+    <main className="min-h-screen overflow-x-hidden bg-[#020617] text-slate-100 selection:bg-cyan-500/30">
       <SidebarNavigation
         activePanel={activePanel}
         onSelectPanel={handleSelectPanel}
+        onLogout={handleLogout}
         collapsed={sidebarCollapsed}
         onCollapsedChange={setSidebarCollapsed}
+        logoutSubmitting={submitting}
         failedEventsCount={failedWebhookEventsCount}
       />
 
-      <section className={`min-h-screen transition-[padding-left] duration-300 ${sidebarCollapsed ? "md:pl-20" : "md:pl-64"}`}>
+      <section className={`min-h-screen overflow-x-clip transition-[padding-left] duration-300 ${sidebarCollapsed ? "md:pl-20" : "md:pl-64"}`}>
         <div className="min-w-0 space-y-6 px-3 py-4 md:px-4 md:py-4">
-          <header className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-800 bg-slate-900/50 px-4 py-3">
+          <header className="sticky top-0 z-30 flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-800 bg-slate-900/95 px-4 py-3 backdrop-blur md:static md:bg-slate-900/50 md:backdrop-blur-0">
             <div className="flex items-center gap-3">
               <Sheet open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
                 <SheetTrigger asChild>
@@ -1052,11 +1380,11 @@ export default function App() {
                     <Menu className="h-5 w-5" />
                   </button>
                 </SheetTrigger>
-                <SheetContent>
+                <SheetContent className="flex h-full flex-col">
                   <SheetHeader className="border-b border-slate-800">
                     <SheetTitle>Menu</SheetTitle>
                   </SheetHeader>
-                  <nav className="space-y-1 p-3">
+                  <nav className="flex-1 space-y-1 overflow-y-auto p-3">
                     {mobileNavItems.map(({ panel, label, icon: Icon }) => (
                       <button
                         key={panel}
@@ -1076,19 +1404,34 @@ export default function App() {
                       </button>
                     ))}
                   </nav>
+                  <div className="border-t border-slate-800 p-3">
+                    <button
+                      type="button"
+                      className="flex w-full items-center justify-between rounded-xl border border-slate-700 px-3 py-2.5 text-left text-sm text-rose-300 hover:border-rose-500/40 hover:bg-rose-500/10"
+                      onClick={handleLogout}
+                      disabled={submitting}
+                    >
+                      <span>Sair</span>
+                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                      </svg>
+                    </button>
+                  </div>
                 </SheetContent>
               </Sheet>
 
               <div>
                 <h1 className="text-xl font-bold tracking-tight bg-linear-to-r from-white to-slate-400 bg-clip-text text-transparent md:text-2xl">CRM WhatsApp</h1>
-                <div className="flex items-center gap-2 text-[11px] font-medium text-slate-500 uppercase tracking-widest">
-                  <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                  Sessão: <span className="text-slate-300">{user.username}</span>
-                </div>
+                {activePanel === "crm" ? (
+                  <div className="flex items-center gap-2 text-[11px] font-medium text-slate-500 uppercase tracking-widest">
+                    <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                    Sessão: <span className="text-slate-300">{user.username}</span>
+                  </div>
+                ) : null}
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex w-full items-center justify-end gap-2 sm:w-auto">
               <span className={`rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-widest ${isDbDown ? "border-rose-500/30 bg-rose-500/10 text-rose-300" : "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"}`}>
                 DB {isDbDown ? "down" : "up"}
               </span>
@@ -1098,20 +1441,19 @@ export default function App() {
                 </svg>
                 {refreshing ? "Atualizando..." : "Atualizar"}
               </button>
-              <button className="rounded-xl border border-slate-800 bg-slate-900/50 px-4 py-2 text-xs font-bold uppercase tracking-wider text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition-all" onClick={handleLogout} type="button">Sair</button>
             </div>
           </header>
 
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-          <div className="fade-in-up stagger-1"><StatCard label="Leads abertos" value={metrics?.overall.open ?? 0} /></div>
-          <div className="fade-in-up stagger-2"><StatCard label="Ganhos" value={metrics?.overall.won ?? 0} /></div>
-          <div className="fade-in-up stagger-3"><StatCard label="Perdidos" value={metrics?.overall.lost ?? 0} /></div>
-          <div className="fade-in-up stagger-4"><StatCard label="Fechados" value={metrics?.overall.totalClosed ?? 0} /></div>
-          <div className="fade-in-up stagger-5"><StatCard label="Taxa de conversão" value={`${metrics?.overall.conversionRate ?? 0}%`} highlight /></div>
-        </div>
-
         {activePanel === "crm" ? (
           <section key="crm" className="space-y-8 panel-enter">
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+              <div className="fade-in-up stagger-1"><StatCard label="Leads abertos" value={metrics?.overall.open ?? 0} /></div>
+              <div className="fade-in-up stagger-2"><StatCard label="Ganhos" value={metrics?.overall.won ?? 0} /></div>
+              <div className="fade-in-up stagger-3"><StatCard label="Perdidos" value={metrics?.overall.lost ?? 0} /></div>
+              <div className="fade-in-up stagger-4"><StatCard label="Fechados" value={metrics?.overall.totalClosed ?? 0} /></div>
+              <div className="fade-in-up stagger-5"><StatCard label="Taxa de conversão" value={`${metrics?.overall.conversionRate ?? 0}%`} highlight /></div>
+            </div>
+
             <div className="grid gap-6 lg:grid-cols-3">
               {/* Coluna Novo Lead */}
               <form className="group flex flex-col rounded-2xl border border-slate-800 bg-slate-900/50 p-6 transition-all hover:border-slate-700/80 shadow-sm" onSubmit={handleCreateLead}>
@@ -1169,6 +1511,97 @@ export default function App() {
                       {stages.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
                     </select>
                   </div>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Curso</label>
+                      <input
+                        className="w-full rounded-xl border border-slate-800 bg-slate-950 px-4 py-2.5 text-xs text-slate-100 placeholder:text-slate-600 outline-none focus:border-cyan-500/50 transition-all"
+                        value={courseFilter}
+                        onChange={(e) => setCourseFilter(e.target.value)}
+                        placeholder="Ex: Python"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Modalidade</label>
+                      <input
+                        className="w-full rounded-xl border border-slate-800 bg-slate-950 px-4 py-2.5 text-xs text-slate-100 placeholder:text-slate-600 outline-none focus:border-cyan-500/50 transition-all"
+                        value={modalityFilter}
+                        onChange={(e) => setModalityFilter(e.target.value)}
+                        placeholder="Ex: Online"
+                      />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Score mín</label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        className="w-full rounded-xl border border-slate-800 bg-slate-950 px-4 py-2.5 text-xs text-slate-100 placeholder:text-slate-600 outline-none focus:border-cyan-500/50 transition-all"
+                        value={scoreMinFilter}
+                        onChange={(e) => setScoreMinFilter(e.target.value)}
+                        placeholder="0"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Score máx</label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        className="w-full rounded-xl border border-slate-800 bg-slate-950 px-4 py-2.5 text-xs text-slate-100 placeholder:text-slate-600 outline-none focus:border-cyan-500/50 transition-all"
+                        value={scoreMaxFilter}
+                        onChange={(e) => setScoreMaxFilter(e.target.value)}
+                        placeholder="100"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Handoff</label>
+                      <select
+                        className="w-full appearance-none rounded-xl border border-slate-800 bg-slate-950 px-4 py-2.5 text-xs text-slate-100 outline-none focus:border-cyan-500/50 transition-all"
+                        value={handoffFilter}
+                        onChange={(e) => setHandoffFilter(e.target.value as "all" | "true" | "false")}
+                      >
+                        <option value="all">Todos</option>
+                        <option value="true">Somente com handoff</option>
+                        <option value="false">Somente sem handoff</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-cyan-300 transition hover:bg-cyan-500/20"
+                      onClick={() => void loadCrm()}
+                    >
+                      Aplicar Avançados
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-slate-300 transition hover:bg-slate-800"
+                      onClick={() => {
+                        setCourseFilter("");
+                        setModalityFilter("");
+                        setScoreMinFilter("");
+                        setScoreMaxFilter("");
+                        setHandoffFilter("all");
+                        void (async () => {
+                          const [stagesRes, leadsRes, metricsRes] = await Promise.all([
+                            apiFetch<{ stages: PipelineStage[] }>("/crm/stages"),
+                            apiFetch<{ leads: Lead[] }>("/crm/leads?limit=200"),
+                            apiFetch<ConversionMetrics>("/crm/metrics/conversion")
+                          ]);
+                          const sortedStages = stagesRes.stages.slice().sort((a, b) => a.position - b.position);
+                          setStages(sortedStages);
+                          setLeads(leadsRes.leads);
+                          setMetrics(metricsRes);
+                        })().catch((err) => setError(err instanceof Error ? err.message : "Falha ao limpar filtros avançados."));
+                      }}
+                    >
+                      Limpar Avançados
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -1203,7 +1636,7 @@ export default function App() {
 
                 {/* Lista de Etapas (Drag and Drop) */}
                 <div className="supabase-scroll mt-8 max-h-[250px] space-y-2 overflow-y-auto pr-1">
-                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2 block sticky top-0 bg-[#161d2b] py-1">Organizar Etapas</label>
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2 block sticky top-0 bg-[#161d2b] py-1 rounded-2xl p-4">Organizar Etapas</label>
                   {stages.map((s) => (
                     <div
                       key={s.id}
@@ -1257,7 +1690,7 @@ export default function App() {
             </div>
 
             <div className="supabase-scroll overflow-x-auto rounded-3xl border border-slate-800 bg-[#0f172a]/80 p-6 shadow-2xl backdrop-blur-sm">
-              <div className="flex items-center justify-between border-b border-slate-800 pb-5 mb-6">
+              <div className="mb-6 flex flex-col gap-4 border-b border-slate-800 pb-5 lg:flex-row lg:items-center lg:justify-between">
                 <div className="flex items-center gap-3">
                   <div className="p-2.5 rounded-xl bg-cyan-500 shadow-lg shadow-cyan-500/30 text-slate-950">
                     <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1269,9 +1702,9 @@ export default function App() {
                     <p className="text-xs text-slate-500 mt-0.5">Gestão visual e arraste de leads em tempo real</p>
                   </div>
                 </div>
-                <div className="flex items-center gap-4">
+                <div className="flex w-full flex-wrap items-center gap-2 sm:gap-3 lg:w-auto lg:justify-end">
                   {/* Search */}
-                  <div className="relative">
+                  <div className="relative w-full sm:w-auto">
                     <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                     </svg>
@@ -1280,11 +1713,11 @@ export default function App() {
                       value={search}
                       onChange={(e) => setSearch(e.target.value)}
                       placeholder="Buscar lead..."
-                      className="w-52 rounded-xl border border-slate-800 bg-slate-950 pl-10 pr-4 py-2 text-xs text-slate-100 placeholder:text-slate-500 outline-none focus:border-cyan-500/50 transition-all"
+                      className="w-full rounded-xl border border-slate-800 bg-slate-950 pl-10 pr-4 py-2 text-xs text-slate-100 placeholder:text-slate-500 outline-none focus:border-cyan-500/50 transition-all sm:w-52"
                     />
                   </div>
                   {/* Status Filter */}
-                  <div className="flex items-center gap-1">
+                  <div className="flex flex-wrap items-center gap-1">
                     {[
                       { value: "all", label: "Todos", color: "text-slate-400 bg-slate-800/60 border-slate-700" },
                       { value: "open", label: "Abertos", color: "text-cyan-400 bg-cyan-500/10 border-cyan-500/30" },
@@ -1303,9 +1736,9 @@ export default function App() {
                       </button>
                     ))}
                   </div>
-                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest leading-none">Visibilidade</span>
+                  <span className="hidden text-[10px] font-bold text-slate-500 uppercase tracking-widest leading-none sm:inline">Visibilidade</span>
                   <select
-                    className="appearance-none rounded-xl border border-slate-800 bg-slate-950 px-4 py-2 text-xs font-bold text-slate-400 outline-none focus:border-cyan-500/50 transition-all hover:bg-slate-900 cursor-pointer"
+                    className="w-full cursor-pointer appearance-none rounded-xl border border-slate-800 bg-slate-950 px-4 py-2 text-xs font-bold text-slate-400 outline-none transition-all hover:bg-slate-900 focus:border-cyan-500/50 sm:w-auto"
                     value={kanbanPageSize}
                     onChange={(e) => setKanbanPageSize(Number(e.target.value))}
                   >
@@ -1411,7 +1844,7 @@ export default function App() {
                             <div className="flex items-start justify-between gap-2">
                               <p className="font-bold text-slate-100 line-clamp-1">{lead.name || "Sem nome"}</p>
                               <div className={`mt-0.5 rounded-full p-1 ${lead.botEnabled ? "bg-cyan-500/20 text-cyan-400" : "bg-slate-800 text-slate-500"}`}>
-                                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <svg className="w-3 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
                                 </svg>
                               </div>
@@ -1501,16 +1934,22 @@ export default function App() {
                 )}
               </div>
 
-              {leadDetailsLoading && selectedLeadId ? (
-                <div className="flex h-100px flex-col items-center justify-center gap-4 text-slate-500">
-                  <svg className="animate-spin h-8 w-8 text-cyan-500" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                  <p className="text-sm font-medium animate-pulse">Carregando detalhes do lead...</p>
-                </div>
-              ) : selectedLead ? (
-                <div className="grid gap-0 lg:grid-cols-[400px_1fr]">
+              {selectedLead ? (
+                <div className="relative grid h-[calc(100vh-180px)] gap-0 panel-enter lg:grid-cols-[minmax(280px,380px)_minmax(0,1fr)] xl:grid-cols-[minmax(320px,400px)_minmax(0,1fr)]">
+                  {leadDetailsLoading && selectedLeadId ? (
+                    <div className="absolute inset-0 z-20 flex items-center justify-center bg-slate-950/70 backdrop-blur-[1px] transition-opacity duration-200">
+                      <div className="flex flex-col items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/80 px-5 py-4 text-slate-300 shadow-lg">
+                        <div className="relative">
+                          <div className="h-10 w-10 rounded-full border-2 border-cyan-500/20 border-t-cyan-500 animate-spin" />
+                          <div className="absolute inset-1 rounded-full bg-cyan-500/10 animate-pulse" />
+                        </div>
+                        <p className="text-xs font-semibold animate-pulse">Atualizando detalhes do lead...</p>
+                      </div>
+                    </div>
+                  ) : null}
                   {/* Sidebar de Informações */}
-                  <div className="border-r border-slate-800 p-6 space-y-6 bg-slate-900/20">
-                    <div className="space-y-4">
+                  <div className="supabase-scroll h-full min-h-0 overflow-y-auto border-b border-slate-800 bg-slate-900/20 p-4 lg:p-5 xl:border-b-0 xl:border-r xl:p-6">
+                    <div className="space-y-4 lg:space-y-5 xl:space-y-6">
                       <div className="flex items-center gap-4">
                         <div className="h-16 w-16 rounded-2xl bg-linear-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-slate-950 shadow-lg shadow-cyan-500/20">
                           <span className="text-2xl font-black">{selectedLead.name?.[0]?.toUpperCase() || "L"}</span>
@@ -1573,11 +2012,52 @@ export default function App() {
                           <span className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest">Etapa</span>
                           <select
                             className="bg-transparent text-sm font-medium text-cyan-400 outline-none w-full mt-1 appearance-none"
-                            value={selectedLead.stageId ?? ""}
-                            onChange={(e) => void updateLead(selectedLead.id, `/crm/leads/${selectedLead.id}/stage`, { stageId: Number(e.target.value) })}
+                            value={leadDraft?.stageId ?? ""}
+                            onChange={(e) => {
+                              const next = Number(e.target.value);
+                              setLeadDraft((prev) => prev ? { ...prev, stageId: Number.isInteger(next) && next > 0 ? next : null } : prev);
+                            }}
                           >
                             {stages.map(s => <option key={s.id} value={s.id} className="bg-slate-900 text-slate-200">{s.name}</option>)}
                           </select>
+                        </div>
+                      </div>
+
+                      <div className="rounded-xl border border-slate-800 bg-slate-950 p-4 space-y-3">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Qualificação</span>
+                          <span className="text-[10px] font-black uppercase tracking-widest text-cyan-300">
+                            Score: {leadDraft?.qualificationScore || "-"}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-1 gap-2">
+                          <input
+                            className="w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-xs text-slate-200 outline-none focus:border-cyan-500/50"
+                            value={leadDraft?.interestedCourse || ""}
+                            placeholder="Curso de interesse"
+                            onChange={(e) => setLeadDraft((prev) => prev ? { ...prev, interestedCourse: e.target.value } : prev)}
+                          />
+                          <input
+                            className="w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-xs text-slate-200 outline-none focus:border-cyan-500/50"
+                            value={leadDraft?.courseMode || ""}
+                            placeholder="Modalidade"
+                            onChange={(e) => setLeadDraft((prev) => prev ? { ...prev, courseMode: e.target.value } : prev)}
+                          />
+                          <input
+                            className="w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-xs text-slate-200 outline-none focus:border-cyan-500/50"
+                            value={leadDraft?.availability || ""}
+                            placeholder="Disponibilidade"
+                            onChange={(e) => setLeadDraft((prev) => prev ? { ...prev, availability: e.target.value } : prev)}
+                          />
+                          <input
+                            type="number"
+                            min={0}
+                            max={100}
+                            className="w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-xs text-slate-200 outline-none focus:border-cyan-500/50"
+                            value={leadDraft?.qualificationScore || ""}
+                            placeholder="Score de qualificação (0-100)"
+                            onChange={(e) => setLeadDraft((prev) => prev ? { ...prev, qualificationScore: e.target.value } : prev)}
+                          />
                         </div>
                       </div>
 
@@ -1594,10 +2074,30 @@ export default function App() {
                           <input
                             type="checkbox"
                             className="sr-only peer"
-                            checked={selectedLead.botEnabled}
-                            onChange={(e) => void updateLead(selectedLead.id, `/crm/leads/${selectedLead.id}/bot`, { enabled: e.target.checked })}
+                            checked={leadDraft?.botEnabled ?? false}
+                            onChange={(e) => setLeadDraft((prev) => prev ? { ...prev, botEnabled: e.target.checked } : prev)}
                           />
                           <div className="w-9 h-5 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-cyan-500"></div>
+                        </label>
+                      </div>
+
+                      <div className="flex items-center justify-between rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
+                        <div className="flex items-center gap-2">
+                          <div className={`p-1.5 rounded-lg ${selectedLead.handoffNeeded ? "bg-amber-500/20 text-amber-400" : "bg-slate-800 text-slate-500"}`}>
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 8h2a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2v-9a2 2 0 012-2h2m10 0V6a4 4 0 10-8 0v2m8 0H7" />
+                            </svg>
+                          </div>
+                          <span className="text-xs font-bold uppercase tracking-widest text-slate-300">Handoff Humano</span>
+                        </div>
+                        <label className="relative inline-flex items-center cursor-pointer">
+                          <input
+                            type="checkbox"
+                            className="sr-only peer"
+                            checked={leadDraft?.handoffNeeded ?? false}
+                            onChange={(e) => setLeadDraft((prev) => prev ? { ...prev, handoffNeeded: e.target.checked } : prev)}
+                          />
+                          <div className="w-9 h-5 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-amber-500"></div>
                         </label>
                       </div>
 
@@ -1605,8 +2105,8 @@ export default function App() {
                         <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Notas Internas</label>
                         <textarea
                           className="w-full min-h-[120px] rounded-xl border border-slate-800 bg-slate-950 px-4 py-3 text-sm text-slate-200 placeholder:text-slate-600 outline-none focus:border-cyan-500/50 transition-all resize-none"
-                          defaultValue={selectedLead.notes || ""}
-                          onBlur={(e) => void updateLead(selectedLead.id, `/crm/leads/${selectedLead.id}`, { notes: e.target.value }, "PUT")}
+                          value={leadDraft?.notes || ""}
+                          onChange={(e) => setLeadDraft((prev) => prev ? { ...prev, notes: e.target.value } : prev)}
                           placeholder="Clique para adicionar notas sobre o lead..."
                         />
                       </div>
@@ -1616,11 +2116,20 @@ export default function App() {
                         <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Persona do Bot (personalizada)</label>
                         <textarea
                           className="w-full min-h-[80px] rounded-xl border border-slate-800 bg-slate-950 px-4 py-3 text-sm text-slate-200 placeholder:text-slate-600 outline-none focus:border-violet-500/50 transition-all resize-none"
-                          defaultValue={selectedLead.customBotPersona || ""}
-                          onBlur={(e) => void updateLead(selectedLead.id, `/crm/leads/${selectedLead.id}/persona`, { persona: e.target.value }, "PATCH")}
+                          value={leadDraft?.customBotPersona || ""}
+                          onChange={(e) => setLeadDraft((prev) => prev ? { ...prev, customBotPersona: e.target.value } : prev)}
                           placeholder="Deixe vazio para usar a persona padrão. Ex: 'Responda de forma mais formal para este cliente VIP...'"
                         />
                       </div>
+
+                      <button
+                        type="button"
+                        className="w-full rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-4 py-3 text-xs font-bold text-cyan-200 hover:bg-cyan-500/20 disabled:opacity-50"
+                        disabled={savingLeadDraft || !leadDraft}
+                        onClick={() => void handleSaveLeadProfileDraft()}
+                      >
+                        {savingLeadDraft ? "Salvando alterações..." : "Salvar alterações do lead"}
+                      </button>
 
                       <button
                         type="button"
@@ -1645,9 +2154,9 @@ export default function App() {
                   </div>
 
                   {/* Conteúdo Principal (Mensagens e Tarefas) */}
-                  <div className="p-0 flex flex-col h-[650px]">
+                  <div className="flex h-full min-h-0 min-w-0 flex-col p-0">
                     {/* Tabs / Headers para o conteúdo principal */}
-                    <div className="flex items-center border-b border-slate-800 px-6 pt-6 gap-8">
+                    <div className="flex flex-wrap items-center gap-2 border-b border-slate-800 px-4 pt-4 sm:gap-4 sm:px-5 sm:pt-5 md:gap-6 lg:px-6 lg:pt-6 xl:gap-8">
                       <button className="pb-4 text-sm font-bold uppercase tracking-widest text-cyan-500 border-b-2 border-cyan-500">Histórico</button>
                       <button
                         onClick={() => { setActiveChatWaId(selectedLead.waId); setActivePanel("chat"); }}
@@ -1661,10 +2170,10 @@ export default function App() {
                       <button className="pb-4 text-sm font-bold uppercase tracking-widest text-slate-500 hover:text-slate-300 transition-colors">Tarefas</button>
                     </div>
 
-                    <div className="flex-1 overflow-hidden grid grid-cols-1 lg:grid-cols-[1fr_350px]">
+                    <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden md:grid-cols-[minmax(0,1fr)_minmax(260px,300px)] lg:grid-cols-[minmax(0,1fr)_minmax(280px,320px)] xl:grid-cols-[minmax(0,1fr)_minmax(300px,360px)] 2xl:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]">
                       {/* Chat History */}
-                      <div className="min-h-0 flex flex-col border-r border-slate-800">
-                        <div className="supabase-scroll min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
+                      <div className="flex h-full min-h-0 min-w-0 flex-col border-r border-slate-800">
+                        <div className="supabase-scroll min-h-0 flex-1 space-y-3 overflow-y-auto p-3 sm:p-4">
                           {leadMessages.length > 0 ? (
                             leadMessages.map((m) => (
                               <div
@@ -1672,7 +2181,7 @@ export default function App() {
                                 className={`flex ${m.direction === "in" ? "justify-start" : "justify-end"}`}
                               >
                                 <div
-                                  className={`flex flex-col max-w-[80%] ${m.direction === "in" ? "items-start" : "items-end"}`}
+                                  className={`flex flex-col max-w-[92%] sm:max-w-[85%] md:max-w-[80%] ${m.direction === "in" ? "items-start" : "items-end"}`}
                                 >
                                   <div className={`rounded-2xl px-5 py-3.5 text-sm shadow-md ${m.direction === "in"
                                     ? "bg-slate-800 text-slate-100 rounded-tl-none border border-slate-700/50"
@@ -1695,7 +2204,7 @@ export default function App() {
                             </div>
                           )}
                         </div>
-                        <div className="shrink-0 p-4 bg-slate-900/40 border-t border-slate-800">
+                        <div className="shrink-0 bg-slate-900/40 border-t border-slate-800 p-3 sm:p-4">
                           <PaginationControls
                             page={leadMessagesPagination?.page || 1}
                             totalPages={leadMessagesPagination?.totalPages || 1}
@@ -1709,11 +2218,11 @@ export default function App() {
                       </div>
 
                       {/* Task Section */}
-                      <div className="flex flex-col bg-slate-900/40">
-                        <div className="p-5 border-b border-slate-800">
+                      <div className="flex h-full min-h-0 min-w-0 flex-col bg-slate-900/40">
+                        <div className="border-b border-slate-800 p-3 sm:p-4 lg:p-5">
                           <h4 className="text-xs font-bold uppercase tracking-widest text-slate-400">Próximos Passos</h4>
                         </div>
-                        <div className="supabase-scroll flex-1 overflow-y-auto p-5">
+                        <div className="supabase-scroll flex-1 overflow-y-auto p-3 sm:p-4 lg:p-5">
                           <form className="mb-6 space-y-4" onSubmit={handleCreateTask}>
                             <div>
                               <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5 ml-1">Título da Tarefa</label>
@@ -1723,7 +2232,7 @@ export default function App() {
                               <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5 ml-1">Notas / Descrição (Opcional)</label>
                               <textarea className="w-full min-h-[60px] rounded-xl border border-slate-800 bg-slate-950 px-3 py-2.5 text-xs text-slate-100 placeholder:text-slate-600 outline-none focus:border-cyan-500/50 transition-all resize-none" value={taskDescription} onChange={(e) => setTaskDescription(e.target.value)} placeholder="Detalhes de como executar essa tarefa e o que não esquecer..." />
                             </div>
-                            <div className="grid grid-cols-2 gap-3">
+                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                               <div>
                                 <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5 ml-1">Data e Hora Máxima</label>
                                 <input className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2.5 text-[10px] text-slate-100 outline-none focus:border-cyan-500/50 transition-all" type="datetime-local" value={taskDueAt} onChange={(e) => setTaskDueAt(e.target.value)} required />
@@ -1781,6 +2290,14 @@ export default function App() {
                     </div>
                   </div>
                 </div>
+              ) : leadDetailsLoading && selectedLeadId ? (
+                <div className="flex h-[400px] flex-col items-center justify-center gap-4 text-slate-500">
+                  <div className="relative">
+                    <div className="h-11 w-11 rounded-full border-2 border-cyan-500/20 border-t-cyan-500 animate-spin" />
+                    <div className="absolute inset-1 rounded-full bg-cyan-500/10 animate-pulse" />
+                  </div>
+                  <p className="text-sm font-medium uppercase tracking-widest animate-pulse">Carregando detalhes do lead...</p>
+                </div>
               ) : (
                 <div className="flex h-[400px] flex-col items-center justify-center text-slate-600">
                   <div className="mb-4 rounded-full bg-slate-900 p-6 border border-slate-800">
@@ -1801,6 +2318,78 @@ export default function App() {
 
         <AnalyticsSection active={activePanel === "analytics"} />
         <CalendarSection active={activePanel === "calendar"} />
+
+        {activePanel === "logs" ? (
+          <section className="space-y-4 panel-enter">
+            <LogsSection
+              logs={logs}
+              loading={logsLoading}
+              error={logsError}
+              page={logsPage}
+              limit={logsLimit}
+              total={logsTotal}
+              levelFilter={logsLevelFilter}
+              statusFilter={logsStatusFilter}
+              searchFilter={logsSearchFilter}
+              pathFilter={logsPathFilter}
+              requestIdFilter={logsRequestIdFilter}
+              waIdFilter={logsWaIdFilter}
+              ipFilter={logsIpFilter}
+              clientOsFilter={logsClientOsFilter}
+              filterLabels={logsFilterLabels}
+              deletePassword={logsDeletePassword}
+              deleteAuthExpiresAt={logsDeleteAuthExpiresAt}
+              deleteAuthSubmitting={logsDeleteAuthSubmitting}
+              deleteSubmitting={logsDeleteSubmitting}
+              onLevelFilterChange={(value) => {
+                setLogsLevelFilter(value);
+                setLogsPage(1);
+              }}
+              onStatusFilterChange={(value) => {
+                setLogsStatusFilter(value);
+                setLogsPage(1);
+              }}
+              onSearchFilterChange={(value) => {
+                setLogsSearchFilter(value);
+                setLogsPage(1);
+              }}
+              onPathFilterChange={(value) => {
+                setLogsPathFilter(value);
+                setLogsPage(1);
+              }}
+              onRequestIdFilterChange={(value) => {
+                setLogsRequestIdFilter(value);
+                setLogsPage(1);
+              }}
+              onWaIdFilterChange={(value) => {
+                setLogsWaIdFilter(value);
+                setLogsPage(1);
+              }}
+              onIpFilterChange={(value) => {
+                setLogsIpFilter(value);
+                setLogsPage(1);
+              }}
+              onClientOsFilterChange={(value) => {
+                setLogsClientOsFilter(value);
+                setLogsPage(1);
+              }}
+              onLimitChange={(value) => {
+                setLogsLimit(value);
+                setLogsPage(1);
+              }}
+              onDeletePasswordChange={setLogsDeletePassword}
+              onAuthorizeDelete={() => void handleAuthorizeLogDelete()}
+              onDeleteFiltered={() => void handleDeleteLogs(false)}
+              onDeleteAll={() => {
+                if (!window.confirm("Tem certeza que deseja excluir TODOS os logs?")) return;
+                void handleDeleteLogs(true);
+              }}
+              onClearFilters={handleClearLogFilters}
+              onPageChange={(page) => setLogsPage(page)}
+              onRefresh={() => void loadLogs(logsPage, logsLevelFilter, logsStatusFilter, logsSearchFilter, logsPathFilter, logsRequestIdFilter, logsWaIdFilter, logsIpFilter, logsClientOsFilter, logsLimit)}
+            />
+          </section>
+        ) : null}
 
         {activePanel === "operation" ? (
           <section className="space-y-4 panel-enter">

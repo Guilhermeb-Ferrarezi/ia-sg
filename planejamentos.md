@@ -29,6 +29,22 @@ Este é o conteúdo oficial mantido em `planejamentos.md`.
 4. Criar replay manual para eventos com falha.
 5. Critério de aceite: evento repetido não gera resposta duplicada.
 
+### Status atual (Sprint 1 e 2)
+1. Sprint 1 e Sprint 2: concluídas no backend.
+2. Critérios de aceite atendidos:
+   - webhook inválido retorna `403`;
+   - API não sobe sem variáveis obrigatórias;
+   - evento repetido não gera resposta duplicada.
+3. Funcionalidades acessíveis no frontend (aba `Operação`):
+   - Saúde do sistema (`readiness` e `health-details`);
+   - Lista de eventos de webhook com filtro/paginação;
+   - Replay manual de eventos com falha.
+4. Itens dessas sprints que não possuem tela dedicada (somente backend):
+   - validação fail-fast de env;
+   - validação de assinatura da Meta;
+   - logs estruturados com correlação;
+   - retry/backoff de integrações.
+
 ### Sprint 3 - Qualificação de Leads
 1. Extrair dados de interesse: curso, modalidade, disponibilidade, nível, objetivo.
 2. Fazer perguntas de triagem quando faltar dado essencial.
@@ -111,3 +127,4 @@ Mitigação: limites por contato, cache de contexto e observabilidade de consumo
 7. Tags e vinculacao de tags agora possuem sincronizacao WS dedicada com eventos `tags_updated` e `lead_profile_updated`.
 8. Resumo historico de dashboard agora possui sinalizacao WS via evento `dashboard_updated`.
 9. Envio manual no chat (`/api/chat/send`) agora evita reload HTTP obrigatorio apos acao (append otimista + WS).
+

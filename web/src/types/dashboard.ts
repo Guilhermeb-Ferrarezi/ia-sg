@@ -88,6 +88,11 @@ export type Lead = {
   source: string | null;
   notes: string | null;
   botEnabled: boolean;
+  interestedCourse: string | null;
+  courseMode: string | null;
+  availability: string | null;
+  qualificationScore: number | null;
+  handoffNeeded: boolean;
   customBotPersona: string | null;
   aiSummary: string | null;
   age: string | null;
@@ -234,4 +239,34 @@ export type WebhookEventsResponse = {
   limit: number;
   total: number;
   events: WebhookEvent[];
+};
+
+export type AppLog = {
+  id: number;
+  ts: string;
+  level: "info" | "warn" | "error" | string;
+  event: string;
+  method: string | null;
+  path: string | null;
+  statusCode: number | null;
+  durationMs: number | null;
+  ip: string | null;
+  userAgent: string | null;
+  clientOs: string | null;
+  requestId: string | null;
+  waId: string | null;
+  contactId: number | null;
+  webhookEventId: number | null;
+  message: string | null;
+  data?: unknown;
+};
+
+export type LogsResponse = {
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+  availablePageSizes?: number[];
+  filterLabels?: Record<string, string>;
+  logs: AppLog[];
 };

@@ -37,7 +37,10 @@ Atualizado em: 2026-03-05
 - [x] Inclusao da aba `Operacao` no frontend.
 - [x] Tela `SystemHealthSection` consumindo readiness/health-details.
 - [x] Tela `WebhookEventsSection` com filtro, paginacao e botao de replay.
+- [x] Polling de reforco na aba `Operacao` para manter lista de eventos de webhook atualizada.
 - [x] Badge de falhas de webhook na navegacao.
+- [x] Edicao de perfil do lead em lote (uma unica requisicao `PUT`) com acao explicita de salvar.
+- [x] Inclusao da aba `Logs` no frontend com filtro e paginacao.
 - [x] Tipos frontend adicionados para `SystemReadiness`, `SystemHealthDetails`, `WebhookEvent`, `WebhookEventsResponse`.
 - [x] Padrao de scrollbar estilo "Supabase-like" (`.supabase-scroll`) aplicado nas areas com overflow.
 
@@ -75,11 +78,42 @@ Atualizado em: 2026-03-05
 - [x] CRUD de tags e vinculacao de tags aos leads.
 - [x] Endpoints de analytics (`messages-per-day`, `top-contacts`, `overview`).
 - [x] Endpoint de calendario de tarefas.
+- [x] Endpoint `GET /api/logs` com paginacao e filtros (`level`, `event`, `requestId`, `waId`, `contactId`, `search`, `from`, `to`).
+- [x] Persistencia de logs estruturados em tabela `AppLog`.
+- [x] Captura automatica de logs HTTP por request (metodo, rota, status, duracao, ip, user-agent, query, params e body sanitizado).
+- [x] Persistencia de logs de nivel `error` no banco (alem de console).
+- [x] Aba `Logs` com filtros avancados (`level`, `method`, `path`, `requestId`, `waId`, busca geral), paginacao e visualizacao de dados brutos.
 
 ## Pendencias (nao concluidas ainda do planejamento de 90 dias)
 
-- [ ] Campos de qualificacao no `Contact`: `interestedCourse`, `courseMode`, `availability`, `qualificationScore`, `handoffNeeded`.
-- [ ] Endpoint `PATCH /api/crm/leads/:id/handoff`.
-- [ ] Filtros planejados em `GET /api/crm/leads`: `course`, `modality`, `scoreMin`, `scoreMax`, `handoffNeeded`.
+- [x] Campos de qualificacao no `Contact`: `interestedCourse`, `courseMode`, `availability`, `qualificationScore`, `handoffNeeded`.
+- [x] Endpoint `PATCH /api/crm/leads/:id/handoff`.
+- [x] Filtros planejados em `GET /api/crm/leads`: `course`, `modality`, `scoreMin`, `scoreMax`, `handoffNeeded`.
 - [x] Evento WS `lead_profile_updated`.
 - [ ] Entregas de Sprint 3 em diante (qualificacao avancada, auditoria/exportacao/CI hardening).
+
+## Atualizacao extra - 2026-03-06 (Logs, Lead e IA)
+
+- [x] Logs HTTP com filtro de ruido para reduzir volume em banco (skip de GETs comuns/health quando sucesso).
+- [x] Enriquecimento de logs com `ip` e `clientOs` (SO inferido por `user-agent`).
+- [x] Backend de logs com filtros mais detalhados (`ip`, `clientOs`) e metadados de label para UI.
+- [x] Exclusao de logs protegida por senha do usuario logado, com janela de reautenticacao de 2m30.
+- [x] Endpoint de exclusao de logs com suporte a excluir filtrados ou tudo (`?all=true`).
+- [x] Paginacao de logs aprimorada no frontend (primeira/ultima, salto de 5, ir para pagina e seletor de itens por pagina).
+- [x] UI de logs com labels explicativos para cada filtro e exibicao de `IP` + `SO` por entrada.
+- [x] Remocao de ruido de logs HTTP GET bem-sucedidos (mantendo falhas para auditoria).
+- [x] Filtro de logs por status em portugues (`sucesso`/`falha`) no backend e frontend.
+- [x] Remocao do filtro por metodo HTTP na tela de logs e adicao de botao `Remover filtros`.
+- [x] Labels dos filtros de logs reposicionados acima dos campos para melhor leitura.
+- [x] Carregamento do painel do lead ajustado para manter contexto anterior durante refresh (sem limpar historico antes da resposta).
+- [x] Layout responsivo do painel do lead ajustado para coluna esquerda maior que a direita em telas grandes.
+- [x] Painel de lead estabilizado no loading (overlay sem quebrar layout/scroll durante atualizacao).
+- [x] Painel de lead responsivo recalibrado para evitar coluna esquerda desproporcional e compressao da area direita.
+- [x] Loading inicial de detalhe do lead padronizado para a mesma altura do estado sem selecao (400px).
+- [x] Animacao dedicada de carregamento de lead aplicada no estado inicial e no overlay de atualizacao.
+- [x] Correcao de flicker ao mover lead de etapa (preservacao otimista durante refresh concorrente).
+- [x] Cards de metricas e identificacao de sessao exibidos apenas no painel CRM.
+- [x] Botao de sair removido do header e movido para sidebar (desktop e menu mobile).
+- [x] Controle de resposta da IA com debounce de mensagens consecutivas (`AI_REPLY_DEBOUNCE_MS`).
+- [x] Agrupamento de mensagens pendentes da IA para responder primeiro contexto principal (ate 2 mensagens de entrada por ciclo).
+- [x] Geracao do Prisma Client e builds de `api` e `web` validados com sucesso apos as alteracoes.

@@ -22,6 +22,11 @@ model Contact {
   age               String?
   level             String?
   objective         String?
+  interestedCourse  String?
+  courseMode        String?
+  availability      String?
+  qualificationScore Int?
+  handoffNeeded     Boolean        @default(false)
   lastInteractionAt DateTime?
   createdAt         DateTime       @default(now())
   messages          Message[]
@@ -30,6 +35,8 @@ model Contact {
 
   @@index([stageId])
   @@index([leadStatus])
+  @@index([handoffNeeded])
+  @@index([qualificationScore])
   @@index([lastInteractionAt])
 }
 
@@ -136,4 +143,35 @@ model WebhookEvent {
   @@index([status, nextAttemptAt])
   @@index([waMessageId])
   @@index([createdAt])
+}
+
+model AppLog {
+  id             Int      @id @default(autoincrement())
+  ts             DateTime @default(now())
+  level          String
+  event          String
+  method         String?
+  path           String?
+  statusCode     Int?
+  durationMs     Int?
+  ip             String?
+  userAgent      String?
+  clientOs       String?
+  requestId      String?
+  waId           String?
+  contactId      Int?
+  webhookEventId Int?
+  message        String?
+  data           Json?
+
+  @@index([ts])
+  @@index([level])
+  @@index([event])
+  @@index([method])
+  @@index([path])
+  @@index([statusCode])
+  @@index([clientOs])
+  @@index([requestId])
+  @@index([waId])
+  @@index([contactId])
 }
