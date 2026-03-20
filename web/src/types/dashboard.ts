@@ -270,3 +270,32 @@ export type LogsResponse = {
   filterLabels?: Record<string, string>;
   logs: AppLog[];
 };
+
+export type AISettings = {
+  model: string;
+  baseUrl: string;
+  transcriptionModel: string;
+  persona: string;
+  historyLimit: number;
+  aiReplyDebounceMs: number;
+  humanDelayMinMs: number;
+  humanDelayMaxMs: number;
+  hasApiKey: boolean;
+  language: string;
+  provider: string;
+};
+
+export type WhatsAppProfile = {
+  phoneNumberId: string;
+  verifiedName: string | null;
+  displayPhoneNumber: string | null;
+  qualityRating: string | null;
+  nameStatus: string | null;
+  about: string | null;
+  address: string | null;
+  description: string | null;
+  email: string | null;
+  profilePictureUrl: string | null;
+  websites: string[];
+  vertical: string | null;
+};

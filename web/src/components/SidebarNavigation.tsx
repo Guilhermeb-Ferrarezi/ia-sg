@@ -1,10 +1,10 @@
 import * as Collapsible from "@radix-ui/react-collapsible";
-import { CalendarDays, ChevronLeft, ChevronRight, LayoutGrid, LogOut, MessageSquare, ShieldAlert, Sparkles, BarChart3, ScrollText } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight, LayoutGrid, LogOut, MessageSquare, Settings, ShieldAlert, Sparkles, BarChart3, ScrollText } from "lucide-react";
 import SidebarItem from "./SidebarItem";
 import { TooltipProvider } from "./ui/tooltip";
 import { cn } from "../lib/utils";
 
-export type AppPanel = "crm" | "faqs" | "chat" | "analytics" | "calendar" | "operation" | "logs";
+export type AppPanel = "crm" | "faqs" | "chat" | "analytics" | "calendar" | "operation" | "logs" | "settings";
 
 type SidebarNavigationProps = {
   activePanel: AppPanel;
@@ -76,6 +76,10 @@ export default function SidebarNavigation({
               badge={failedEventsCount > 0 ? String(failedEventsCount) : undefined}
               danger={failedEventsCount > 0}
             />
+
+            <div className="my-2 border-t border-slate-800/60" />
+
+            <SidebarItem label="Configurações" icon={Settings} isActive={activePanel === "settings"} isCollapsed={collapsed} onClick={() => onSelectPanel("settings")} />
           </nav>
 
           <Collapsible.Trigger asChild>

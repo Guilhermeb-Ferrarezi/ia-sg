@@ -1,0 +1,222 @@
+export type PromptTextType = "input_text" | "output_text";
+
+export type PromptMessageRole = "system" | "user" | "assistant";
+
+export type PromptInputMessage = {
+  role: PromptMessageRole;
+  content: Array<{
+    type: PromptTextType;
+    text: string;
+  }>;
+};
+
+export type ReplyHistoryMessage = {
+  role: "user" | "assistant";
+  content: string;
+};
+
+type OpenAIResponseOutputItem = {
+  content?: Array<{
+    type?: string;
+    text?: string;
+  }>;
+};
+
+type OpenAIResponseBody = {
+  output_text?: string;
+  output?: OpenAIResponseOutputItem[];
+};
+
+const DEFAULT_REPLY_PERSONA = [
+  "Voce e a assistente de WhatsApp da Santos Tech.",
+  "Seu papel e atender interessados em cursos com rapidez, contexto e clareza.",
+  "Foque em responder a duvida principal, captar dados do lead sem travar a conversa e encaminhar para humano quando isso for explicitamente necessario."
+].join("\n");
+
+export const CRM_ENRICHMENT_SYSTEM_PROMPT = [
+  "Voce e um analista de CRM focado em extracao de dados de leads da Santos Tech.",
+  "Sua tarefa e ler a conversa e devolver apenas um JSON valido.",
+  "Nao escreva markdown, comentarios ou texto fora do JSON."
+].join("\n");
+
+export function buildFaqSystemPrompt(faqContext: string): string {
+  if (faqContext.trim().length > 0) {
+    return [
+      "--- Perguntas frequentes recuperadas ---",
+      "Use esta secao como fonte principal quando a pergunta atual estiver coberta pelo FAQ.",
+      faqContext,
+      "Se a informacao nao estiver aqui, diga isso com clareza e ofereca encaminhamento humano sem inventar resposta."
+    ].join("\n");
+  }
+
+  return [
+    "--- Perguntas frequentes recuperadas ---",
+    "Nenhum FAQ relevante foi recuperado para esta mensagem.",
+    "Se nao houver certeza, diga que vai verificar e ofereca encaminhamento humano."
+  ].join("\n");
+}
+
+export function buildReplySystemPrompt(input: {
+  faqContext: string;
+  persona?: string;
+}): string {
+  const sections: string[] = [];
+  const persona = input.persona?.trim();
+
+  if (persona) {
+    sections.push([
+      "--- Instrucao principal configurada no painel ---",
+      persona
+    ].join("\n"));
+  } else {
+    sections.push([
+      "--- Instrucao principal padrao ---",
+      DEFAULT_REPLY_PERSONA
+    ].join("\n"));
+  }
+
+  sections.push([
+    "--- Regras obrigatorias do sistema ---",
+    "- Responda de forma curta, clara e objetiva.",
+    "- Priorize a duvida principal antes de fazer novas perguntas.",
+    "- Evite respostas longas, vagas ou sem proximo passo.",
+    "- Nao invente preco, horario, curso, regra, condicao ou promessa.",
+    "- Colete nome, telefone e email apenas quando fizer sentido na conversa.",
+    "- Se o usuario pedir humano ou a duvida exigir atendimento humano, sinalize o encaminhamento.",
+    "- Se faltar contexto, faca no maximo uma pergunta objetiva por resposta."
+  ].join("\n"));
+
+  sections.push(buildFaqSystemPrompt(input.faqContext));
+
+  return sections.join("\n\n");
+}
+
+export function buildReplyPromptInput(input: {
+  history: ReplyHistoryMessage[];
+  faqContext: string;
+  persona?: string;
+}): PromptInputMessage[] {
+  const messages: PromptInputMessage[] = [
+    {
+      role: "system",
+      content: [
+        {
+          type: "input_text",
+          text: buildReplySystemPrompt({
+            faqContext: input.faqContext,
+            persona: input.persona
+          })
+        }
+      ]
+    }
+  ];
+
+  for (const message of input.history) {
+    const text = message.content.trim();
+    if (!text) continue;
+
+    messages.push({
+      role: message.role,
+      content: [
+        {
+          type: message.role === "assistant" ? "output_text" : "input_text",
+          text
+        }
+      ]
+    });
+  }
+
+  return messages;
+}
+
+export function buildLeadEnrichmentPrompt(history: string): string {
+  return [
+    "Analise a conversa abaixo entre lead e atendimento da Santos Tech.",
+    "Extraia informacoes estruturadas e gere um resumo profissional.",
+    "",
+    "--- Conversa ---",
+    history,
+    "",
+    "--- Formato de resposta ---",
+    "{",
+    '  "summary": "Resumo curto e profissional em 2 ou 3 linhas sobre a situacao atual do lead",',
+    '  "age": "Idade ou faixa etaria (ex: 25 anos, Crianca, Adulto)",',
+    '  "level": "Nivel de conhecimento (ex: Iniciante, Intermediario, Avancado)",',
+    '  "objective": "Objetivo principal (ex: Aprender Python, Carreira, Hobby)"',
+    "}",
+    "",
+    'Responda APENAS o JSON. Se nao souber algum campo, coloque "Nao informado".'
+  ].join("\n");
+}
+
+export function buildLeadEnrichmentPromptInput(history: string): PromptInputMessage[] {
+  return [
+    {
+      role: "system",
+      content: [
+        {
+          type: "input_text",
+          text: CRM_ENRICHMENT_SYSTEM_PROMPT
+        }
+      ]
+    },
+    {
+      role: "user",
+      content: [
+        {
+          type: "input_text",
+          text: buildLeadEnrichmentPrompt(history)
+        }
+      ]
+    }
+  ];
+}
+
+export function parseResponseOutputText(payload: unknown): string {
+  const body = (payload || {}) as OpenAIResponseBody;
+  if (typeof body.output_text === "string" && body.output_text.trim()) {
+    return body.output_text.trim();
+  }
+
+  const parts: string[] = [];
+  for (const item of body.output || []) {
+    for (const content of item.content || []) {
+      if (content.type === "output_text" && typeof content.text === "string" && content.text.trim()) {
+        parts.push(content.text.trim());
+      }
+    }
+  }
+
+  return parts.join("\n").trim();
+}
+
+export function extractFirstJsonObject(raw: string): Record<string, unknown> | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // fallback below
+  }
+
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start === -1 || end === -1 || end <= start) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed.slice(start, end + 1)) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}

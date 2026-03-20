@@ -124,6 +124,20 @@ model ContactTag {
   @@index([tagId])
 }
 
+model AiConfig {
+  key                  String   @id @default("default")
+  model                String
+  baseUrl              String
+  transcriptionModel   String
+  persona              String   @default("")
+  historyLimit         Int      @default(20)
+  aiReplyDebounceMs    Int      @default(0)
+  humanDelayMinMs      Int      @default(1200)
+  humanDelayMaxMs      Int      @default(6500)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+}
+
 model WebhookEvent {
   id           Int      @id @default(autoincrement())
   requestId    String

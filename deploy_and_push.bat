@@ -5,8 +5,8 @@ REM ================== CONFIG ==================
 set "BRANCH=master"
 set "COMPOSE_FILE=docker-compose.yml"
 set "DEPLOY_CMD=docker compose -f %COMPOSE_FILE% up -d --build"
-set "WEB_PORT=8080"
-set "API_PORT=3001"
+set "WEB_PORT=8085"
+set "API_PORT=3005"
 REM ============================================
 
 color 0A

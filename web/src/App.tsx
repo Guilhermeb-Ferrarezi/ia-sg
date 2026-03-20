@@ -12,12 +12,15 @@ import SidebarNavigation, { type AppPanel } from "./components/SidebarNavigation
 import SystemHealthSection from "./components/SystemHealthSection";
 import WebhookEventsSection from "./components/WebhookEventsSection";
 import LogsSection from "./components/LogsSection";
+import SettingsSection from "./components/SettingsSection";
 import PaginationControls from "./components/PaginationControls";
 import StatCard from "./components/StatCard";
+import LeadQualificationPanel from "./components/LeadQualificationPanel";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "./components/ui/sheet";
 import { apiFetch } from "./lib/apiFetch";
+import { buildLeadProfileDraft, getQualificationCompletion, getQualificationSignals, parseQualificationScore, type LeadProfileDraft } from "./lib/leadQualification";
 import { resolveWebSocketUrl } from "./lib/ws";
-import { BarChart3, CalendarDays, LayoutGrid, Menu, MessageSquare, ScrollText, ShieldAlert, Sparkles, type LucideIcon } from "lucide-react";
+import { BarChart3, CalendarDays, LayoutGrid, Menu, MessageSquare, ScrollText, Settings, ShieldAlert, Sparkles, type LucideIcon } from "lucide-react";
 import type { AppLog, AuthUser, ConfirmDialogState, ContactMessage, ConversionMetrics, FaqItem, Lead, LogsResponse, PaginationMeta, PipelineStage, SystemHealthDetails, SystemReadiness, TaskPriority, TaskStatus, Toast, WebhookEvent, WebhookEventsResponse } from "./types/dashboard";
 import ToastContainer from "./components/ToastContainer";
 
@@ -33,32 +36,6 @@ function normalizeNullableText(value: unknown): string | null {
   if (typeof value !== "string") return value == null ? null : String(value);
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
-}
-
-type LeadProfileDraft = {
-  stageId: number | null;
-  botEnabled: boolean;
-  handoffNeeded: boolean;
-  interestedCourse: string;
-  courseMode: string;
-  availability: string;
-  qualificationScore: string;
-  notes: string;
-  customBotPersona: string;
-};
-
-function buildLeadProfileDraft(lead: Lead): LeadProfileDraft {
-  return {
-    stageId: lead.stageId,
-    botEnabled: lead.botEnabled,
-    handoffNeeded: lead.handoffNeeded,
-    interestedCourse: lead.interestedCourse || "",
-    courseMode: lead.courseMode || "",
-    availability: lead.availability || "",
-    qualificationScore: lead.qualificationScore == null ? "" : String(lead.qualificationScore),
-    notes: lead.notes || "",
-    customBotPersona: lead.customBotPersona || ""
-  };
 }
 
 export default function App() {
@@ -770,7 +747,8 @@ export default function App() {
     { panel: "analytics", label: "Analytics", icon: BarChart3 },
     { panel: "calendar", label: "Calendário", icon: CalendarDays },
     { panel: "logs", label: "Logs", icon: ScrollText },
-    { panel: "operation", label: "Operação", icon: ShieldAlert }
+    { panel: "operation", label: "Operação", icon: ShieldAlert },
+    { panel: "settings", label: "Configurações", icon: Settings }
   ];
   const handleCreateLead = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -1863,58 +1841,128 @@ export default function App() {
                           ((kanbanStagePage[stage.id] ?? 1) - 1) * kanbanPageSize,
                           (kanbanStagePage[stage.id] ?? 1) * kanbanPageSize
                         )
-                        .map((lead) => (
-                          <button
-                            key={lead.id}
-                            type="button"
-                            draggable
-                            onDragStart={() => setDraggedLeadId(lead.id)}
-                            onDragEnd={() => {
-                              setDraggedLeadId(null);
-                              setDragOverStageId(null);
-                            }}
-                            onClick={() => setSelectedLeadId(lead.id)}
-                            onContextMenu={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              setContextMenu({ x: e.pageX, y: e.pageY, lead });
-                            }}
-                            className={`group relative w-full rounded-xl border p-4 text-left transition-all hover:scale-[1.02] active:scale-95 ${selectedLeadId === lead.id
-                              ? "border-cyan-500 bg-cyan-500/10 shadow-lg shadow-cyan-500/10"
-                              : "border-slate-800 bg-slate-900/50 hover:border-slate-700 hover:bg-slate-900"
-                              } ${movingLeadId === lead.id ? "opacity-60 cursor-wait" : "cursor-grab"}`}
-                          >
-                            <div className="flex items-start justify-between gap-2">
-                              <p className="font-bold text-slate-100 line-clamp-1">{lead.name || "Sem nome"}</p>
-                              <div className={`mt-0.5 rounded-full p-1 ${lead.botEnabled ? "bg-cyan-500/20 text-cyan-400" : "bg-slate-800 text-slate-500"}`}>
-                                <svg className="w-3 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                                </svg>
+                        .map((lead) => {
+                          const qualificationSignals = getQualificationSignals(lead);
+                          const qualificationCompletion = getQualificationCompletion(qualificationSignals);
+                          const qualificationScore = parseQualificationScore(lead.qualificationScore);
+                          const primarySignal =
+                            lead.interestedCourse
+                            || lead.objective
+                            || lead.level
+                            || "Triagem pendente";
+
+                          return (
+                            <button
+                              key={lead.id}
+                              type="button"
+                              draggable
+                              onDragStart={() => setDraggedLeadId(lead.id)}
+                              onDragEnd={() => {
+                                setDraggedLeadId(null);
+                                setDragOverStageId(null);
+                              }}
+                              onClick={() => setSelectedLeadId(lead.id)}
+                              onContextMenu={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setContextMenu({ x: e.pageX, y: e.pageY, lead });
+                              }}
+                              className={`lead-sheen group relative overflow-hidden rounded-2xl border p-4 text-left transition-all duration-300 hover:-translate-y-1 active:scale-[0.99] ${selectedLeadId === lead.id
+                                ? "border-cyan-400/30 bg-[linear-gradient(180deg,rgba(8,47,73,0.78),rgba(15,23,42,0.95))] shadow-xl shadow-cyan-500/10"
+                                : "border-slate-800 bg-[linear-gradient(180deg,rgba(15,23,42,0.88),rgba(2,6,23,0.92))] hover:border-slate-700"
+                                } ${movingLeadId === lead.id ? "cursor-wait opacity-60" : "cursor-grab"}`}
+                            >
+                              <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/10 to-transparent" />
+
+                              <div className="relative flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <p className="line-clamp-1 font-bold text-slate-100">
+                                    {lead.name || "Sem nome"}
+                                  </p>
+                                  <div className="mt-1.5 flex items-center gap-1.5 text-xs text-slate-500">
+                                    <svg className="h-3 w-3 text-emerald-500" fill="currentColor" viewBox="0 0 24 24">
+                                      <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.414 0 .018 5.393 0 12.028c0 2.119.554 4.187 1.61 6.006L0 24l6.117-1.605a11.803 11.803 0 005.925 1.586h.005c6.632 0 12.028-5.396 12.033-12.03a11.751 11.751 0 00-3.489-8.452z" />
+                                    </svg>
+                                    <span className="truncate">{lead.waId}</span>
+                                  </div>
+                                </div>
+
+                                <div className="flex shrink-0 items-center gap-2">
+                                  <span className={`rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wider ${qualificationScore == null
+                                    ? "border-slate-700 bg-slate-900 text-slate-400"
+                                    : qualificationScore >= 75
+                                      ? "border-emerald-400/20 bg-emerald-500/10 text-emerald-200"
+                                      : qualificationScore >= 45
+                                        ? "border-amber-400/20 bg-amber-500/10 text-amber-200"
+                                        : "border-rose-400/20 bg-rose-500/10 text-rose-200"
+                                    }`}>
+                                    {qualificationScore == null ? "sem score" : `${qualificationScore}`}
+                                  </span>
+                                  <div className={`rounded-full p-1.5 ${lead.botEnabled ? "bg-cyan-500/20 text-cyan-400" : "bg-slate-800 text-slate-500"}`}>
+                                    <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                                    </svg>
+                                  </div>
+                                </div>
                               </div>
-                            </div>
-                            <div className="mt-1.5 flex items-center gap-1.5 text-xs text-slate-500">
-                              <svg className="w-3 h-3 text-emerald-500" fill="currentColor" viewBox="0 0 24 24">
-                                <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.414 0 .018 5.393 0 12.028c0 2.119.554 4.187 1.61 6.006L0 24l6.117-1.605a11.803 11.803 0 005.925 1.586h.005c6.632 0 12.028-5.396 12.033-12.03a11.751 11.751 0 00-3.489-8.452z" />
-                              </svg>
-                              <span>{lead.waId}</span>
-                            </div>
-                            <div className="mt-3 flex flex-wrap gap-1.5">
-                              {lead.latestMessage ? (
-                                <div className="w-full rounded-lg bg-slate-950/50 p-2 text-[11px] text-slate-400 italic">
-                                  "{lead.latestMessage.body}"
+
+                              <div className="relative mt-3 space-y-3">
+                                <div className="rounded-xl border border-slate-800/80 bg-slate-950/55 p-3">
+                                  <div className="flex items-center justify-between gap-2 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                                    <span>Cobertura</span>
+                                    <span>{qualificationCompletion}%</span>
+                                  </div>
+                                  <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-800">
+                                    <div
+                                      className={`h-full rounded-full transition-all duration-500 ${lead.handoffNeeded
+                                        ? "bg-amber-400"
+                                        : qualificationCompletion >= 80
+                                          ? "bg-emerald-400"
+                                          : qualificationCompletion >= 50
+                                            ? "bg-cyan-400"
+                                            : "bg-slate-600"
+                                        }`}
+                                      style={{ width: `${Math.max(8, qualificationCompletion)}%` }}
+                                    />
+                                  </div>
+                                  <div className="mt-2 flex flex-wrap gap-1.5">
+                                    <span className="rounded-full bg-slate-900 px-2 py-1 text-[10px] font-medium text-slate-300">
+                                      {primarySignal}
+                                    </span>
+                                    {lead.courseMode ? (
+                                      <span className="rounded-full bg-slate-900 px-2 py-1 text-[10px] font-medium text-slate-300">
+                                        {lead.courseMode}
+                                      </span>
+                                    ) : null}
+                                    {lead.handoffNeeded ? (
+                                      <span className="rounded-full border border-amber-400/20 bg-amber-500/10 px-2 py-1 text-[10px] font-semibold text-amber-200">
+                                        handoff
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                </div>
+
+                                {lead.latestMessage ? (
+                                  <div className="rounded-xl border border-slate-800/80 bg-slate-950/70 p-3 text-[11px] italic leading-5 text-slate-400">
+                                    "{lead.latestMessage.body}"
+                                  </div>
+                                ) : null}
+                              </div>
+
+                              {movingLeadId === lead.id ? (
+                                <div className="absolute inset-0 flex items-center justify-center rounded-2xl bg-slate-950/45 backdrop-blur-[2px]">
+                                  <div className="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900 px-3 py-1.5 shadow-xl">
+                                    <svg className="h-3 w-3 animate-spin text-cyan-500" fill="none" viewBox="0 0 24 24">
+                                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                    </svg>
+                                    <span className="text-[10px] font-bold uppercase text-cyan-500">Movendo...</span>
+                                  </div>
                                 </div>
                               ) : null}
-                            </div>
-                            {movingLeadId === lead.id ? (
-                              <div className="absolute inset-0 flex items-center justify-center rounded-xl bg-slate-950/40 backdrop-blur-[2px]">
-                                <div className="flex items-center gap-2 rounded-full bg-slate-900 px-3 py-1.5 shadow-xl border border-slate-700">
-                                  <svg className="animate-spin h-3 w-3 text-cyan-500" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                                  <span className="text-[10px] font-bold text-cyan-500 uppercase">Movendo...</span>
-                                </div>
-                              </div>
-                            ) : null}
-                          </button>
-                        ))}
+                            </button>
+                          );
+                        })}
                     </div>
                     {(() => {
                       const totalInStage = (leadsByStage.get(stage.id) || []).length;
@@ -1990,210 +2038,53 @@ export default function App() {
                       </div>
                     </div>
                   ) : null}
-                  {/* Sidebar de Informações */}
                   <div className="supabase-scroll h-full min-h-0 overflow-y-auto border-b border-slate-800 bg-slate-900/20 p-4 lg:p-5 xl:border-b-0 xl:border-r xl:p-6">
-                    <div className="space-y-4 lg:space-y-5 xl:space-y-6">
-                      <div className="flex items-center gap-4">
-                        <div className="h-16 w-16 rounded-2xl bg-linear-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-slate-950 shadow-lg shadow-cyan-500/20">
-                          <span className="text-2xl font-black">{selectedLead.name?.[0]?.toUpperCase() || "L"}</span>
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <h3 className="text-lg font-bold text-white truncate">{selectedLead.name || "Sem nome"}</h3>
-                          <div className="flex items-center gap-1.5 text-xs text-slate-400">
-                            <svg className="w-3 h-3 text-emerald-500 shrink-0" fill="currentColor" viewBox="0 0 24 24">
-                              <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.414 0 .018 5.393 0 12.028c0 2.119.554 4.187 1.61 6.006L0 24l6.117-1.605a11.803 11.803 0 005.925 1.586h.005c6.632 0 12.028-5.396 12.033-12.03a11.751 11.751 0 00-3.489-8.452z" />
-                            </svg>
-                            <span className="truncate">{selectedLead.waId}</span>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* AI Enrichment Section */}
-                      {selectedLead.aiSummary && (
-                        <div className="rounded-xl border border-purple-500/20 bg-purple-500/5 p-4 relative overflow-hidden group">
-                          <div className="absolute top-0 right-0 p-2 opacity-10">
-                            <svg className="w-8 h-8 text-purple-500" fill="currentColor" viewBox="0 0 24 24">
-                              <path d="M12 2L14.85 8.65L22 9.24L16.5 13.97L18.18 21L12 17.27L5.82 21L7.5 13.97L2 9.24L9.15 8.65L12 2Z" />
-                            </svg>
-                          </div>
-                          <span className="block text-[10px] font-bold text-purple-400 uppercase tracking-widest mb-2 flex items-center gap-1.5">
-                            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                            </svg>
-                            Resumo da IA
-                          </span>
-                          <p className="text-xs text-slate-300 leading-relaxed italic">
-                            "{selectedLead.aiSummary}"
-                          </p>
-                        </div>
-                      )}
-
-                      <div className="flex flex-wrap gap-2">
-                        {selectedLead.age && (
-                          <div className="px-2 py-1.5 rounded-lg bg-slate-800/50 border border-slate-700/50 text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                            <span className="text-sm">🎂</span> {selectedLead.age}
-                          </div>
-                        )}
-                        {selectedLead.level && (
-                          <div className="px-2 py-1.5 rounded-lg bg-slate-800/50 border border-slate-700/50 text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                            <span className="text-sm">📊</span> {selectedLead.level}
-                          </div>
-                        )}
-                        {selectedLead.objective && (
-                          <div className="px-2 py-1.5 rounded-lg bg-slate-800/50 border border-slate-700/50 text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                            <span className="text-sm">🎯</span> {selectedLead.objective}
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-3">
-                        <div className="rounded-xl border border-slate-800 bg-slate-950 p-3">
-                          <span className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest">Origem</span>
-                          <span className="block text-sm font-medium text-slate-200 mt-1">{selectedLead.source || "Direto"}</span>
-                        </div>
-                        <div className="rounded-xl border border-slate-800 bg-slate-950 p-3">
-                          <span className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest">Etapa</span>
-                          <select
-                            className="bg-transparent text-sm font-medium text-cyan-400 outline-none w-full mt-1 appearance-none"
-                            value={leadDraft?.stageId ?? ""}
-                            onChange={(e) => {
-                              const next = Number(e.target.value);
-                              setLeadDraft((prev) => prev ? { ...prev, stageId: Number.isInteger(next) && next > 0 ? next : null } : prev);
-                            }}
-                          >
-                            {stages.map(s => <option key={s.id} value={s.id} className="bg-slate-900 text-slate-200">{s.name}</option>)}
-                          </select>
-                        </div>
-                      </div>
-
-                      <div className="rounded-xl border border-slate-800 bg-slate-950 p-4 space-y-3">
-                        <div className="flex items-center justify-between">
-                          <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Qualificação</span>
-                          <span className="text-[10px] font-black uppercase tracking-widest text-cyan-300">
-                            Score: {leadDraft?.qualificationScore || "-"}
-                          </span>
-                        </div>
-                        <div className="grid grid-cols-1 gap-2">
-                          <input
-                            className="w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-xs text-slate-200 outline-none focus:border-cyan-500/50"
-                            value={leadDraft?.interestedCourse || ""}
-                            placeholder="Curso de interesse"
-                            onChange={(e) => setLeadDraft((prev) => prev ? { ...prev, interestedCourse: e.target.value } : prev)}
-                          />
-                          <input
-                            className="w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-xs text-slate-200 outline-none focus:border-cyan-500/50"
-                            value={leadDraft?.courseMode || ""}
-                            placeholder="Modalidade"
-                            onChange={(e) => setLeadDraft((prev) => prev ? { ...prev, courseMode: e.target.value } : prev)}
-                          />
-                          <input
-                            className="w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-xs text-slate-200 outline-none focus:border-cyan-500/50"
-                            value={leadDraft?.availability || ""}
-                            placeholder="Disponibilidade"
-                            onChange={(e) => setLeadDraft((prev) => prev ? { ...prev, availability: e.target.value } : prev)}
-                          />
-                          <input
-                            type="number"
-                            min={0}
-                            max={100}
-                            className="w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-xs text-slate-200 outline-none focus:border-cyan-500/50"
-                            value={leadDraft?.qualificationScore || ""}
-                            placeholder="Score de qualificação (0-100)"
-                            onChange={(e) => setLeadDraft((prev) => prev ? { ...prev, qualificationScore: e.target.value } : prev)}
-                          />
-                        </div>
-                      </div>
-
-                      <div className="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-950 p-4">
-                        <div className="flex items-center gap-2">
-                          <div className={`p-1.5 rounded-lg ${leadDraft?.botEnabled ? "bg-cyan-500/20 text-cyan-500" : "bg-slate-800 text-slate-500"}`}>
-                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                            </svg>
-                          </div>
-                          <span className="text-xs font-bold uppercase tracking-widest text-slate-300">Automação AI</span>
-                        </div>
-                        <label className="relative inline-flex items-center cursor-pointer">
-                          <input
-                            type="checkbox"
-                            className="sr-only peer"
-                            checked={leadDraft?.botEnabled ?? false}
-                            onChange={(e) => void handleToggleBotEnabled(e.target.checked)}
-                          />
-                          <div className="w-9 h-5 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-cyan-500"></div>
-                        </label>
-                      </div>
-
-                      <div className="flex items-center justify-between rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
-                        <div className="flex items-center gap-2">
-                          <div className={`p-1.5 rounded-lg ${leadDraft?.handoffNeeded ? "bg-amber-500/20 text-amber-400" : "bg-slate-800 text-slate-500"}`}>
-                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 8h2a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2v-9a2 2 0 012-2h2m10 0V6a4 4 0 10-8 0v2m8 0H7" />
-                            </svg>
-                          </div>
-                          <span className="text-xs font-bold uppercase tracking-widest text-slate-300">Handoff Humano</span>
-                        </div>
-                        <label className="relative inline-flex items-center cursor-pointer">
-                          <input
-                            type="checkbox"
-                            className="sr-only peer"
-                            checked={leadDraft?.handoffNeeded ?? false}
-                            onChange={(e) => void handleToggleHandoffNeeded(e.target.checked)}
-                          />
-                          <div className="w-9 h-5 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-amber-500"></div>
-                        </label>
-                      </div>
-
-                      <div className="space-y-2">
-                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Notas Internas</label>
-                        <textarea
-                          className="w-full min-h-[120px] rounded-xl border border-slate-800 bg-slate-950 px-4 py-3 text-sm text-slate-200 placeholder:text-slate-600 outline-none focus:border-cyan-500/50 transition-all resize-none"
-                          value={leadDraft?.notes || ""}
-                          onChange={(e) => setLeadDraft((prev) => prev ? { ...prev, notes: e.target.value } : prev)}
-                          placeholder="Clique para adicionar notas sobre o lead..."
-                        />
-                      </div>
-
-                      {/* Bot Persona Custom */}
-                      <div className="space-y-2">
-                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Persona do Bot (personalizada)</label>
-                        <textarea
-                          className="w-full min-h-[80px] rounded-xl border border-slate-800 bg-slate-950 px-4 py-3 text-sm text-slate-200 placeholder:text-slate-600 outline-none focus:border-violet-500/50 transition-all resize-none"
-                          value={leadDraft?.customBotPersona || ""}
-                          onChange={(e) => setLeadDraft((prev) => prev ? { ...prev, customBotPersona: e.target.value } : prev)}
-                          placeholder="Deixe vazio para usar a persona padrão. Ex: 'Responda de forma mais formal para este cliente VIP...'"
-                        />
-                      </div>
-
-                      <button
-                        type="button"
-                        className="w-full rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-4 py-3 text-xs font-bold text-cyan-200 hover:bg-cyan-500/20 disabled:opacity-50"
-                        disabled={savingLeadDraft || !leadDraft}
-                        onClick={() => void handleSaveLeadProfileDraft()}
-                      >
-                        {savingLeadDraft ? "Salvando alterações..." : "Salvar alterações do lead"}
-                      </button>
-
-                      <button
-                        type="button"
-                        className="w-full flex items-center justify-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/5 px-4 py-3 text-xs font-bold text-rose-400 hover:bg-rose-500 hover:text-white transition-all group"
-                        disabled={deletingLeadId === selectedLead.id}
-                        onClick={() =>
-                          setConfirmDialog({
-                            title: "Excluir permanentemente?",
-                            description: "Isso removerá todo o histórico de mensagens e tarefas vinculadas a este lead.",
-                            confirmText: "Sim, excluir lead",
-                            tone: "danger",
-                            action: { type: "delete-lead", leadId: selectedLead.id, leadName: selectedLead.name, waId: selectedLead.waId }
-                          })
-                        }
-                      >
-                        <svg className="w-4 h-4 opacity-70 group-hover:scale-110 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                        </svg>
-                        {deletingLeadId === selectedLead.id ? "Removendo..." : "Excluir Lead"}
-                      </button>
-                    </div>
+                    <LeadQualificationPanel
+                      lead={selectedLead}
+                      draft={leadDraft}
+                      stages={stages}
+                      saving={savingLeadDraft}
+                      deleting={deletingLeadId === selectedLead.id}
+                      onStageChange={(stageId) => {
+                        setLeadDraft((prev) => (prev ? { ...prev, stageId } : prev));
+                      }}
+                      onInterestedCourseChange={(value) => {
+                        setLeadDraft((prev) => (prev ? { ...prev, interestedCourse: value } : prev));
+                      }}
+                      onCourseModeChange={(value) => {
+                        setLeadDraft((prev) => (prev ? { ...prev, courseMode: value } : prev));
+                      }}
+                      onAvailabilityChange={(value) => {
+                        setLeadDraft((prev) => (prev ? { ...prev, availability: value } : prev));
+                      }}
+                      onQualificationScoreChange={(value) => {
+                        setLeadDraft((prev) => (prev ? { ...prev, qualificationScore: value } : prev));
+                      }}
+                      onNotesChange={(value) => {
+                        setLeadDraft((prev) => (prev ? { ...prev, notes: value } : prev));
+                      }}
+                      onCustomBotPersonaChange={(value) => {
+                        setLeadDraft((prev) => (prev ? { ...prev, customBotPersona: value } : prev));
+                      }}
+                      onToggleBotEnabled={(enabled) => {
+                        void handleToggleBotEnabled(enabled);
+                      }}
+                      onToggleHandoffNeeded={(enabled) => {
+                        void handleToggleHandoffNeeded(enabled);
+                      }}
+                      onSave={() => {
+                        void handleSaveLeadProfileDraft();
+                      }}
+                      onDelete={() =>
+                        setConfirmDialog({
+                          title: "Excluir permanentemente?",
+                          description: "Isso removera todo o historico de mensagens e tarefas vinculadas a este lead.",
+                          confirmText: "Sim, excluir lead",
+                          tone: "danger",
+                          action: { type: "delete-lead", leadId: selectedLead.id, leadName: selectedLead.name, waId: selectedLead.waId }
+                        })
+                      }
+                    />
                   </div>
 
                   {/* Conteúdo Principal (Mensagens e Tarefas) */}
@@ -2462,7 +2353,11 @@ export default function App() {
               onReplay={(id) => void handleReplayWebhookEvent(id)}
             />
           </section>
+
+
         ) : null}
+
+        <SettingsSection active={activePanel === "settings"} />
 
         <ConfirmModal open={Boolean(confirmDialog)} title={confirmDialog?.title || ""} description={confirmDialog?.description || ""} confirmText={confirmDialog?.confirmText || "Confirmar"} tone={confirmDialog?.tone || "danger"} loading={Boolean(faqDeletingId || faqUpdatingId || deletingLeadId)} onCancel={() => setConfirmDialog(null)} onConfirm={() => { handleConfirmAction().catch((err) => setError(err instanceof Error ? err.message : "Falha ao confirmar ação.")); }} />
 

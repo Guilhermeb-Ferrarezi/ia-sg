@@ -1,6 +1,37 @@
 # Completed Tasks
+## Refactor - Modularizacao do server.ts (Mar 2026)
+- [x] Extracao dos prompts de IA para modulo dedicado.
+- [x] Extracao das rotas de auth, system e settings para arquivos proprios.
+- [x] `server.ts` reduzido para papel mais focado em bootstrap, worker e orquestracao.
+- [x] `api/src/ai/prompts.ts` refeito para montar prompts em `input` estruturado no estilo do servico OpenAI de referencia, com parser centralizado de texto e JSON.
 
-Atualizado em: 2026-03-05
+Atualizado em: 2026-03-20
+
+## Sprint 3 - Qualificacao de Leads (Visual CRM) (Mar 2026)
+- [x] Painel lateral do lead redesenhado para o sprint 3 com score dial, cobertura de perfil e radar de triagem.
+- [x] Cards do pipeline enriquecidos com sinais visuais de qualificacao, handoff e progresso do perfil.
+- [x] Animacoes extras adicionadas ao CRM para spotlight, sheen e leitura mais rapida do estado do lead.
+- [x] Correcao do compose para deploy apontar o backend ao banco `db` com credenciais validas da stack local.
+
+Atualizado em: 2026-03-20
+
+## Sprint 3 - Configurações e Perfil WhatsApp/IA (Mar 2026)
+- [x] Endpoints REST para configurações de IA: GET/PUT /api/settings/ai
+- [x] Endpoints REST para perfil do WhatsApp: GET/PUT /api/settings/whatsapp-profile, POST /api/settings/whatsapp-profile/photo
+- [x] Refatoração do backend para runtime config dinâmico (model, persona, delays, etc)
+- [x] Componente SettingsSection com tabs (IA e WhatsApp), animações extremas, UI moderna (shadcn, radix, tailwind)
+- [x] Upload de foto de perfil WhatsApp via API e UI
+- [x] Integração da nova aba "Configurações" na sidebar e navegação mobile
+- [x] Cards de status, formulários, validações e UX detalhada para settings
+- [x] Logs detalhados e persistentes para todas as ações de configuração
+
+- [x] Persistencia real das configuracoes da IA em tabela `AiConfig` no banco.
+- [x] Webhook e auto-reply passam a recarregar configuracao da IA do banco antes de aplicar debounce, historico, modelo, persona, delays e transcricao.
+- [x] Correcao de consistencia entre bancos: tabela `AiConfig` criada tambem no Postgres externo e bootstrap da API passou a auto-criar essa tabela caso o ambiente ainda nao tenha sido provisionado.
+- [x] Remocao do `CREATE TABLE IF NOT EXISTS` do runtime da API; o schema volta a ser provisionado pelo Prisma, e o prompt do sistema agora resolve a `persona` a partir de `AiConfig` no banco a cada geracao de resposta.
+- [x] Alinhamento do deploy para a API usar o `DATABASE_URL` principal do `.env`, eliminando a divergencia entre o banco visto no painel e o banco inspecionado no IDE para `AiConfig/persona`.
+
+Atualizado em: 2026-03-20
 
 ## Sprint 1 - Base de Confiabilidade (Backend)
 

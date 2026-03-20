@@ -1,15 +1,35 @@
-import crypto from "crypto";
+﻿import crypto from "crypto";
 import http from "http";
 import express from "express";
 import dotenv from "dotenv";
 import { PrismaClient } from "@prisma/client";
 import { WebSocketServer, WebSocket } from "ws";
+import {
+  buildLeadEnrichmentPromptInput,
+  buildReplyPromptInput,
+  extractFirstJsonObject,
+  parseResponseOutputText
+} from "./ai/prompts";
+import { registerAuthRoutes } from "./routes/auth";
+import { registerSettingsRoutes } from "./routes/settings";
+import { registerSystemRoutes } from "./routes/system";
 
 dotenv.config();
 
 type RequestMeta = {
   requestId: string;
   rawBody?: Buffer;
+};
+
+type AIConfigValues = {
+  model: string;
+  baseUrl: string;
+  transcriptionModel: string;
+  persona: string;
+  historyLimit: number;
+  aiReplyDebounceMs: number;
+  humanDelayMinMs: number;
+  humanDelayMaxMs: number;
 };
 
 const PORT = Number(process.env.PORT || "3000");
@@ -26,6 +46,7 @@ const BOT_PERSONA = process.env.BOT_PERSONA || "";
 const AI_REPLY_DEBOUNCE_MS = Math.max(0, Number(process.env.AI_REPLY_DEBOUNCE_MS || ""));
 const HUMAN_DELAY_MIN_MS = Number(process.env.HUMAN_DELAY_MIN_MS || null);
 const HUMAN_DELAY_MAX_MS = Number(process.env.HUMAN_DELAY_MAX_MS || null);
+const AI_CONFIG_KEY = "default";
 
 const SESSION_SECRET = process.env.SESSION_SECRET || process.env.JWT_SECRET || "";
 const AUTH_COOKIE_NAME = process.env.AUTH_COOKIE_NAME || "";
@@ -248,7 +269,7 @@ const DEFAULT_PIPELINE_STAGES = [
   { name: "Novo", position: 1, color: "#38bdf8" },
   { name: "Qualificado", position: 2, color: "#22c55e" },
   { name: "Proposta", position: 3, color: "#f59e0b" },
-  { name: "Negociação", position: 4, color: "#f97316" },
+  { name: "NegociaÃ§Ã£o", position: 4, color: "#f97316" },
   { name: "Fechado (ganho)", position: 5, color: "#10b981" },
   { name: "Fechado (perdido)", position: 6, color: "#ef4444" }
 ] as const;
@@ -323,41 +344,8 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get("/api/health", (_req, res) => {
-  res.json({ ok: true });
-});
-
-app.get("/api/system/readiness", async (_req, res) => {
-  try {
-    await prisma.$queryRaw`SELECT 1`;
-    res.json({ ok: true, db: "up" });
-  } catch (err) {
-    res.status(503).json({ ok: false, db: "down", error: formatError(err) });
-  }
-});
-
-app.get("/api/system/health-details", async (_req, res) => {
-  try {
-    await prisma.$queryRaw`SELECT 1`;
-    res.json({
-      ok: true,
-      uptimeSec: Math.floor(process.uptime()),
-      db: "up",
-      wsClients: wsClients.size,
-      worker: {
-        intervalMs: WEBHOOK_WORKER_INTERVAL_MS,
-        maxRetries: WEBHOOK_MAX_RETRIES
-      }
-    });
-  } catch (err) {
-    res.status(503).json({
-      ok: false,
-      uptimeSec: Math.floor(process.uptime()),
-      db: "down",
-      wsClients: wsClients.size,
-      error: formatError(err)
-    });
-  }
+registerSystemRoutes(app, {
+  buildSystemHealthSnapshot
 });
 
 app.get("/api/logs", requireSession, async (req, res) => {
@@ -382,15 +370,15 @@ app.get("/api/logs", requireSession, async (req, res) => {
     totalPages: Math.max(1, Math.ceil(total / limit)),
     availablePageSizes: [10, 20, 50, 100],
     filterLabels: {
-      level: "Nível do log (info/warn/error)",
-      status: "Status da requisição (sucesso/falha)",
+      level: "NÃ­vel do log (info/warn/error)",
+      status: "Status da requisiÃ§Ã£o (sucesso/falha)",
       path: "Trecho da rota HTTP",
-      event: "Nome técnico do evento",
-      requestId: "ID de correlação da requisição",
+      event: "Nome tÃ©cnico do evento",
+      requestId: "ID de correlaÃ§Ã£o da requisiÃ§Ã£o",
       waId: "WhatsApp ID do contato",
       contactId: "ID interno do lead/contato",
       statusCode: "Status HTTP (100-599)",
-      ip: "IP de origem da requisição",
+      ip: "IP de origem da requisiÃ§Ã£o",
       clientOs: "Sistema operacional inferido via User-Agent",
       from: "Data/hora inicial",
       to: "Data/hora final",
@@ -405,12 +393,12 @@ app.post("/api/logs/delete-auth", requireSession, (req, res) => {
   const session = (req as express.Request & { user?: SessionPayload }).user;
 
   if (!password.trim()) {
-    res.status(400).json({ message: "Senha é obrigatória." });
+    res.status(400).json({ message: "Senha Ã© obrigatÃ³ria." });
     return;
   }
 
   if (!session || session.username !== DASHBOARD_USER || password !== DASHBOARD_PASS) {
-    res.status(401).json({ message: "Senha inválida." });
+    res.status(401).json({ message: "Senha invÃ¡lida." });
     return;
   }
 
@@ -432,7 +420,7 @@ app.delete("/api/logs", requireSession, async (req, res) => {
 
   if (!hasDeletePermission) {
     res.status(403).json({
-      message: "Reautenticação necessária para excluir logs.",
+      message: "ReautenticaÃ§Ã£o necessÃ¡ria para excluir logs.",
       requiresPassword: true,
       ttlMs: LOG_DELETE_REAUTH_WINDOW_MS
     });
@@ -445,7 +433,7 @@ app.delete("/api/logs", requireSession, async (req, res) => {
 
   if (!hasFilters && !deleteAll) {
     res.status(400).json({
-      message: "Para evitar exclusão acidental, aplique filtros ou envie ?all=true."
+      message: "Para evitar exclusÃ£o acidental, aplique filtros ou envie ?all=true."
     });
     return;
   }
@@ -467,47 +455,13 @@ app.delete("/api/logs", requireSession, async (req, res) => {
   });
 });
 
-app.post("/api/auth/login", (req, res) => {
-  const { username, password } = req.body as { username?: string; password?: string };
-
-  if (!username || !password) {
-    res.status(400).json({ message: "Usuário e senha são obrigatórios." });
-    return;
-  }
-
-  if (username !== DASHBOARD_USER || password !== DASHBOARD_PASS) {
-    res.status(401).json({ message: "Credenciais inválidas." });
-    return;
-  }
-
-  const token = signSession({ username, role: "admin" });
-  setAuthCookie(res, token);
-
-  res.json({
-    message: "Login realizado com sucesso.",
-    user: { username, role: "admin" }
-  });
-});
-
-app.post("/api/auth/logout", (_req, res) => {
-  clearAuthCookie(res);
-  res.json({ message: "Logout realizado com sucesso." });
-});
-
-app.get("/api/auth/me", (req, res) => {
-  const session = getSessionFromRequest(req);
-  if (!session) {
-    res.status(401).json({ message: "Não autenticado." });
-    return;
-  }
-
-  res.json({
-    user: {
-      username: session.username,
-      role: session.role,
-      exp: session.exp
-    }
-  });
+registerAuthRoutes(app, {
+  dashboardUser: DASHBOARD_USER,
+  dashboardPass: DASHBOARD_PASS,
+  signSession,
+  setAuthCookie,
+  clearAuthCookie,
+  getSessionFromRequest
 });
 
 app.get("/api/dashboard/summary", requireSession, async (_req, res) => {
@@ -596,7 +550,7 @@ app.post("/api/dashboard/faqs", requireSession, async (req, res) => {
   const answerRaw = typeof req.body?.answer === "string" ? req.body.answer.trim() : "";
 
   if (!questionRaw || !answerRaw) {
-    res.status(400).json({ message: "Pergunta e resposta são obrigatórias." });
+    res.status(400).json({ message: "Pergunta e resposta sÃ£o obrigatÃ³rias." });
     return;
   }
 
@@ -624,7 +578,7 @@ app.post("/api/dashboard/faqs", requireSession, async (req, res) => {
     broadcastEvent("dashboard_updated");
   } catch (err: unknown) {
     if (isPrismaUniqueError(err)) {
-      res.status(409).json({ message: "Já existe um FAQ com essa pergunta." });
+      res.status(409).json({ message: "JÃ¡ existe um FAQ com essa pergunta." });
       return;
     }
     throw err;
@@ -634,7 +588,7 @@ app.post("/api/dashboard/faqs", requireSession, async (req, res) => {
 app.put("/api/dashboard/faqs/:faqId", requireSession, async (req, res) => {
   const faqId = Number(req.params.faqId);
   if (!Number.isInteger(faqId) || faqId <= 0) {
-    res.status(400).json({ message: "ID de FAQ inválido." });
+    res.status(400).json({ message: "ID de FAQ invÃ¡lido." });
     return;
   }
 
@@ -643,7 +597,7 @@ app.put("/api/dashboard/faqs/:faqId", requireSession, async (req, res) => {
   const isActiveRaw = req.body?.isActive;
 
   if (!questionRaw || !answerRaw) {
-    res.status(400).json({ message: "Pergunta e resposta são obrigatórias." });
+    res.status(400).json({ message: "Pergunta e resposta sÃ£o obrigatÃ³rias." });
     return;
   }
 
@@ -674,11 +628,11 @@ app.put("/api/dashboard/faqs/:faqId", requireSession, async (req, res) => {
     broadcastEvent("dashboard_updated");
   } catch (err: unknown) {
     if (isPrismaUniqueError(err)) {
-      res.status(409).json({ message: "Já existe um FAQ com essa pergunta." });
+      res.status(409).json({ message: "JÃ¡ existe um FAQ com essa pergunta." });
       return;
     }
     if (isPrismaNotFoundError(err)) {
-      res.status(404).json({ message: "FAQ não encontrado." });
+      res.status(404).json({ message: "FAQ nÃ£o encontrado." });
       return;
     }
     throw err;
@@ -688,7 +642,7 @@ app.put("/api/dashboard/faqs/:faqId", requireSession, async (req, res) => {
 app.delete("/api/dashboard/faqs/:faqId", requireSession, async (req, res) => {
   const faqId = Number(req.params.faqId);
   if (!Number.isInteger(faqId) || faqId <= 0) {
-    res.status(400).json({ message: "ID de FAQ inválido." });
+    res.status(400).json({ message: "ID de FAQ invÃ¡lido." });
     return;
   }
 
@@ -697,7 +651,7 @@ app.delete("/api/dashboard/faqs/:faqId", requireSession, async (req, res) => {
   });
 
   if (deleted.count === 0) {
-    res.status(404).json({ message: "FAQ não encontrado." });
+    res.status(404).json({ message: "FAQ nÃ£o encontrado." });
     return;
   }
 
@@ -709,7 +663,7 @@ app.delete("/api/dashboard/faqs/:faqId", requireSession, async (req, res) => {
 app.delete("/api/dashboard/messages/:messageId", requireSession, async (req, res) => {
   const messageId = Number(req.params.messageId);
   if (!Number.isInteger(messageId) || messageId <= 0) {
-    res.status(400).json({ message: "ID de mensagem inválido." });
+    res.status(400).json({ message: "ID de mensagem invÃ¡lido." });
     return;
   }
 
@@ -718,7 +672,7 @@ app.delete("/api/dashboard/messages/:messageId", requireSession, async (req, res
   });
 
   if (deleted.count === 0) {
-    res.status(404).json({ message: "Mensagem não encontrada." });
+    res.status(404).json({ message: "Mensagem nÃ£o encontrada." });
     return;
   }
 
@@ -730,7 +684,7 @@ app.delete("/api/dashboard/messages/:messageId", requireSession, async (req, res
 app.delete("/api/dashboard/contacts/:contactId/messages", requireSession, async (req, res) => {
   const contactId = Number(req.params.contactId);
   if (!Number.isInteger(contactId) || contactId <= 0) {
-    res.status(400).json({ message: "ID de contato inválido." });
+    res.status(400).json({ message: "ID de contato invÃ¡lido." });
     return;
   }
 
@@ -740,7 +694,7 @@ app.delete("/api/dashboard/contacts/:contactId/messages", requireSession, async 
   });
 
   if (!contact) {
-    res.status(404).json({ message: "Contato não encontrado." });
+    res.status(404).json({ message: "Contato nÃ£o encontrado." });
     return;
   }
 
@@ -759,7 +713,7 @@ app.delete("/api/dashboard/contacts/:contactId/messages", requireSession, async 
 app.delete("/api/dashboard/contacts/:contactId", requireSession, async (req, res) => {
   const contactId = Number(req.params.contactId);
   if (!Number.isInteger(contactId) || contactId <= 0) {
-    res.status(400).json({ message: "ID de contato inválido." });
+    res.status(400).json({ message: "ID de contato invÃ¡lido." });
     return;
   }
 
@@ -768,13 +722,13 @@ app.delete("/api/dashboard/contacts/:contactId", requireSession, async (req, res
   });
 
   if (deleted.count === 0) {
-    res.status(404).json({ message: "Contato não encontrado." });
+    res.status(404).json({ message: "Contato nÃ£o encontrado." });
     return;
   }
 
   broadcastEvent("dashboard_updated");
   broadcastEvent("analytics_updated");
-  res.json({ message: "Contato e histórico removidos com sucesso." });
+  res.json({ message: "Contato e histÃ³rico removidos com sucesso." });
 });
 
 app.get("/api/crm/stages", requireSession, async (_req, res) => {
@@ -792,7 +746,7 @@ app.post("/api/crm/stages", requireSession, async (req, res) => {
   const color = typeof req.body?.color === "string" && req.body.color.trim() ? req.body.color.trim() : "#06b6d4";
 
   if (!name) {
-    res.status(400).json({ message: "Nome da etapa é obrigatório." });
+    res.status(400).json({ message: "Nome da etapa Ã© obrigatÃ³rio." });
     return;
   }
 
@@ -809,7 +763,7 @@ app.post("/api/crm/stages", requireSession, async (req, res) => {
     res.status(201).json({ message: "Etapa criada com sucesso.", stage });
   } catch (err) {
     if (isPrismaUniqueError(err)) {
-      res.status(409).json({ message: "Já existe etapa com este nome ou posição." });
+      res.status(409).json({ message: "JÃ¡ existe etapa com este nome ou posiÃ§Ã£o." });
       return;
     }
     throw err;
@@ -819,7 +773,7 @@ app.post("/api/crm/stages", requireSession, async (req, res) => {
 app.put("/api/crm/stages/:id(\\d+)", requireSession, async (req, res) => {
   const stageId = Number(req.params.id);
   if (!Number.isInteger(stageId) || stageId <= 0) {
-    res.status(400).json({ message: "ID de etapa inválido." });
+    res.status(400).json({ message: "ID de etapa invÃ¡lido." });
     return;
   }
 
@@ -829,7 +783,7 @@ app.put("/api/crm/stages/:id(\\d+)", requireSession, async (req, res) => {
   if (typeof req.body?.isActive === "boolean") payload.isActive = req.body.isActive;
 
   if (Object.keys(payload).length === 0) {
-    res.status(400).json({ message: "Nenhuma alteração enviada." });
+    res.status(400).json({ message: "Nenhuma alteraÃ§Ã£o enviada." });
     return;
   }
 
@@ -842,11 +796,11 @@ app.put("/api/crm/stages/:id(\\d+)", requireSession, async (req, res) => {
     res.json({ message: "Etapa atualizada com sucesso.", stage });
   } catch (err) {
     if (isPrismaNotFoundError(err)) {
-      res.status(404).json({ message: "Etapa não encontrada." });
+      res.status(404).json({ message: "Etapa nÃ£o encontrada." });
       return;
     }
     if (isPrismaUniqueError(err)) {
-      res.status(409).json({ message: "Já existe etapa com este nome." });
+      res.status(409).json({ message: "JÃ¡ existe etapa com este nome." });
       return;
     }
     throw err;
@@ -856,20 +810,20 @@ app.put("/api/crm/stages/:id(\\d+)", requireSession, async (req, res) => {
 app.put("/api/crm/stages/reorder", requireSession, async (req, res) => {
   const stageIds = Array.isArray(req.body?.stageIds) ? req.body.stageIds.map((id: unknown) => Number(id)).filter((id: number) => Number.isInteger(id) && id > 0) : [];
   if (stageIds.length === 0) {
-    res.status(400).json({ message: "Envie uma lista válida de IDs de etapa." });
+    res.status(400).json({ message: "Envie uma lista vÃ¡lida de IDs de etapa." });
     return;
   }
 
   try {
     await prisma.$transaction(async (tx) => {
-      // 1. Mover todos para posições temporárias (negativas) para evitar conflito de UNIQUE
+      // 1. Mover todos para posiÃ§Ãµes temporÃ¡rias (negativas) para evitar conflito de UNIQUE
       for (let i = 0; i < stageIds.length; i++) {
         await tx.pipelineStage.update({
           where: { id: stageIds[i] },
           data: { position: -(i + 1) }
         });
       }
-      // 2. Definir posições finais corretas
+      // 2. Definir posiÃ§Ãµes finais corretas
       for (let i = 0; i < stageIds.length; i++) {
         await tx.pipelineStage.update({
           where: { id: stageIds[i] },
@@ -1005,7 +959,7 @@ app.post("/api/crm/leads", requireSession, async (req, res) => {
     res.status(201).json({ message: "Lead criado com sucesso.", lead: mapLeadDetails(lead) });
   } catch (err) {
     if (isPrismaUniqueError(err)) {
-      res.status(409).json({ message: "Já existe lead com este WhatsApp." });
+      res.status(409).json({ message: "JÃ¡ existe lead com este WhatsApp." });
       return;
     }
     throw err;
@@ -1015,7 +969,7 @@ app.post("/api/crm/leads", requireSession, async (req, res) => {
 app.get("/api/crm/leads/:id", requireSession, async (req, res) => {
   const leadId = Number(req.params.id);
   if (!Number.isInteger(leadId) || leadId <= 0) {
-    res.status(400).json({ message: "ID de lead inválido." });
+    res.status(400).json({ message: "ID de lead invÃ¡lido." });
     return;
   }
 
@@ -1029,7 +983,7 @@ app.get("/api/crm/leads/:id", requireSession, async (req, res) => {
   });
 
   if (!lead) {
-    res.status(404).json({ message: "Lead não encontrado." });
+    res.status(404).json({ message: "Lead nÃ£o encontrado." });
     return;
   }
 
@@ -1039,7 +993,7 @@ app.get("/api/crm/leads/:id", requireSession, async (req, res) => {
 app.put("/api/crm/leads/:id", requireSession, async (req, res) => {
   const leadId = Number(req.params.id);
   if (!Number.isInteger(leadId) || leadId <= 0) {
-    res.status(400).json({ message: "ID de lead inválido." });
+    res.status(400).json({ message: "ID de lead invÃ¡lido." });
     return;
   }
 
@@ -1048,7 +1002,7 @@ app.put("/api/crm/leads/:id", requireSession, async (req, res) => {
   if (typeof req.body?.waId === "string") {
     const parsed = normalizeWaId(req.body.waId.trim());
     if (!parsed) {
-      res.status(400).json({ message: "WhatsApp inválido." });
+      res.status(400).json({ message: "WhatsApp invÃ¡lido." });
       return;
     }
     updateData.waId = parsed;
@@ -1073,7 +1027,7 @@ app.put("/api/crm/leads/:id", requireSession, async (req, res) => {
   if (typeof req.body?.handoffNeeded === "boolean") updateData.handoffNeeded = req.body.handoffNeeded;
 
   if (Object.keys(updateData).length === 0) {
-    res.status(400).json({ message: "Nenhuma alteração enviada." });
+    res.status(400).json({ message: "Nenhuma alteraÃ§Ã£o enviada." });
     return;
   }
 
@@ -1087,11 +1041,11 @@ app.put("/api/crm/leads/:id", requireSession, async (req, res) => {
     res.json({ message: "Lead atualizado com sucesso.", lead: mapLeadDetails(lead) });
   } catch (err) {
     if (isPrismaNotFoundError(err)) {
-      res.status(404).json({ message: "Lead não encontrado." });
+      res.status(404).json({ message: "Lead nÃ£o encontrado." });
       return;
     }
     if (isPrismaUniqueError(err)) {
-      res.status(409).json({ message: "Já existe lead com este WhatsApp." });
+      res.status(409).json({ message: "JÃ¡ existe lead com este WhatsApp." });
       return;
     }
     throw err;
@@ -1103,7 +1057,7 @@ app.patch("/api/crm/leads/:id/handoff", requireSession, async (req, res) => {
   const handoffNeeded = req.body?.handoffNeeded;
 
   if (!Number.isInteger(leadId) || leadId <= 0) {
-    res.status(400).json({ message: "ID de lead inválido." });
+    res.status(400).json({ message: "ID de lead invÃ¡lido." });
     return;
   }
 
@@ -1123,7 +1077,7 @@ app.patch("/api/crm/leads/:id/handoff", requireSession, async (req, res) => {
     res.json({ message: "Handoff do lead atualizado.", lead: mapLeadDetails(lead) });
   } catch (err) {
     if (isPrismaNotFoundError(err)) {
-      res.status(404).json({ message: "Lead não encontrado." });
+      res.status(404).json({ message: "Lead nÃ£o encontrado." });
       return;
     }
     throw err;
@@ -1133,7 +1087,7 @@ app.patch("/api/crm/leads/:id/handoff", requireSession, async (req, res) => {
 app.delete("/api/crm/leads/:id", requireSession, async (req, res) => {
   const leadId = Number(req.params.id);
   if (!Number.isInteger(leadId) || leadId <= 0) {
-    res.status(400).json({ message: "ID de lead inválido." });
+    res.status(400).json({ message: "ID de lead invÃ¡lido." });
     return;
   }
 
@@ -1144,10 +1098,10 @@ app.delete("/api/crm/leads/:id", requireSession, async (req, res) => {
     broadcastEvent("lead_deleted", { id: leadId });
     broadcastEvent("dashboard_updated");
     broadcastEvent("analytics_updated");
-    res.json({ message: "Lead excluído com sucesso." });
+    res.json({ message: "Lead excluÃ­do com sucesso." });
   } catch (err) {
     if (isPrismaNotFoundError(err)) {
-      res.status(404).json({ message: "Lead não encontrado." });
+      res.status(404).json({ message: "Lead nÃ£o encontrado." });
       return;
     }
     throw err;
@@ -1158,7 +1112,7 @@ app.patch("/api/crm/leads/:id/stage", requireSession, async (req, res) => {
   const leadId = Number(req.params.id);
   const stageId = Number(req.body?.stageId);
   if (!Number.isInteger(leadId) || leadId <= 0 || !Number.isInteger(stageId) || stageId <= 0) {
-    res.status(400).json({ message: "Lead e etapa são obrigatórios." });
+    res.status(400).json({ message: "Lead e etapa sÃ£o obrigatÃ³rios." });
     return;
   }
 
@@ -1172,7 +1126,7 @@ app.patch("/api/crm/leads/:id/stage", requireSession, async (req, res) => {
     res.json({ message: "Etapa do lead atualizada.", lead: mapLeadDetails(lead) });
   } catch (err) {
     if (isPrismaNotFoundError(err)) {
-      res.status(404).json({ message: "Lead não encontrado." });
+      res.status(404).json({ message: "Lead nÃ£o encontrado." });
       return;
     }
     throw err;
@@ -1183,7 +1137,7 @@ app.patch("/api/crm/leads/:id/status", requireSession, async (req, res) => {
   const leadId = Number(req.params.id);
   const leadStatus = typeof req.body?.status === "string" ? req.body.status : "";
   if (!Number.isInteger(leadId) || leadId <= 0 || !["open", "won", "lost"].includes(leadStatus)) {
-    res.status(400).json({ message: "Status inválido." });
+    res.status(400).json({ message: "Status invÃ¡lido." });
     return;
   }
 
@@ -1197,7 +1151,7 @@ app.patch("/api/crm/leads/:id/status", requireSession, async (req, res) => {
     res.json({ message: "Status do lead atualizado.", lead: mapLeadDetails(lead) });
   } catch (err) {
     if (isPrismaNotFoundError(err)) {
-      res.status(404).json({ message: "Lead não encontrado." });
+      res.status(404).json({ message: "Lead nÃ£o encontrado." });
       return;
     }
     throw err;
@@ -1222,7 +1176,7 @@ app.patch("/api/crm/leads/:id/bot", requireSession, async (req, res) => {
     res.json({ message: "Modo bot atualizado.", lead: mapLeadDetails(lead) });
   } catch (err) {
     if (isPrismaNotFoundError(err)) {
-      res.status(404).json({ message: "Lead não encontrado." });
+      res.status(404).json({ message: "Lead nÃ£o encontrado." });
       return;
     }
     throw err;
@@ -1234,7 +1188,7 @@ app.get("/api/crm/leads/:id/messages", requireSession, async (req, res) => {
   const page = Math.max(1, Number(req.query.page || 1));
   const limit = Math.max(1, Math.min(100, Number(req.query.limit || 20)));
   if (!Number.isInteger(leadId) || leadId <= 0) {
-    res.status(400).json({ message: "ID de lead inválido." });
+    res.status(400).json({ message: "ID de lead invÃ¡lido." });
     return;
   }
 
@@ -1263,7 +1217,7 @@ app.get("/api/crm/leads/:id/messages", requireSession, async (req, res) => {
 app.get("/api/crm/leads/:id/tasks", requireSession, async (req, res) => {
   const leadId = Number(req.params.id);
   if (!Number.isInteger(leadId) || leadId <= 0) {
-    res.status(400).json({ message: "ID de lead inválido." });
+    res.status(400).json({ message: "ID de lead invÃ¡lido." });
     return;
   }
 
@@ -1284,7 +1238,7 @@ app.post("/api/crm/leads/:id/tasks", requireSession, async (req, res) => {
   const dueAt = new Date(dueAtRaw);
 
   if (!Number.isInteger(leadId) || leadId <= 0 || !title || Number.isNaN(dueAt.getTime())) {
-    res.status(400).json({ message: "Lead, título e vencimento são obrigatórios." });
+    res.status(400).json({ message: "Lead, tÃ­tulo e vencimento sÃ£o obrigatÃ³rios." });
     return;
   }
 
@@ -1306,7 +1260,7 @@ app.post("/api/crm/leads/:id/tasks", requireSession, async (req, res) => {
 app.put("/api/crm/tasks/:taskId", requireSession, async (req, res) => {
   const taskId = Number(req.params.taskId);
   if (!Number.isInteger(taskId) || taskId <= 0) {
-    res.status(400).json({ message: "ID de tarefa inválido." });
+    res.status(400).json({ message: "ID de tarefa invÃ¡lido." });
     return;
   }
 
@@ -1317,14 +1271,14 @@ app.put("/api/crm/tasks/:taskId", requireSession, async (req, res) => {
   if (typeof req.body?.dueAt === "string") {
     const dueAt = new Date(req.body.dueAt);
     if (Number.isNaN(dueAt.getTime())) {
-      res.status(400).json({ message: "Data de vencimento inválida." });
+      res.status(400).json({ message: "Data de vencimento invÃ¡lida." });
       return;
     }
     data.dueAt = dueAt;
   }
 
   if (Object.keys(data).length === 0) {
-    res.status(400).json({ message: "Nenhuma alteração enviada." });
+    res.status(400).json({ message: "Nenhuma alteraÃ§Ã£o enviada." });
     return;
   }
 
@@ -1337,7 +1291,7 @@ app.put("/api/crm/tasks/:taskId", requireSession, async (req, res) => {
     res.json({ message: "Tarefa atualizada com sucesso.", task });
   } catch (err) {
     if (isPrismaNotFoundError(err)) {
-      res.status(404).json({ message: "Tarefa não encontrada." });
+      res.status(404).json({ message: "Tarefa nÃ£o encontrada." });
       return;
     }
     throw err;
@@ -1348,7 +1302,7 @@ app.patch("/api/crm/tasks/:taskId/status", requireSession, async (req, res) => {
   const taskId = Number(req.params.taskId);
   const status = typeof req.body?.status === "string" ? req.body.status : "";
   if (!Number.isInteger(taskId) || taskId <= 0 || !["open", "done", "canceled"].includes(status)) {
-    res.status(400).json({ message: "Status inválido." });
+    res.status(400).json({ message: "Status invÃ¡lido." });
     return;
   }
 
@@ -1364,7 +1318,7 @@ app.patch("/api/crm/tasks/:taskId/status", requireSession, async (req, res) => {
     res.json({ message: "Status da tarefa atualizado.", task });
   } catch (err) {
     if (isPrismaNotFoundError(err)) {
-      res.status(404).json({ message: "Tarefa não encontrada." });
+      res.status(404).json({ message: "Tarefa nÃ£o encontrada." });
       return;
     }
     throw err;
@@ -1374,13 +1328,13 @@ app.patch("/api/crm/tasks/:taskId/status", requireSession, async (req, res) => {
 app.delete("/api/crm/tasks/:taskId", requireSession, async (req, res) => {
   const taskId = Number(req.params.taskId);
   if (!Number.isInteger(taskId) || taskId <= 0) {
-    res.status(400).json({ message: "ID de tarefa inválido." });
+    res.status(400).json({ message: "ID de tarefa invÃ¡lido." });
     return;
   }
 
   const deleted = await prisma.task.deleteMany({ where: { id: taskId } });
   if (deleted.count === 0) {
-    res.status(404).json({ message: "Tarefa não encontrada." });
+    res.status(404).json({ message: "Tarefa nÃ£o encontrada." });
     return;
   }
   broadcastEvent("calendar_tasks_updated");
@@ -1547,7 +1501,7 @@ app.post("/api/templates", requireSession, async (req, res) => {
   const category = typeof req.body?.category === "string" ? req.body.category.trim() : "geral";
 
   if (!title || !body) {
-    res.status(400).json({ message: "Título e conteúdo são obrigatórios." });
+    res.status(400).json({ message: "TÃ­tulo e conteÃºdo sÃ£o obrigatÃ³rios." });
     return;
   }
 
@@ -1561,7 +1515,7 @@ app.post("/api/templates", requireSession, async (req, res) => {
 app.put("/api/templates/:id", requireSession, async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) {
-    res.status(400).json({ message: "ID inválido." });
+    res.status(400).json({ message: "ID invÃ¡lido." });
     return;
   }
 
@@ -1571,7 +1525,7 @@ app.put("/api/templates/:id", requireSession, async (req, res) => {
   if (typeof req.body?.category === "string") data.category = req.body.category.trim();
 
   if (Object.keys(data).length === 0) {
-    res.status(400).json({ message: "Nenhuma alteração." });
+    res.status(400).json({ message: "Nenhuma alteraÃ§Ã£o." });
     return;
   }
 
@@ -1581,7 +1535,7 @@ app.put("/api/templates/:id", requireSession, async (req, res) => {
     res.json({ message: "Template atualizado.", template });
   } catch (err) {
     if (isPrismaNotFoundError(err)) {
-      res.status(404).json({ message: "Template não encontrado." });
+      res.status(404).json({ message: "Template nÃ£o encontrado." });
       return;
     }
     throw err;
@@ -1591,13 +1545,13 @@ app.put("/api/templates/:id", requireSession, async (req, res) => {
 app.delete("/api/templates/:id", requireSession, async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) {
-    res.status(400).json({ message: "ID inválido." });
+    res.status(400).json({ message: "ID invÃ¡lido." });
     return;
   }
 
   const deleted = await prisma.messageTemplate.deleteMany({ where: { id } });
   if (deleted.count === 0) {
-    res.status(404).json({ message: "Template não encontrado." });
+    res.status(404).json({ message: "Template nÃ£o encontrado." });
     return;
   }
   broadcastEvent("templates_updated");
@@ -1629,7 +1583,7 @@ app.post("/api/tags", requireSession, async (req, res) => {
   const color = typeof req.body?.color === "string" ? req.body.color.trim() : "#06b6d4";
 
   if (!name) {
-    res.status(400).json({ message: "Nome da tag é obrigatório." });
+    res.status(400).json({ message: "Nome da tag Ã© obrigatÃ³rio." });
     return;
   }
 
@@ -1639,7 +1593,7 @@ app.post("/api/tags", requireSession, async (req, res) => {
     res.status(201).json({ message: "Tag criada.", tag });
   } catch (err) {
     if (isPrismaUniqueError(err)) {
-      res.status(409).json({ message: "Tag já existe." });
+      res.status(409).json({ message: "Tag jÃ¡ existe." });
       return;
     }
     throw err;
@@ -1649,13 +1603,13 @@ app.post("/api/tags", requireSession, async (req, res) => {
 app.delete("/api/tags/:id", requireSession, async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) {
-    res.status(400).json({ message: "ID inválido." });
+    res.status(400).json({ message: "ID invÃ¡lido." });
     return;
   }
 
   const deleted = await prisma.tag.deleteMany({ where: { id } });
   if (deleted.count === 0) {
-    res.status(404).json({ message: "Tag não encontrada." });
+    res.status(404).json({ message: "Tag nÃ£o encontrada." });
     return;
   }
   broadcastEvent("tags_updated");
@@ -1666,7 +1620,7 @@ app.post("/api/crm/leads/:id/tags", requireSession, async (req, res) => {
   const leadId = Number(req.params.id);
   const tagId = Number(req.body?.tagId);
   if (!Number.isInteger(leadId) || !Number.isInteger(tagId) || leadId <= 0 || tagId <= 0) {
-    res.status(400).json({ message: "Lead e tag são obrigatórios." });
+    res.status(400).json({ message: "Lead e tag sÃ£o obrigatÃ³rios." });
     return;
   }
 
@@ -1677,7 +1631,7 @@ app.post("/api/crm/leads/:id/tags", requireSession, async (req, res) => {
     res.status(201).json({ message: "Tag adicionada ao lead." });
   } catch (err) {
     if (isPrismaUniqueError(err)) {
-      res.status(409).json({ message: "Lead já possui essa tag." });
+      res.status(409).json({ message: "Lead jÃ¡ possui essa tag." });
       return;
     }
     throw err;
@@ -1688,7 +1642,7 @@ app.delete("/api/crm/leads/:id/tags/:tagId", requireSession, async (req, res) =>
   const leadId = Number(req.params.id);
   const tagId = Number(req.params.tagId);
   if (!Number.isInteger(leadId) || !Number.isInteger(tagId)) {
-    res.status(400).json({ message: "Parâmetros inválidos." });
+    res.status(400).json({ message: "ParÃ¢metros invÃ¡lidos." });
     return;
   }
 
@@ -1701,7 +1655,7 @@ app.delete("/api/crm/leads/:id/tags/:tagId", requireSession, async (req, res) =>
 app.get("/api/crm/leads/:id/tags", requireSession, async (req, res) => {
   const leadId = Number(req.params.id);
   if (!Number.isInteger(leadId) || leadId <= 0) {
-    res.status(400).json({ message: "ID inválido." });
+    res.status(400).json({ message: "ID invÃ¡lido." });
     return;
   }
 
@@ -1721,7 +1675,7 @@ app.patch("/api/crm/leads/:id/persona", requireSession, async (req, res) => {
   const leadId = Number(req.params.id);
   const persona = typeof req.body?.persona === "string" ? req.body.persona.trim() : null;
   if (!Number.isInteger(leadId) || leadId <= 0) {
-    res.status(400).json({ message: "ID de lead inválido." });
+    res.status(400).json({ message: "ID de lead invÃ¡lido." });
     return;
   }
 
@@ -1734,7 +1688,7 @@ app.patch("/api/crm/leads/:id/persona", requireSession, async (req, res) => {
     res.json({ message: "Persona atualizada.", lead: mapLeadDetails(lead) });
   } catch (err) {
     if (isPrismaNotFoundError(err)) {
-      res.status(404).json({ message: "Lead não encontrado." });
+      res.status(404).json({ message: "Lead nÃ£o encontrado." });
       return;
     }
     throw err;
@@ -1893,13 +1847,13 @@ app.get("/api/webhook/events", requireSession, async (req, res) => {
 app.post("/api/webhook/events/:id/replay", requireSession, async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) {
-    res.status(400).json({ message: "ID de evento inválido." });
+    res.status(400).json({ message: "ID de evento invÃ¡lido." });
     return;
   }
 
   const existing = await prisma.webhookEvent.findUnique({ where: { id } });
   if (!existing) {
-    res.status(404).json({ message: "Evento não encontrado." });
+    res.status(404).json({ message: "Evento nÃ£o encontrado." });
     return;
   }
 
@@ -2303,6 +2257,8 @@ async function processIncomingWebhook(
   payload: unknown,
   context?: { requestId?: string; eventId?: number }
 ): Promise<void> {
+  await syncRuntimeAIConfigFromDatabase();
+
   const requestId = context?.requestId || "system";
   const msg = (payload as any)?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
   if (!msg) return;
@@ -2357,7 +2313,7 @@ async function processIncomingWebhook(
 
     if (!(contact as any).botEnabled) return;
 
-    const fallback = "Por enquanto eu só entendo texto e áudio 🙂";
+    const fallback = "Por enquanto eu sÃ³ entendo texto e Ã¡udio ðŸ™‚";
     await sendWhatsAppText(waId, fallback);
     const outFallback = await prisma.message.create({
       data: {
@@ -2378,10 +2334,10 @@ async function processIncomingWebhook(
       await sendWhatsAppTypingIndicator(waMessageId);
       textIn = await transcribeAudio(audioId).catch((err) => {
         console.error("Transcription error:", err);
-        return "[Áudio não pôde ser transcrito]";
+        return "[Ãudio nÃ£o pÃ´de ser transcrito]";
       });
     } else {
-      textIn = "[Áudio]";
+      textIn = "[Ãudio]";
     }
   } else {
     textIn = (msg.text?.body as string | undefined) || "";
@@ -2423,7 +2379,7 @@ function scheduleAutoReply(contactId: number, waId: string, waMessageId?: string
   const timer = setTimeout(() => {
     autoReplyTimers.delete(contactId);
     void runAutoReplyForContact(contactId);
-  }, AI_REPLY_DEBOUNCE_MS);
+  }, runtimeAIReplyDebounceMs);
 
   autoReplyTimers.set(contactId, timer);
 }
@@ -2460,7 +2416,7 @@ async function buildHistoryForAutoReply(contactId: number): Promise<{
   }
 
   const pendingToRespond = pendingInbound.slice(0, 2);
-  const keepFromHistory = Math.max(0, HISTORY_LIMIT - pendingToRespond.length);
+  const keepFromHistory = Math.max(0, runtimeHistoryLimit - pendingToRespond.length);
   const historyBeforePending = rows.slice(0, lastOutboundIndex + 1).slice(-keepFromHistory);
   const promptRows = [...historyBeforePending, ...pendingToRespond];
 
@@ -2480,6 +2436,8 @@ async function runAutoReplyForContact(contactId: number): Promise<void> {
   if (autoReplyProcessingContacts.has(contactId)) {
     return;
   }
+
+  await syncRuntimeAIConfigFromDatabase();
 
   const context = autoReplyContextByContact.get(contactId);
   if (!context) {
@@ -2518,8 +2476,10 @@ async function runAutoReplyForContact(contactId: number): Promise<void> {
 
     const faqContext = await getFaqContextForInput(pendingInput);
     await sendWhatsAppTypingIndicator(context.waMessageId);
-    const personaToUse = contact.customBotPersona || BOT_PERSONA;
-    const reply = await generateReplyWithTyping(history, faqContext, personaToUse, context.waMessageId).catch((err) => {
+    const personaOverride = typeof contact.customBotPersona === "string" && contact.customBotPersona.trim()
+      ? contact.customBotPersona.trim()
+      : undefined;
+    const reply = await generateReplyWithTyping(history, faqContext, personaOverride, context.waMessageId).catch((err) => {
       console.error("OpenAI error:", err);
       return "Desculpe, tive um problema aqui. Pode repetir?";
     });
@@ -2558,32 +2518,29 @@ async function generateReply(
   faqContext: string,
   persona?: string
 ): Promise<string> {
-  if (!OPENAI_API_KEY || !OPENAI_MODEL) {
-    return "Configuração incompleta da IA.";
+  if (!OPENAI_API_KEY || !runtimeOpenAIModel) {
+    return "ConfiguraÃ§Ã£o incompleta da IA.";
   }
 
-  const resp = await fetchWithRetry(`${OPENAI_BASE_URL}/chat/completions`, {
+  const aiConfig = await syncRuntimeAIConfigFromDatabase();
+  const resolvedPersona = typeof persona === "string" && persona.trim()
+    ? persona.trim()
+    : aiConfig.persona;
+
+  const resp = await fetchWithRetry(`${aiConfig.baseUrl}/responses`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${OPENAI_API_KEY}`
     },
     body: JSON.stringify({
-      model: OPENAI_MODEL,
-      messages: [
-        {
-          role: "system",
-          content: persona || BOT_PERSONA
-        },
-        {
-          role: "system",
-          content:
-            faqContext.trim().length > 0
-              ? `Base de FAQ relevante:\n${faqContext}\n\nRegra: use primeiro as informacoes acima. Se nao houver informacao suficiente no FAQ, diga que nao tem essa informacao no momento e ofereca encaminhamento humano.`
-              : "Regra: se nao tiver certeza, diga que vai verificar e ofereca encaminhamento humano."
-        },
-        ...history
-      ]
+      model: aiConfig.model,
+      input: buildReplyPromptInput({
+        history,
+        faqContext,
+        persona: resolvedPersona
+      }),
+      max_output_tokens: 220
     })
   });
 
@@ -2593,10 +2550,10 @@ async function generateReply(
   }
 
   const data = await resp.json();
-  const content = data?.choices?.[0]?.message?.content;
-  return typeof content === "string" && content.trim()
-    ? content.trim()
-    : "Desculpe, Não consegui responder agora.";
+  const content = parseResponseOutputText(data);
+  return content
+    ? content
+    : "Desculpe, NÃ£o consegui responder agora.";
 }
 
 async function generateReplyWithTyping(
@@ -2633,51 +2590,34 @@ async function enrichLeadWithAI(contactId: number): Promise<void> {
   const history = contact.messages.slice().reverse().map(m =>
     `${m.direction === "in" ? "Cliente" : "Atendente"}: ${m.body}`
   ).join("\n");
-
-  const prompt = `Você é um analista de CRM de uma escola de cursos chamada Santos Tech. Com base na conversa abaixo, extraia informações estruturadas sobre o lead e gere um resumo.
-
-Conversa:
-${history}
-
-Formato de Resposta (JSON):
-{
-  "summary": "Resumo curto e profissional em 2 ou 3 linhas sobre a situação atual do lead",
-  "age": "Idade ou faixa etária (ex: 25 anos, Criança, Adulto)",
-  "level": "Nível de conhecimento (ex: Iniciante, Intermediário, Avançado)",
-  "objective": "Objetivo principal (ex: Aprender Python, Carreira, Hobby)"
-}
-
-Responda APENAS o JSON. Se não souber algum campo, coloque "Não informado".`;
+  const aiConfig = await syncRuntimeAIConfigFromDatabase();
 
   try {
-    const resp = await fetchWithRetry(`${OPENAI_BASE_URL}/chat/completions`, {
+    const resp = await fetchWithRetry(`${aiConfig.baseUrl}/responses`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${OPENAI_API_KEY}`
       },
       body: JSON.stringify({
-        model: OPENAI_MODEL,
-        messages: [
-          { role: "system", content: "Você é um assistente focado em extração de dados de CRM." },
-          { role: "user", content: prompt }
-        ],
-        response_format: { type: "json_object" }
+        model: aiConfig.model,
+        input: buildLeadEnrichmentPromptInput(history),
+        max_output_tokens: 300
       })
     });
 
     if (!resp.ok) return;
 
     const data = await resp.json();
-    const result = JSON.parse(data?.choices?.[0]?.message?.content || "{}");
+    const result = extractFirstJsonObject(parseResponseOutputText(data)) || {};
 
     const updatedLead = await prisma.contact.update({
       where: { id: contactId },
       data: {
-        aiSummary: result.summary && result.summary !== "Não informado" ? result.summary : undefined,
-        age: result.age && result.age !== "Não informado" ? result.age : undefined,
-        level: result.level && result.level !== "Não informado" ? result.level : undefined,
-        objective: result.objective && result.objective !== "Não informado" ? result.objective : undefined
+        aiSummary: result.summary && result.summary !== "NÃ£o informado" ? result.summary : undefined,
+        age: result.age && result.age !== "NÃ£o informado" ? result.age : undefined,
+        level: result.level && result.level !== "NÃ£o informado" ? result.level : undefined,
+        objective: result.objective && result.objective !== "NÃ£o informado" ? result.objective : undefined
       },
       include: { stage: true }
     });
@@ -2689,14 +2629,14 @@ Responda APENAS o JSON. Se não souber algum campo, coloque "Não informado".`;
 }
 
 async function transcribeAudio(mediaId: string): Promise<string> {
-  if (!OPENAI_API_KEY) return "[Transcrição desabilitada]";
+  if (!OPENAI_API_KEY) return "[TranscriÃ§Ã£o desabilitada]";
 
   try {
     // 1. Get media URL from Meta
     const mediaResp = await fetch(`https://graph.facebook.com/v19.0/${mediaId}`, {
       headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` }
     });
-    if (!mediaResp.ok) throw new Error("Falha ao obter URL do áudio");
+    if (!mediaResp.ok) throw new Error("Falha ao obter URL do Ã¡udio");
     const mediaData = await mediaResp.json();
     const audioUrl = mediaData.url;
 
@@ -2704,15 +2644,15 @@ async function transcribeAudio(mediaId: string): Promise<string> {
     const audioContent = await fetch(audioUrl, {
       headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` }
     });
-    if (!audioContent.ok) throw new Error("Falha ao baixar áudio");
+    if (!audioContent.ok) throw new Error("Falha ao baixar Ã¡udio");
     const blob = await audioContent.blob();
 
     // 3. Send to OpenAI transcription
     const formData = new FormData();
     formData.append("file", blob, "audio.ogg");
-    formData.append("model", OPENAI_TRANSCRIPTION_MODEL);
+    formData.append("model", runtimeOpenAITranscriptionModel);
 
-    const openaiResp = await fetchWithRetry(`${OPENAI_BASE_URL}/audio/transcriptions`, {
+    const openaiResp = await fetchWithRetry(`${runtimeOpenAIBaseUrl}/audio/transcriptions`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${OPENAI_API_KEY}`
@@ -2723,11 +2663,11 @@ async function transcribeAudio(mediaId: string): Promise<string> {
     if (!openaiResp.ok) {
       const errText = await openaiResp.text();
       console.error("OpenAI transcription error:", errText);
-      throw new Error("Falha na transcrição OpenAI");
+      throw new Error("Falha na transcriÃ§Ã£o OpenAI");
     }
 
     const openaiData = await openaiResp.json();
-    return openaiData.text || "[Áudio sem fala detectada]";
+    return openaiData.text || "[Ãudio sem fala detectada]";
   } catch (err) {
     console.error("Transcription pipeline error:", err);
     throw err;
@@ -2777,7 +2717,7 @@ async function getFaqContextForInput(input: string): Promise<string> {
   return ranked
     .map(
       (item, index) =>
-        `${index + 1}. Pergunta: ${item.question}\nVariação relevante: ${item.matchedVariant}\nResposta: ${item.answer}`
+        `${index + 1}. Pergunta: ${item.question}\nVariaÃ§Ã£o relevante: ${item.matchedVariant}\nResposta: ${item.answer}`
     )
     .join("\n\n");
 }
@@ -3163,7 +3103,7 @@ function getSessionFromRequest(req: express.Request): SessionPayload | null {
 function requireSession(req: express.Request, res: express.Response, next: express.NextFunction): void {
   const session = getSessionFromRequest(req);
   if (!session) {
-    res.status(401).json({ message: "Não autenticado." });
+    res.status(401).json({ message: "NÃ£o autenticado." });
     return;
   }
 
@@ -3172,8 +3112,8 @@ function requireSession(req: express.Request, res: express.Response, next: expre
 }
 
 function getHumanDelayMs(reply: string): number {
-  const safeMin = Number.isFinite(HUMAN_DELAY_MIN_MS) ? HUMAN_DELAY_MIN_MS : 1200;
-  const safeMax = Number.isFinite(HUMAN_DELAY_MAX_MS) ? HUMAN_DELAY_MAX_MS : 6500;
+  const safeMin = Number.isFinite(runtimeHumanDelayMin) ? runtimeHumanDelayMin : 1200;
+  const safeMax = Number.isFinite(runtimeHumanDelayMax) ? runtimeHumanDelayMax : 6500;
   const min = Math.max(0, Math.min(safeMin, safeMax));
   const max = Math.max(min, Math.max(safeMin, safeMax));
   const byLength = Math.max(min, Math.min(max, 800 + reply.length * 45));
@@ -3339,9 +3279,182 @@ const chatController = new ChatController();
 app.post("/api/chat/send", requireSession, chatController.send);
 app.get("/api/chat/history/:waId", requireSession, chatController.history);
 
+// ============================================
+// SETTINGS â€” AI CONFIG
+// ============================================
+
+let runtimeBotPersona = BOT_PERSONA;
+let runtimeOpenAIModel = OPENAI_MODEL;
+let runtimeOpenAIBaseUrl = OPENAI_BASE_URL;
+let runtimeOpenAITranscriptionModel = OPENAI_TRANSCRIPTION_MODEL;
+let runtimeHistoryLimit = HISTORY_LIMIT;
+let runtimeAIReplyDebounceMs = AI_REPLY_DEBOUNCE_MS;
+let runtimeHumanDelayMin = HUMAN_DELAY_MIN_MS;
+let runtimeHumanDelayMax = HUMAN_DELAY_MAX_MS;
+
+function normalizePositiveInt(value: number, fallback: number): number {
+  return Number.isFinite(value) && value > 0 ? Math.round(value) : fallback;
+}
+
+function normalizeNonNegativeInt(value: number, fallback: number): number {
+  return Number.isFinite(value) && value >= 0 ? Math.round(value) : fallback;
+}
+
+function buildDefaultAIConfig(): AIConfigValues {
+  const defaults = {
+    model: OPENAI_MODEL.trim() || "gpt-4o-mini",
+    baseUrl: OPENAI_BASE_URL.replace(/\/+$/, "") || "https://api.openai.com/v1",
+    transcriptionModel: OPENAI_TRANSCRIPTION_MODEL.trim() || "whisper-1",
+    persona: BOT_PERSONA,
+    historyLimit: normalizePositiveInt(HISTORY_LIMIT, 20),
+    aiReplyDebounceMs: normalizeNonNegativeInt(AI_REPLY_DEBOUNCE_MS, 0),
+    humanDelayMinMs: normalizeNonNegativeInt(HUMAN_DELAY_MIN_MS, 1200),
+    humanDelayMaxMs: normalizeNonNegativeInt(HUMAN_DELAY_MAX_MS, 6500)
+  };
+
+  return {
+    ...defaults,
+    humanDelayMaxMs: Math.max(defaults.humanDelayMinMs, defaults.humanDelayMaxMs)
+  };
+}
+
+function mapAIConfigRecord(record: {
+  model: string;
+  baseUrl: string;
+  transcriptionModel: string;
+  persona: string;
+  historyLimit: number;
+  aiReplyDebounceMs: number;
+  humanDelayMinMs: number;
+  humanDelayMaxMs: number;
+}): AIConfigValues {
+  const defaults = buildDefaultAIConfig();
+  const humanDelayMinMs = normalizeNonNegativeInt(record.humanDelayMinMs, defaults.humanDelayMinMs);
+  const humanDelayMaxMs = Math.max(humanDelayMinMs, normalizeNonNegativeInt(record.humanDelayMaxMs, defaults.humanDelayMaxMs));
+
+  return {
+    model: record.model.trim() || defaults.model,
+    baseUrl: record.baseUrl.trim().replace(/\/+$/, "") || defaults.baseUrl,
+    transcriptionModel: record.transcriptionModel.trim() || defaults.transcriptionModel,
+    persona: record.persona,
+    historyLimit: normalizePositiveInt(record.historyLimit, defaults.historyLimit),
+    aiReplyDebounceMs: normalizeNonNegativeInt(record.aiReplyDebounceMs, defaults.aiReplyDebounceMs),
+    humanDelayMinMs,
+    humanDelayMaxMs
+  };
+}
+
+function applyAIConfigToRuntime(config: AIConfigValues): void {
+  runtimeBotPersona = config.persona;
+  runtimeOpenAIModel = config.model;
+  runtimeOpenAIBaseUrl = config.baseUrl;
+  runtimeOpenAITranscriptionModel = config.transcriptionModel;
+  runtimeHistoryLimit = config.historyLimit;
+  runtimeAIReplyDebounceMs = config.aiReplyDebounceMs;
+  runtimeHumanDelayMin = config.humanDelayMinMs;
+  runtimeHumanDelayMax = config.humanDelayMaxMs;
+}
+
+function getRuntimeAIConfig(): AIConfigValues {
+  return {
+    model: runtimeOpenAIModel,
+    baseUrl: runtimeOpenAIBaseUrl,
+    transcriptionModel: runtimeOpenAITranscriptionModel,
+    persona: runtimeBotPersona,
+    historyLimit: runtimeHistoryLimit,
+    aiReplyDebounceMs: runtimeAIReplyDebounceMs,
+    humanDelayMinMs: runtimeHumanDelayMin,
+    humanDelayMaxMs: runtimeHumanDelayMax
+  };
+}
+
+function buildAISettingsResponse() {
+  const config = getRuntimeAIConfig();
+  return {
+    ...config,
+    hasApiKey: !!OPENAI_API_KEY,
+    language: "pt-BR",
+    provider: config.baseUrl.includes("openai.com") ? "OpenAI" : "Custom"
+  };
+}
+
+async function ensureAIConfigRecord() {
+  const defaults = buildDefaultAIConfig();
+  return prisma.aiConfig.upsert({
+    where: { key: AI_CONFIG_KEY },
+    update: {},
+    create: {
+      key: AI_CONFIG_KEY,
+      ...defaults
+    }
+  });
+}
+
+async function syncRuntimeAIConfigFromDatabase(): Promise<AIConfigValues> {
+  const record = await ensureAIConfigRecord();
+  const config = mapAIConfigRecord(record);
+  applyAIConfigToRuntime(config);
+  return config;
+}
+
+function mergeAIConfigWithPayload(current: AIConfigValues, payload: unknown): AIConfigValues {
+  const next: AIConfigValues = { ...current };
+  const body = typeof payload === "object" && payload !== null ? payload as Record<string, unknown> : {};
+
+  if (typeof body.model === "string" && body.model.trim()) next.model = body.model.trim();
+  if (typeof body.baseUrl === "string" && body.baseUrl.trim()) next.baseUrl = body.baseUrl.trim().replace(/\/+$/, "");
+  if (typeof body.transcriptionModel === "string" && body.transcriptionModel.trim()) next.transcriptionModel = body.transcriptionModel.trim();
+  if (typeof body.persona === "string") next.persona = body.persona;
+  if (typeof body.historyLimit === "number" && body.historyLimit > 0) next.historyLimit = Math.round(body.historyLimit);
+  if (typeof body.aiReplyDebounceMs === "number" && body.aiReplyDebounceMs >= 0) next.aiReplyDebounceMs = Math.round(body.aiReplyDebounceMs);
+  if (typeof body.humanDelayMinMs === "number" && body.humanDelayMinMs >= 0) next.humanDelayMinMs = Math.round(body.humanDelayMinMs);
+  if (typeof body.humanDelayMaxMs === "number" && body.humanDelayMaxMs >= 0) next.humanDelayMaxMs = Math.round(body.humanDelayMaxMs);
+
+  if (next.humanDelayMaxMs < next.humanDelayMinMs) {
+    next.humanDelayMaxMs = next.humanDelayMinMs;
+  }
+
+  return next;
+}
+
+async function persistAIConfigFromPayload(payload: unknown): Promise<AIConfigValues> {
+  const current = await syncRuntimeAIConfigFromDatabase();
+  const next = mergeAIConfigWithPayload(current, payload);
+
+  const record = await prisma.aiConfig.upsert({
+    where: { key: AI_CONFIG_KEY },
+    update: next,
+    create: {
+      key: AI_CONFIG_KEY,
+      ...next
+    }
+  });
+
+  const config = mapAIConfigRecord(record);
+  applyAIConfigToRuntime(config);
+  return config;
+}
+
+registerSettingsRoutes(app, {
+  requireSession,
+  getAISettings: async () => {
+    await syncRuntimeAIConfigFromDatabase();
+    return buildAISettingsResponse();
+  },
+  updateAISettings: async (payload) => {
+    await persistAIConfigFromPayload(payload);
+    return buildAISettingsResponse();
+  },
+  logEvent,
+  formatError,
+  whatsappPhoneNumberId: WHATSAPP_PHONE_NUMBER_ID,
+  whatsappToken: WHATSAPP_TOKEN
+});
+
 httpServer.listen(PORT, () => {
   console.log(`Server listening on port ${PORT} (HTTP + WebSocket)`);
   void (async () => {
+    await syncRuntimeAIConfigFromDatabase();
     await initializeWsMessageSync();
     void broadcastSystemHealthSnapshot();
     setInterval(() => {
