@@ -136,33 +136,97 @@ export function registerSettingsRoutes(app: Express, deps: SettingsRouteDeps): v
         return;
       }
 
-      const contentType = req.headers["content-type"] || "image/jpeg";
+      const rawContentType = Array.isArray(req.headers["content-type"])
+        ? req.headers["content-type"][0]
+        : req.headers["content-type"] || "image/jpeg";
+      const contentType = rawContentType.split(";")[0].trim().toLowerCase();
 
-      const createSessionResp = await fetch(
-        `https://graph.facebook.com/v20.0/${deps.whatsappPhoneNumberId}/media`,
+      if (!["image/jpeg", "image/png"].includes(contentType)) {
+        res.status(400).json({ message: "Formato invalido. Use JPG ou PNG." });
+        return;
+      }
+
+      const extension = contentType === "image/png" ? "png" : "jpg";
+      const uploadSessionUrl = new URL("https://graph.facebook.com/v20.0/app/uploads");
+      uploadSessionUrl.searchParams.set("file_length", String(imageBuffer.length));
+      uploadSessionUrl.searchParams.set("file_type", contentType);
+      uploadSessionUrl.searchParams.set("file_name", `whatsapp-profile.${extension}`);
+
+      const createSessionResp = await fetch(uploadSessionUrl, {
+        method: "POST",
+        headers: {
+          Authorization: `OAuth ${deps.whatsappToken}`
+        }
+      });
+
+      if (!createSessionResp.ok) {
+        const text = await createSessionResp.text().catch(() => "");
+        deps.logEvent("error", "whatsapp.profile.photo_upload_session_failed", {
+          status: createSessionResp.status,
+          response: text,
+          contentType,
+          size: imageBuffer.length
+        });
+        res.status(createSessionResp.status).json({
+          message: `Falha ao iniciar upload da foto: ${createSessionResp.status}`,
+          detail: text
+        });
+        return;
+      }
+
+      const sessionData = await createSessionResp.json();
+      const uploadId = typeof sessionData?.id === "string" ? sessionData.id : "";
+
+      if (!uploadId) {
+        res.status(500).json({ message: "Upload ID nao retornado pela Meta." });
+        return;
+      }
+
+      const uploadResp = await fetch(
+        `https://graph.facebook.com/v20.0/${uploadId}`,
         {
           method: "POST",
           headers: {
-            Authorization: `Bearer ${deps.whatsappToken}`,
+            Authorization: `OAuth ${deps.whatsappToken}`,
             "Content-Type": contentType,
-            "Content-Length": String(imageBuffer.length)
+            file_offset: "0"
           },
           body: imageBuffer
         }
       );
 
-      if (!createSessionResp.ok) {
-        const text = await createSessionResp.text().catch(() => "");
-        deps.logEvent("error", "whatsapp.profile.photo_upload_failed", { status: createSessionResp.status, response: text });
-        res.status(createSessionResp.status).json({ message: `Falha no upload: ${createSessionResp.status}`, detail: text });
+      if (!uploadResp.ok) {
+        const text = await uploadResp.text().catch(() => "");
+        deps.logEvent("error", "whatsapp.profile.photo_binary_upload_failed", {
+          status: uploadResp.status,
+          response: text,
+          uploadId,
+          contentType,
+          size: imageBuffer.length
+        });
+        res.status(uploadResp.status).json({
+          message: `Falha ao enviar binario da foto: ${uploadResp.status}`,
+          detail: text
+        });
         return;
       }
 
-      const mediaData = await createSessionResp.json();
-      const mediaId = mediaData?.id;
+      const uploadData = await uploadResp.json();
+      const profilePictureHandle =
+        typeof uploadData?.h === "string"
+          ? uploadData.h
+          : typeof uploadData?.handle === "string"
+            ? uploadData.handle
+            : typeof uploadData?.profile_picture_handle === "string"
+              ? uploadData.profile_picture_handle
+              : "";
 
-      if (!mediaId) {
-        res.status(500).json({ message: "Media ID nao retornado pela Meta." });
+      if (!profilePictureHandle) {
+        deps.logEvent("error", "whatsapp.profile.photo_handle_missing", {
+          uploadId,
+          uploadResponse: uploadData
+        });
+        res.status(500).json({ message: "Handle da foto nao retornado pela Meta." });
         return;
       }
 
@@ -176,20 +240,35 @@ export function registerSettingsRoutes(app: Express, deps: SettingsRouteDeps): v
           },
           body: JSON.stringify({
             messaging_product: "whatsapp",
-            profile_picture_handle: mediaId
+            profile_picture_handle: profilePictureHandle
           })
         }
       );
 
       if (!updateResp.ok) {
         const text = await updateResp.text().catch(() => "");
-        deps.logEvent("error", "whatsapp.profile.photo_set_failed", { status: updateResp.status, response: text });
+        deps.logEvent("error", "whatsapp.profile.photo_set_failed", {
+          status: updateResp.status,
+          response: text,
+          uploadId,
+          profilePictureHandle
+        });
         res.status(updateResp.status).json({ message: `Falha ao definir foto: ${updateResp.status}`, detail: text });
         return;
       }
 
-      deps.logEvent("info", "whatsapp.profile.photo_updated", { mediaId, size: imageBuffer.length });
-      res.json({ success: true, message: "Foto de perfil atualizada.", mediaId });
+      deps.logEvent("info", "whatsapp.profile.photo_updated", {
+        uploadId,
+        profilePictureHandle,
+        size: imageBuffer.length,
+        contentType
+      });
+      res.json({
+        success: true,
+        message: "Foto de perfil atualizada.",
+        uploadId,
+        profilePictureHandle
+      });
     } catch (err) {
       deps.logEvent("error", "whatsapp.profile.photo_error", { error: deps.formatError(err) });
       res.status(500).json({ message: "Falha ao atualizar foto.", error: deps.formatError(err) });

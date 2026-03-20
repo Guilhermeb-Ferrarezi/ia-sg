@@ -1,4 +1,4 @@
-# Completed Tasks
+﻿# Completed Tasks
 ## Refactor - Modularizacao do server.ts (Mar 2026)
 - [x] Extracao dos prompts de IA para modulo dedicado.
 - [x] Extracao das rotas de auth, system e settings para arquivos proprios.
@@ -15,15 +15,19 @@ Atualizado em: 2026-03-20
 
 Atualizado em: 2026-03-20
 
-## Sprint 3 - Configurações e Perfil WhatsApp/IA (Mar 2026)
-- [x] Endpoints REST para configurações de IA: GET/PUT /api/settings/ai
+## Sprint 3 - ConfiguraÃ§Ãµes e Perfil WhatsApp/IA (Mar 2026)
+- [x] Endpoints REST para configuraÃ§Ãµes de IA: GET/PUT /api/settings/ai
 - [x] Endpoints REST para perfil do WhatsApp: GET/PUT /api/settings/whatsapp-profile, POST /api/settings/whatsapp-profile/photo
-- [x] Refatoração do backend para runtime config dinâmico (model, persona, delays, etc)
-- [x] Componente SettingsSection com tabs (IA e WhatsApp), animações extremas, UI moderna (shadcn, radix, tailwind)
-- [x] Upload de foto de perfil WhatsApp via API e UI
-- [x] Integração da nova aba "Configurações" na sidebar e navegação mobile
-- [x] Cards de status, formulários, validações e UX detalhada para settings
-- [x] Logs detalhados e persistentes para todas as ações de configuração
+- [x] RefatoraÃ§Ã£o do backend para runtime config dinÃ¢mico (model, persona, delays, etc)
+- [x] Componente SettingsSection com tabs (IA e WhatsApp), animaÃ§Ãµes extremas, UI moderna (shadcn, radix, tailwind)
+- [x] Correcao do upload da foto do perfil WhatsApp para o fluxo oficial de Resumable Upload da Meta, com uso de `profile_picture_handle` na atualizacao do business profile.
+- [x] Tela dedicada de carregamento para a aba de configuracoes, com estados separados para boot inicial, carregamento da IA e carregamento do perfil WhatsApp.
+- [x] Alerts inline da tela de configuracoes substituidos por toasts flutuantes usando o container global do app.
+- [x] Campo de modelo da IA trocado por um select com modelos oficiais atuais da OpenAI a partir de `gpt-4o-mini`, mantendo fallback para modelo customizado ja salvo.
+- [x] Campo `Base URL` removido da tela de configuracoes da IA para simplificar o fluxo padrao com OpenAI.
+- [x] IntegraÃ§Ã£o da nova aba "ConfiguraÃ§Ãµes" na sidebar e navegaÃ§Ã£o mobile
+- [x] Cards de status, formulÃ¡rios, validaÃ§Ãµes e UX detalhada para settings
+- [x] Logs detalhados e persistentes para todas as aÃ§Ãµes de configuraÃ§Ã£o
 
 - [x] Persistencia real das configuracoes da IA em tabela `AiConfig` no banco.
 - [x] Webhook e auto-reply passam a recarregar configuracao da IA do banco antes de aplicar debounce, historico, modelo, persona, delays e transcricao.
@@ -148,3 +152,4 @@ Atualizado em: 2026-03-20
 - [x] Controle de resposta da IA com debounce de mensagens consecutivas (`AI_REPLY_DEBOUNCE_MS`).
 - [x] Agrupamento de mensagens pendentes da IA para responder primeiro contexto principal (ate 2 mensagens de entrada por ciclo).
 - [x] Geracao do Prisma Client e builds de `api` e `web` validados com sucesso apos as alteracoes.
+

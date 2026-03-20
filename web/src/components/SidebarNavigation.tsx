@@ -98,7 +98,7 @@ export default function SidebarNavigation({
                   collapsed ? "max-w-0 opacity-0" : "max-w-[140px] opacity-100"
                 )}
               >
-                Fechar menu
+                Colapsar menu
               </span>
             </button>
           </Collapsible.Trigger>

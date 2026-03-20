@@ -2357,7 +2357,11 @@ export default function App() {
 
         ) : null}
 
-        <SettingsSection active={activePanel === "settings"} />
+        <SettingsSection
+          active={activePanel === "settings"}
+          addToast={addToast}
+          updateToast={updateToast}
+        />
 
         <ConfirmModal open={Boolean(confirmDialog)} title={confirmDialog?.title || ""} description={confirmDialog?.description || ""} confirmText={confirmDialog?.confirmText || "Confirmar"} tone={confirmDialog?.tone || "danger"} loading={Boolean(faqDeletingId || faqUpdatingId || deletingLeadId)} onCancel={() => setConfirmDialog(null)} onConfirm={() => { handleConfirmAction().catch((err) => setError(err instanceof Error ? err.message : "Falha ao confirmar ação.")); }} />
 
