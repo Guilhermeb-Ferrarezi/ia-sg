@@ -16,6 +16,7 @@ import SettingsSection from "./components/SettingsSection";
 import PaginationControls from "./components/PaginationControls";
 import StatCard from "./components/StatCard";
 import LeadQualificationPanel from "./components/LeadQualificationPanel";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./components/ui/dialog";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "./components/ui/sheet";
 import { apiFetch } from "./lib/apiFetch";
 import { buildLeadProfileDraft, getQualificationCompletion, getQualificationSignals, parseQualificationScore, type LeadProfileDraft } from "./lib/leadQualification";
@@ -85,6 +86,7 @@ export default function App() {
   const [selectedLeadId, setSelectedLeadId] = useState<number | null>(null);
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [leadDraft, setLeadDraft] = useState<LeadProfileDraft | null>(null);
+  const [leadDetailsModalOpen, setLeadDetailsModalOpen] = useState(false);
   const [savingLeadDraft, setSavingLeadDraft] = useState(false);
   const [leadDetailsLoading, setLeadDetailsLoading] = useState(false);
   const [leadMessages, setLeadMessages] = useState<ContactMessage[]>([]);
@@ -667,6 +669,12 @@ export default function App() {
     }
     setLeadDraft(buildLeadProfileDraft(selectedLead));
   }, [selectedLead]);
+
+  useEffect(() => {
+    if (!selectedLeadId) {
+      setLeadDetailsModalOpen(false);
+    }
+  }, [selectedLeadId]);
 
   useEffect(() => {
     if (!error) return;
@@ -1304,6 +1312,16 @@ export default function App() {
   const handleKanbanStagePageChange = (stageId: number, page: number) => {
     setKanbanStagePage((current) => ({ ...current, [stageId]: Math.max(1, page) }));
   };
+
+  const selectedLeadSignals = selectedLead ? getQualificationSignals(selectedLead, leadDraft) : [];
+  const selectedLeadCompletion = selectedLead ? getQualificationCompletion(selectedLeadSignals) : 0;
+  const selectedLeadScore = selectedLead
+    ? parseQualificationScore(leadDraft?.qualificationScore ?? selectedLead.qualificationScore)
+    : null;
+  const selectedLeadStage =
+    selectedLead
+      ? stages.find((stage) => stage.id === (leadDraft?.stageId ?? selectedLead.stageId)) || selectedLead.stage || null
+      : null;
 
   const handleConfirmAction = async () => {
     if (!confirmDialog) return;
@@ -2026,7 +2044,7 @@ export default function App() {
               </div>
 
               {selectedLead ? (
-                <div className="relative grid h-[calc(100vh-180px)] gap-0 panel-enter lg:grid-cols-[minmax(280px,380px)_minmax(0,1fr)] xl:grid-cols-[minmax(320px,400px)_minmax(0,1fr)]">
+                <div className="relative flex h-[calc(100vh-180px)] min-h-0 flex-col panel-enter">
                   {leadDetailsLoading && selectedLeadId ? (
                     <div className="absolute inset-0 z-20 flex items-center justify-center bg-slate-950/70 backdrop-blur-[1px] transition-opacity duration-200">
                       <div className="flex flex-col items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/80 px-5 py-4 text-slate-300 shadow-lg">
@@ -2038,75 +2056,160 @@ export default function App() {
                       </div>
                     </div>
                   ) : null}
-                  <div className="supabase-scroll h-full min-h-0 overflow-y-auto border-b border-slate-800 bg-slate-900/20 p-4 lg:p-5 xl:border-b-0 xl:border-r xl:p-6">
-                    <LeadQualificationPanel
-                      lead={selectedLead}
-                      draft={leadDraft}
-                      stages={stages}
-                      saving={savingLeadDraft}
-                      deleting={deletingLeadId === selectedLead.id}
-                      onStageChange={(stageId) => {
-                        setLeadDraft((prev) => (prev ? { ...prev, stageId } : prev));
-                      }}
-                      onInterestedCourseChange={(value) => {
-                        setLeadDraft((prev) => (prev ? { ...prev, interestedCourse: value } : prev));
-                      }}
-                      onCourseModeChange={(value) => {
-                        setLeadDraft((prev) => (prev ? { ...prev, courseMode: value } : prev));
-                      }}
-                      onAvailabilityChange={(value) => {
-                        setLeadDraft((prev) => (prev ? { ...prev, availability: value } : prev));
-                      }}
-                      onQualificationScoreChange={(value) => {
-                        setLeadDraft((prev) => (prev ? { ...prev, qualificationScore: value } : prev));
-                      }}
-                      onNotesChange={(value) => {
-                        setLeadDraft((prev) => (prev ? { ...prev, notes: value } : prev));
-                      }}
-                      onCustomBotPersonaChange={(value) => {
-                        setLeadDraft((prev) => (prev ? { ...prev, customBotPersona: value } : prev));
-                      }}
-                      onToggleBotEnabled={(enabled) => {
-                        void handleToggleBotEnabled(enabled);
-                      }}
-                      onToggleHandoffNeeded={(enabled) => {
-                        void handleToggleHandoffNeeded(enabled);
-                      }}
-                      onSave={() => {
-                        void handleSaveLeadProfileDraft();
-                      }}
-                      onDelete={() =>
-                        setConfirmDialog({
-                          title: "Excluir permanentemente?",
-                          description: "Isso removera todo o historico de mensagens e tarefas vinculadas a este lead.",
-                          confirmText: "Sim, excluir lead",
-                          tone: "danger",
-                          action: { type: "delete-lead", leadId: selectedLead.id, leadName: selectedLead.name, waId: selectedLead.waId }
-                        })
-                      }
-                    />
+
+                  <Dialog open={leadDetailsModalOpen} onOpenChange={setLeadDetailsModalOpen}>
+                    <DialogContent className="flex h-[min(94vh,1080px)] max-h-[94vh] w-[min(96vw,1320px)] max-w-[1320px] flex-col overflow-hidden border-slate-800/90 bg-[linear-gradient(180deg,rgba(15,23,42,0.98),rgba(2,6,23,0.98))] p-0">
+                      <DialogHeader className="shrink-0 border-b border-slate-800/90 bg-slate-950/70 px-5 py-5 sm:px-6">
+                        <DialogTitle className="text-xl font-black tracking-tight text-white">
+                          Informacoes do lead
+                        </DialogTitle>
+                        <DialogDescription>
+                          Triagem, sinais, notas internas e configuracoes do bot para {selectedLead.name || selectedLead.waId}.
+                        </DialogDescription>
+                      </DialogHeader>
+
+                      <div className="supabase-scroll min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6 sm:py-6">
+                        <LeadQualificationPanel
+                          lead={selectedLead}
+                          draft={leadDraft}
+                          stages={stages}
+                          saving={savingLeadDraft}
+                          deleting={deletingLeadId === selectedLead.id}
+                          onStageChange={(stageId) => {
+                            setLeadDraft((prev) => (prev ? { ...prev, stageId } : prev));
+                          }}
+                          onInterestedCourseChange={(value) => {
+                            setLeadDraft((prev) => (prev ? { ...prev, interestedCourse: value } : prev));
+                          }}
+                          onCourseModeChange={(value) => {
+                            setLeadDraft((prev) => (prev ? { ...prev, courseMode: value } : prev));
+                          }}
+                          onAvailabilityChange={(value) => {
+                            setLeadDraft((prev) => (prev ? { ...prev, availability: value } : prev));
+                          }}
+                          onQualificationScoreChange={(value) => {
+                            setLeadDraft((prev) => (prev ? { ...prev, qualificationScore: value } : prev));
+                          }}
+                          onNotesChange={(value) => {
+                            setLeadDraft((prev) => (prev ? { ...prev, notes: value } : prev));
+                          }}
+                          onCustomBotPersonaChange={(value) => {
+                            setLeadDraft((prev) => (prev ? { ...prev, customBotPersona: value } : prev));
+                          }}
+                          onToggleBotEnabled={(enabled) => {
+                            void handleToggleBotEnabled(enabled);
+                          }}
+                          onToggleHandoffNeeded={(enabled) => {
+                            void handleToggleHandoffNeeded(enabled);
+                          }}
+                          onSave={() => {
+                            void handleSaveLeadProfileDraft();
+                          }}
+                          onDelete={() =>
+                            setConfirmDialog({
+                              title: "Excluir permanentemente?",
+                              description: "Isso removera todo o historico de mensagens e tarefas vinculadas a este lead.",
+                              confirmText: "Sim, excluir lead",
+                              tone: "danger",
+                              action: { type: "delete-lead", leadId: selectedLead.id, leadName: selectedLead.name, waId: selectedLead.waId }
+                            })
+                          }
+                        />
+                      </div>
+                    </DialogContent>
+                  </Dialog>
+
+                  <div className="border-b border-slate-800 px-4 pb-4 pt-4 sm:px-5 sm:pt-5 lg:px-6 lg:pt-6">
+                    <div className="lead-sheen relative overflow-hidden rounded-[28px] border border-slate-800/90 bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.16),_transparent_30%),radial-gradient(circle_at_bottom_right,_rgba(16,185,129,0.14),_transparent_28%),linear-gradient(180deg,_rgba(15,23,42,0.95),_rgba(2,6,23,0.96))] p-4 shadow-2xl shadow-black/20 animate-in fade-in slide-in-from-top-2 duration-500 sm:p-5">
+                      <div className="lead-aurora absolute -left-12 top-6 h-24 w-24 rounded-full bg-cyan-400/10 blur-3xl" />
+                      <div className="lead-aurora absolute -right-12 bottom-0 h-28 w-28 rounded-full bg-emerald-400/10 blur-3xl [animation-delay:-1.4s]" />
+
+                      <div className="relative flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-3">
+                            <div className="flex size-12 shrink-0 items-center justify-center rounded-[18px] border border-cyan-400/20 bg-[linear-gradient(135deg,rgba(34,211,238,0.24),rgba(14,165,233,0.1),rgba(16,185,129,0.18))] shadow-lg shadow-cyan-500/10">
+                              <span className="text-lg font-black text-white">
+                                {selectedLead.name?.[0]?.toUpperCase() || "L"}
+                              </span>
+                            </div>
+
+                            <div className="min-w-0">
+                              <p className="text-[10px] font-bold uppercase tracking-[0.34em] text-cyan-300/75">
+                                Painel recolhido
+                              </p>
+                              <h3 className="mt-1 text-lg font-black tracking-tight text-white">
+                                Informacoes do lead em modal
+                              </h3>
+                            </div>
+                          </div>
+
+                          <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
+                            Abra o cockpit completo so quando precisar editar a triagem, sem comprimir o historico e a fila de tarefas.
+                          </p>
+
+                          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-300">
+                            <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-700/80 bg-slate-950/80 px-3 py-1">
+                              <Sparkles className="h-3.5 w-3.5 text-cyan-300" />
+                              {selectedLeadCompletion}% cobertura
+                            </span>
+                            <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-700/80 bg-slate-950/80 px-3 py-1">
+                              <span className="h-2.5 w-2.5 rounded-full bg-emerald-400" />
+                              {selectedLeadScore == null ? "Sem score" : `Score ${selectedLeadScore}`}
+                            </span>
+                            <span className="inline-flex items-center gap-2 rounded-full border border-slate-700/80 bg-slate-950/80 px-3 py-1">
+                              <span
+                                className="h-2.5 w-2.5 rounded-full"
+                                style={{ backgroundColor: selectedLeadStage?.color || "#22d3ee" }}
+                              />
+                              {selectedLeadStage?.name || "Sem etapa"}
+                            </span>
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => setLeadDetailsModalOpen(true)}
+                          className="group inline-flex w-full items-center justify-center gap-3 rounded-[22px] border border-cyan-400/20 bg-[linear-gradient(135deg,rgba(6,182,212,0.22),rgba(14,165,233,0.08),rgba(15,23,42,0.95))] px-5 py-3 text-left text-sm font-semibold text-cyan-50 shadow-lg shadow-cyan-500/10 transition-all duration-300 hover:-translate-y-1 hover:border-cyan-300/35 hover:shadow-cyan-500/25 sm:w-auto"
+                        >
+                          <span className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/10">
+                            <Sparkles className="h-4 w-4 transition-transform duration-300 group-hover:scale-110 group-hover:rotate-12" />
+                          </span>
+                          <span className="flex min-w-0 flex-1 flex-col leading-tight">
+                            <span className="truncate">Abrir informacoes do lead</span>
+                            <span className="mt-1 text-[11px] font-medium text-cyan-100/70">
+                              Modal de triagem, notas e ajustes do bot
+                            </span>
+                          </span>
+                          <svg
+                            className="h-4 w-4 shrink-0 transition-transform duration-300 group-hover:translate-x-1 group-hover:-translate-y-1"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            stroke="currentColor"
+                          >
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 17L17 7M17 7H9m8 0v8" />
+                          </svg>
+                        </button>
+                      </div>
+                    </div>
                   </div>
 
-                  {/* Conteúdo Principal (Mensagens e Tarefas) */}
-                  <div className="flex h-full min-h-0 min-w-0 flex-col p-0">
-                    {/* Tabs / Headers para o conteúdo principal */}
-                    <div className="flex flex-wrap items-center gap-2 border-b border-slate-800 px-4 pt-4 sm:gap-4 sm:px-5 sm:pt-5 md:gap-6 lg:px-6 lg:pt-6 xl:gap-8">
-                      <button className="pb-4 text-sm font-bold uppercase tracking-widest text-cyan-500 border-b-2 border-cyan-500">Histórico</button>
-                      <button
-                        onClick={() => { setActiveChatWaId(selectedLead.waId); setActivePanel("chat"); }}
-                        className="pb-4 text-sm font-bold uppercase tracking-widest text-emerald-400 hover:text-emerald-300 transition-colors flex items-center gap-2 border-b-2 border-transparent hover:border-emerald-400"
-                      >
-                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.102C3.512 15.046 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                        </svg>
-                        Conversar
-                      </button>
-                      <button className="pb-4 text-sm font-bold uppercase tracking-widest text-slate-500 hover:text-slate-300 transition-colors">Tarefas</button>
-                    </div>
+                  <div className="flex flex-wrap items-center gap-2 border-b border-slate-800 px-4 pt-4 sm:gap-4 sm:px-5 md:gap-6 lg:px-6 xl:gap-8">
+                    <button className="border-b-2 border-cyan-500 pb-4 text-sm font-bold uppercase tracking-widest text-cyan-500">Historico</button>
+                    <button
+                      onClick={() => { setActiveChatWaId(selectedLead.waId); setActivePanel("chat"); }}
+                      className="flex items-center gap-2 border-b-2 border-transparent pb-4 text-sm font-bold uppercase tracking-widest text-emerald-400 transition-colors hover:border-emerald-400 hover:text-emerald-300"
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.102C3.512 15.046 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                      </svg>
+                      Conversar
+                    </button>
+                    <button className="pb-4 text-sm font-bold uppercase tracking-widest text-slate-500 transition-colors hover:text-slate-300">Tarefas</button>
+                  </div>
 
-                    <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden md:grid-cols-[minmax(0,1fr)_minmax(260px,300px)] lg:grid-cols-[minmax(0,1fr)_minmax(280px,320px)] xl:grid-cols-[minmax(0,1fr)_minmax(300px,360px)] 2xl:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]">
-                      {/* Chat History */}
-                      <div className="flex h-full min-h-0 min-w-0 flex-col border-r border-slate-800">
+                  <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden md:grid-cols-[minmax(0,1fr)_minmax(260px,300px)] lg:grid-cols-[minmax(0,1fr)_minmax(280px,320px)] xl:grid-cols-[minmax(0,1fr)_minmax(300px,360px)] 2xl:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]">
+                    {/* Chat History */}
+                    <div className="flex h-full min-h-0 min-w-0 flex-col border-r border-slate-800">
                         <div className="supabase-scroll min-h-0 flex-1 space-y-3 overflow-y-auto p-3 sm:p-4">
                           {leadMessages.length > 0 ? (
                             leadMessages.map((m) => (
@@ -2222,7 +2325,6 @@ export default function App() {
                         </div>
                       </div>
                     </div>
-                  </div>
                 </div>
               ) : leadDetailsLoading && selectedLeadId ? (
                 <div className="flex h-[400px] flex-col items-center justify-center gap-4 text-slate-500">

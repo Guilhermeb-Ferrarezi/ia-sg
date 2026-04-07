@@ -153,3 +153,10 @@ Atualizado em: 2026-03-20
 - [x] Agrupamento de mensagens pendentes da IA para responder primeiro contexto principal (ate 2 mensagens de entrada por ciclo).
 - [x] Geracao do Prisma Client e builds de `api` e `web` validados com sucesso apos as alteracoes.
 
+## Atualizacao extra - 2026-04-07 (Modal de informacoes do lead)
+
+- [x] Aba fixa de informacoes do lead removida da grade principal e convertida em modal acionado por botao.
+- [x] Resumo compacto do lead adicionado acima do historico com CTA para abrir o cockpit completo.
+- [x] Novo componente `ui/dialog` em padrao shadcn/Radix para suportar o modal responsivo.
+- [x] Build de `web` validado com sucesso apos a mudanca do painel para modal.
+
