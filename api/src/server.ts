@@ -5,6 +5,7 @@ import dotenv from "dotenv";
 import { PrismaClient } from "@prisma/client";
 import { WebSocketServer, WebSocket } from "ws";
 import {
+  buildLandingGenerationPromptInput,
   buildLeadEnrichmentPromptInput,
   buildReplyPromptInput,
   extractFirstJsonObject,
@@ -32,6 +33,16 @@ type AIConfigValues = {
   humanDelayMaxMs: number;
 };
 
+type LandingPromptValues = {
+  systemPrompt: string;
+  toneGuidelines: string;
+  requiredRules: string[];
+  ctaRules: string[];
+  autoGenerateEnabled: boolean;
+  autoSendEnabled: boolean;
+  confidenceThreshold: number;
+};
+
 const PORT = Number(process.env.PORT || "3000");
 const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || "";
 const META_APP_SECRET = process.env.META_APP_SECRET || "";
@@ -47,8 +58,11 @@ const AI_REPLY_DEBOUNCE_MS = Math.max(0, Number(process.env.AI_REPLY_DEBOUNCE_MS
 const HUMAN_DELAY_MIN_MS = Number(process.env.HUMAN_DELAY_MIN_MS || null);
 const HUMAN_DELAY_MAX_MS = Number(process.env.HUMAN_DELAY_MAX_MS || null);
 const AI_CONFIG_KEY = "default";
+const LANDING_PROMPT_GLOBAL_SCOPE = "global";
+const LANDING_PROMPT_OFFER_SCOPE = "offer";
 
 const SESSION_SECRET = process.env.SESSION_SECRET || process.env.JWT_SECRET || "";
+const LANDING_DELIVERY_SECRET = process.env.LANDING_DELIVERY_SECRET || SESSION_SECRET;
 const AUTH_COOKIE_NAME = process.env.AUTH_COOKIE_NAME || "";
 const SESSION_TTL_DAYS = Number(process.env.SESSION_TTL_DAYS || 7);
 const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN || "";
@@ -928,6 +942,7 @@ app.post("/api/crm/leads", requireSession, async (req, res) => {
   const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
   const waIdRaw = typeof req.body?.waId === "string" ? req.body.waId.trim() : "";
   const waId = normalizeWaId(waIdRaw);
+  const email = typeof req.body?.email === "string" ? extractEmailFromText(req.body.email) : null;
   const stageIdRaw = Number(req.body?.stageId);
   const defaultStageId = await getDefaultStageId();
   const stageId = Number.isInteger(stageIdRaw) && stageIdRaw > 0 ? stageIdRaw : defaultStageId;
@@ -944,6 +959,7 @@ app.post("/api/crm/leads", requireSession, async (req, res) => {
       data: {
         name,
         waId,
+        email,
         stageId,
         source,
         notes,
@@ -999,6 +1015,7 @@ app.put("/api/crm/leads/:id", requireSession, async (req, res) => {
 
   const updateData: Record<string, unknown> = {};
   if (typeof req.body?.name === "string") updateData.name = req.body.name.trim() || null;
+  if (typeof req.body?.email === "string") updateData.email = extractEmailFromText(req.body.email) || null;
   if (typeof req.body?.waId === "string") {
     const parsed = normalizeWaId(req.body.waId.trim());
     if (!parsed) {
@@ -1020,6 +1037,10 @@ app.put("/api/crm/leads/:id", requireSession, async (req, res) => {
   if (typeof req.body?.interestedCourse === "string") updateData.interestedCourse = req.body.interestedCourse.trim() || null;
   if (typeof req.body?.courseMode === "string") updateData.courseMode = req.body.courseMode.trim() || null;
   if (typeof req.body?.availability === "string") updateData.availability = req.body.availability.trim() || null;
+  if (req.body?.interestConfidence === null) updateData.interestConfidence = null;
+  if (typeof req.body?.interestConfidence === "number" && Number.isFinite(req.body.interestConfidence)) {
+    updateData.interestConfidence = Math.max(0, Math.min(1, Number(req.body.interestConfidence.toFixed(2))));
+  }
   if (req.body?.qualificationScore === null) updateData.qualificationScore = null;
   if (typeof req.body?.qualificationScore === "number" && Number.isFinite(req.body.qualificationScore)) {
     updateData.qualificationScore = Math.max(0, Math.min(100, Math.round(req.body.qualificationScore)));
@@ -1384,6 +1405,369 @@ app.get("/api/crm/metrics/conversion", requireSession, async (_req, res) => {
       };
     })
   });
+});
+
+// ============================================
+// OFFERS / LANDINGS
+// ============================================
+
+app.get("/api/offers", requireSession, async (_req, res) => {
+  const offers = await prisma.offer.findMany({
+    orderBy: [{ isActive: "desc" }, { updatedAt: "desc" }],
+    include: {
+      landingPages: {
+        orderBy: [{ publishedAt: "desc" }, { version: "desc" }],
+        take: 1
+      }
+    }
+  });
+  res.json({ offers: offers.map(mapOffer) });
+});
+
+app.post("/api/offers", requireSession, async (req, res) => {
+  const title = typeof req.body?.title === "string" ? utf8Text(req.body.title.trim()) : "";
+  const slugInput = typeof req.body?.slug === "string" ? req.body.slug.trim() : title;
+  const slug = normalizeSlug(slugInput);
+  const aliases = parseStringArray(req.body?.aliases);
+  const approvedFacts = parseStringArray(req.body?.approvedFacts);
+  const ctaLabel = typeof req.body?.ctaLabel === "string" ? utf8Text(req.body.ctaLabel.trim()) : "";
+  const ctaUrl = typeof req.body?.ctaUrl === "string" ? utf8Text(req.body.ctaUrl.trim()) : "";
+
+  if (!title || !slug || !ctaLabel || !ctaUrl) {
+    res.status(400).json({ message: "Titulo, slug, CTA label e CTA URL sao obrigatorios." });
+    return;
+  }
+
+  try {
+    const offer = await prisma.offer.create({
+      data: {
+        title,
+        slug,
+        aliases,
+        durationLabel: typeof req.body?.durationLabel === "string" ? utf8Text(req.body.durationLabel.trim()) || null : null,
+        modality: typeof req.body?.modality === "string" ? utf8Text(req.body.modality.trim()) || null : null,
+        shortDescription: typeof req.body?.shortDescription === "string" ? utf8Text(req.body.shortDescription.trim()) || null : null,
+        approvedFacts,
+        ctaLabel,
+        ctaUrl,
+        visualTheme: typeof req.body?.visualTheme === "string" ? utf8Text(req.body.visualTheme.trim()) || null : null,
+        isActive: typeof req.body?.isActive === "boolean" ? req.body.isActive : true
+      }
+    });
+    logEvent("info", "offer.created", { offerId: offer.id, slug: offer.slug });
+    broadcastEvent("offers_updated");
+    res.status(201).json({ message: "Oferta criada com sucesso.", offer: mapOffer(offer) });
+  } catch (err) {
+    if (isPrismaUniqueError(err)) {
+      res.status(409).json({ message: "Ja existe oferta com este slug." });
+      return;
+    }
+    throw err;
+  }
+});
+
+app.put("/api/offers/:id", requireSession, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ message: "ID de oferta invalido." });
+    return;
+  }
+
+  const data: Record<string, unknown> = {};
+  if (typeof req.body?.title === "string") data.title = utf8Text(req.body.title.trim());
+  if (typeof req.body?.slug === "string" && req.body.slug.trim()) data.slug = normalizeSlug(req.body.slug);
+  if (req.body?.aliases !== undefined) data.aliases = parseStringArray(req.body.aliases);
+  if (typeof req.body?.durationLabel === "string") data.durationLabel = utf8Text(req.body.durationLabel.trim()) || null;
+  if (typeof req.body?.modality === "string") data.modality = utf8Text(req.body.modality.trim()) || null;
+  if (typeof req.body?.shortDescription === "string") data.shortDescription = utf8Text(req.body.shortDescription.trim()) || null;
+  if (req.body?.approvedFacts !== undefined) data.approvedFacts = parseStringArray(req.body.approvedFacts);
+  if (typeof req.body?.ctaLabel === "string") data.ctaLabel = utf8Text(req.body.ctaLabel.trim());
+  if (typeof req.body?.ctaUrl === "string") data.ctaUrl = utf8Text(req.body.ctaUrl.trim());
+  if (typeof req.body?.visualTheme === "string") data.visualTheme = utf8Text(req.body.visualTheme.trim()) || null;
+  if (typeof req.body?.isActive === "boolean") data.isActive = req.body.isActive;
+
+  try {
+    const offer = await prisma.offer.update({
+      where: { id },
+      data,
+      include: {
+        landingPages: {
+          orderBy: [{ publishedAt: "desc" }, { version: "desc" }],
+          take: 1
+        }
+      }
+    });
+    logEvent("info", "offer.updated", { offerId: offer.id, slug: offer.slug });
+    broadcastEvent("offers_updated");
+    res.json({ message: "Oferta atualizada com sucesso.", offer: mapOffer(offer) });
+  } catch (err) {
+    if (isPrismaNotFoundError(err)) {
+      res.status(404).json({ message: "Oferta nao encontrada." });
+      return;
+    }
+    if (isPrismaUniqueError(err)) {
+      res.status(409).json({ message: "Ja existe oferta com este slug." });
+      return;
+    }
+    throw err;
+  }
+});
+
+app.patch("/api/offers/:id/status", requireSession, async (req, res) => {
+  const id = Number(req.params.id);
+  const isActive = req.body?.isActive;
+  if (!Number.isInteger(id) || id <= 0 || typeof isActive !== "boolean") {
+    res.status(400).json({ message: "Payload invalido." });
+    return;
+  }
+
+  try {
+    const offer = await prisma.offer.update({
+      where: { id },
+      data: { isActive }
+    });
+    broadcastEvent("offers_updated");
+    res.json({ message: "Status da oferta atualizado.", offer: mapOffer(offer) });
+  } catch (err) {
+    if (isPrismaNotFoundError(err)) {
+      res.status(404).json({ message: "Oferta nao encontrada." });
+      return;
+    }
+    throw err;
+  }
+});
+
+app.get("/api/settings/landing-prompt", requireSession, async (_req, res) => {
+  res.json(await getGlobalLandingPromptSettings());
+});
+
+app.put("/api/settings/landing-prompt", requireSession, async (req, res) => {
+  const settings = await persistGlobalLandingPromptSettings(req.body);
+  logEvent("info", "landing.prompt.global.updated", { updatedFields: Object.keys(req.body || {}) });
+  res.json(settings);
+});
+
+app.get("/api/offers/:id/landing-prompt", requireSession, async (req, res) => {
+  const offerId = Number(req.params.id);
+  if (!Number.isInteger(offerId) || offerId <= 0) {
+    res.status(400).json({ message: "Oferta invalida." });
+    return;
+  }
+  res.json(await getOfferLandingPromptSettings(offerId));
+});
+
+app.put("/api/offers/:id/landing-prompt", requireSession, async (req, res) => {
+  const offerId = Number(req.params.id);
+  if (!Number.isInteger(offerId) || offerId <= 0) {
+    res.status(400).json({ message: "Oferta invalida." });
+    return;
+  }
+  const settings = await persistOfferLandingPromptSettings(offerId, req.body);
+  logEvent("info", "landing.prompt.offer.updated", { offerId, updatedFields: Object.keys(req.body || {}) });
+  res.json(settings);
+});
+
+app.post("/api/offers/:id/landing/generate", requireSession, async (req, res) => {
+  const offerId = Number(req.params.id);
+  if (!Number.isInteger(offerId) || offerId <= 0) {
+    res.status(400).json({ message: "Oferta invalida." });
+    return;
+  }
+
+  try {
+    const page = await generateLandingPageForOffer(offerId);
+    broadcastEvent("offers_updated");
+    res.status(201).json({ message: "Landing gerada com sucesso.", landing: mapLandingPageSummary(page) });
+  } catch (err) {
+    res.status(500).json({ message: formatError(err) });
+  }
+});
+
+app.post("/api/offers/:id/landing/publish", requireSession, async (req, res) => {
+  const offerId = Number(req.params.id);
+  const landingPageId = req.body?.landingPageId !== undefined ? Number(req.body.landingPageId) : undefined;
+  if (!Number.isInteger(offerId) || offerId <= 0) {
+    res.status(400).json({ message: "Oferta invalida." });
+    return;
+  }
+
+  try {
+    const page = await publishLandingPage(offerId, Number.isInteger(landingPageId) ? landingPageId : undefined);
+    broadcastEvent("offers_updated");
+    res.json({ message: "Landing publicada com sucesso.", landing: mapLandingPageSummary(page) });
+  } catch (err) {
+    res.status(400).json({ message: formatError(err) });
+  }
+});
+
+app.get("/api/offers/:id/landing/versions", requireSession, async (req, res) => {
+  const offerId = Number(req.params.id);
+  if (!Number.isInteger(offerId) || offerId <= 0) {
+    res.status(400).json({ message: "Oferta invalida." });
+    return;
+  }
+
+  const pages = await prisma.landingPage.findMany({
+    where: { offerId },
+    orderBy: [{ version: "desc" }]
+  });
+  res.json({ versions: pages.map(mapLandingPageSummary) });
+});
+
+app.get("/api/offers/:id/landing/preview", requireSession, async (req, res) => {
+  const offerId = Number(req.params.id);
+  if (!Number.isInteger(offerId) || offerId <= 0) {
+    res.status(400).json({ message: "Oferta invalida." });
+    return;
+  }
+
+  const page = await prisma.landingPage.findFirst({
+    where: { offerId },
+    orderBy: [{ status: "asc" }, { version: "desc" }]
+  });
+  if (!page) {
+    res.status(404).json({ message: "Nenhuma landing encontrada." });
+    return;
+  }
+  res.json({ landing: mapLandingPageSummary(page) });
+});
+
+app.get("/api/offers/:id/landing/metrics", requireSession, async (req, res) => {
+  const offerId = Number(req.params.id);
+  if (!Number.isInteger(offerId) || offerId <= 0) {
+    res.status(400).json({ message: "Oferta invalida." });
+    return;
+  }
+
+  const [deliveries, views, clicks] = await Promise.all([
+    prisma.landingDelivery.count({ where: { offerId } }),
+    prisma.landingEvent.count({ where: { delivery: { offerId }, eventType: "view" } }),
+    prisma.landingEvent.count({ where: { delivery: { offerId }, eventType: "click" } })
+  ]);
+  res.json({
+    deliveries,
+    views,
+    clicks,
+    clickRate: deliveries > 0 ? Number(((clicks / deliveries) * 100).toFixed(2)) : 0
+  });
+});
+
+app.get("/api/public/landings/:slug", async (req, res) => {
+  const slug = normalizeSlug(req.params.slug || "");
+  const token = typeof req.query.t === "string" ? req.query.t : "";
+  const verified = token ? verifyLandingDeliveryToken(token) : null;
+
+  const offer = await prisma.offer.findUnique({
+    where: { slug },
+    include: {
+      landingPages: {
+        where: { status: "published" },
+        orderBy: { publishedAt: "desc" },
+        take: 1
+      }
+    }
+  });
+
+  if (!offer || !offer.landingPages[0]) {
+    res.status(404).json({ message: "Landing nao encontrada." });
+    return;
+  }
+
+  const page = offer.landingPages[0];
+  res.json({
+    offer: mapOffer(offer),
+    landing: mapLandingPageSummary(page),
+    trackingToken: verified ? token : null
+  });
+});
+
+app.post("/api/public/landings/view", async (req, res) => {
+  const token = typeof req.body?.token === "string" ? req.body.token.trim() : "";
+  const verified = verifyLandingDeliveryToken(token);
+  if (!verified) {
+    res.status(400).json({ message: "Token invalido." });
+    return;
+  }
+
+  const delivery = await prisma.landingDelivery.findFirst({
+    where: {
+      token,
+      contactId: verified.contactId,
+      offerId: verified.offerId,
+      landingPageId: verified.landingPageId
+    }
+  });
+  if (!delivery) {
+    res.status(404).json({ message: "Entrega nao encontrada." });
+    return;
+  }
+
+  await prisma.landingDelivery.update({
+    where: { id: delivery.id },
+    data: { lastViewedAt: new Date() }
+  });
+  await prisma.landingEvent.create({
+    data: {
+      deliveryId: delivery.id,
+      eventType: "view",
+      requestMeta: { path: "/api/public/landings/view" },
+      userAgent: req.get("user-agent") || null,
+      ip: req.ip || null,
+      referrer: req.get("referer") || null
+    }
+  });
+  logEvent("info", "landing.viewed", {
+    contactId: delivery.contactId,
+    offerId: delivery.offerId,
+    landingPageId: delivery.landingPageId,
+    path: "/api/public/landings/view"
+  });
+  res.json({ success: true });
+});
+
+app.post("/api/public/landings/click", async (req, res) => {
+  const token = typeof req.body?.token === "string" ? req.body.token.trim() : "";
+  const verified = verifyLandingDeliveryToken(token);
+  if (!verified) {
+    res.status(400).json({ message: "Token invalido." });
+    return;
+  }
+
+  const delivery = await prisma.landingDelivery.findFirst({
+    where: {
+      token,
+      contactId: verified.contactId,
+      offerId: verified.offerId,
+      landingPageId: verified.landingPageId
+    },
+    include: { offer: true }
+  });
+  if (!delivery) {
+    res.status(404).json({ message: "Entrega nao encontrada." });
+    return;
+  }
+
+  await prisma.landingDelivery.update({
+    where: { id: delivery.id },
+    data: { lastClickedAt: new Date() }
+  });
+  await prisma.landingEvent.create({
+    data: {
+      deliveryId: delivery.id,
+      eventType: "click",
+      requestMeta: { path: "/api/public/landings/click" },
+      userAgent: req.get("user-agent") || null,
+      ip: req.ip || null,
+      referrer: req.get("referer") || null
+    }
+  });
+  logEvent("info", "landing.clicked", {
+    contactId: delivery.contactId,
+    offerId: delivery.offerId,
+    landingPageId: delivery.landingPageId,
+    path: "/api/public/landings/click"
+  });
+  res.json({ success: true, redirectUrl: delivery.offer.ctaUrl });
 });
 
 // ============================================
@@ -2089,6 +2473,358 @@ function utf8Text(input: string): string {
   return Buffer.from(input, "utf8").toString("utf8").normalize("NFC");
 }
 
+function normalizeSlug(input: string): string {
+  return utf8Text(input)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 120);
+}
+
+function normalizeSearchText(input: string): string {
+  return normalizeSlug(input).replace(/-/g, " ").trim();
+}
+
+function parseStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => (typeof entry === "string" ? utf8Text(entry.trim()) : ""))
+      .filter(Boolean);
+  }
+  if (typeof value === "string" && value.trim()) {
+    return value
+      .split(/\r?\n|,/)
+      .map((entry) => utf8Text(entry.trim()))
+      .filter(Boolean);
+  }
+  return [];
+}
+
+function serializeOfferJsonList(value: unknown): string[] {
+  return parseStringArray(value);
+}
+
+function mapOffer(offer: {
+  id: number;
+  title: string;
+  slug: string;
+  aliases: unknown;
+  durationLabel: string | null;
+  modality: string | null;
+  shortDescription: string | null;
+  approvedFacts: unknown;
+  ctaLabel: string;
+  ctaUrl: string;
+  visualTheme: string | null;
+  isActive: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+  landingPages?: Array<{
+    id: number;
+    version: number;
+    status: string;
+    publishedAt: Date | null;
+    createdAt: Date;
+    updatedAt: Date;
+  }>;
+}): Record<string, unknown> {
+  const latestLanding = offer.landingPages?.[0] || null;
+  return {
+    id: offer.id,
+    title: offer.title,
+    slug: offer.slug,
+    aliases: serializeOfferJsonList(offer.aliases),
+    durationLabel: offer.durationLabel,
+    modality: offer.modality,
+    shortDescription: offer.shortDescription,
+    approvedFacts: serializeOfferJsonList(offer.approvedFacts),
+    ctaLabel: offer.ctaLabel,
+    ctaUrl: offer.ctaUrl,
+    visualTheme: offer.visualTheme,
+    isActive: offer.isActive,
+    latestLanding,
+    createdAt: offer.createdAt,
+    updatedAt: offer.updatedAt
+  };
+}
+
+function mapLandingPageSummary(page: {
+  id: number;
+  offerId: number;
+  version: number;
+  status: string;
+  sectionsJson: unknown;
+  promptSnapshot: unknown;
+  sourceFactsSnapshot: unknown;
+  publishedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}): Record<string, unknown> {
+  return {
+    id: page.id,
+    offerId: page.offerId,
+    version: page.version,
+    status: page.status,
+    sectionsJson: page.sectionsJson,
+    promptSnapshot: page.promptSnapshot,
+    sourceFactsSnapshot: page.sourceFactsSnapshot,
+    publishedAt: page.publishedAt,
+    createdAt: page.createdAt,
+    updatedAt: page.updatedAt
+  };
+}
+
+function signLandingDeliveryToken(input: { contactId: number; offerId: number; landingPageId: number }): string {
+  const payload = Buffer.from(
+    JSON.stringify({
+      contactId: input.contactId,
+      offerId: input.offerId,
+      landingPageId: input.landingPageId,
+      iat: Date.now()
+    }),
+    "utf8"
+  ).toString("base64url");
+  const signature = crypto.createHmac("sha256", LANDING_DELIVERY_SECRET).update(payload).digest("base64url");
+  return `${payload}.${signature}`;
+}
+
+function verifyLandingDeliveryToken(token: string): { contactId: number; offerId: number; landingPageId: number } | null {
+  const [payload, signature] = token.split(".");
+  if (!payload || !signature) return null;
+  const expected = crypto.createHmac("sha256", LANDING_DELIVERY_SECRET).update(payload).digest("base64url");
+  if (!safeEqual(signature, expected)) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Record<string, unknown>;
+    const contactId = Number(parsed.contactId);
+    const offerId = Number(parsed.offerId);
+    const landingPageId = Number(parsed.landingPageId);
+    if (!Number.isInteger(contactId) || !Number.isInteger(offerId) || !Number.isInteger(landingPageId)) {
+      return null;
+    }
+    return { contactId, offerId, landingPageId };
+  } catch {
+    return null;
+  }
+}
+
+function buildPublicLandingUrl(slug: string, token: string): string {
+  const publicBase = (allowedOrigins[0] || "http://localhost:8085").replace(/\/+$/, "");
+  return `${publicBase}/ofertas/${encodeURIComponent(slug)}?t=${encodeURIComponent(token)}`;
+}
+
+function extractEmailFromText(input: string): string | null {
+  const match = input.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  return match ? utf8Text(match[0].trim().toLowerCase()) : null;
+}
+
+async function findMatchingOffer(params: {
+  interestedCourse?: string | null;
+  courseMode?: string | null;
+  durationLabel?: string | null;
+}) {
+  const offers = await prisma.offer.findMany({
+    where: { isActive: true }
+  });
+  const interestText = normalizeSearchText(
+    [params.interestedCourse, params.courseMode, params.durationLabel].filter(Boolean).join(" ")
+  );
+  if (!interestText) return null;
+
+  const scored = offers
+    .map((offer) => {
+      const aliases = serializeOfferJsonList(offer.aliases);
+      const haystack = [offer.title, offer.slug, offer.durationLabel, offer.modality, ...aliases]
+        .filter(Boolean)
+        .map((entry) => normalizeSearchText(String(entry)))
+        .join(" ");
+      let score = 0;
+      if (haystack.includes(normalizeSearchText(offer.title))) score += 0.1;
+      if (haystack.includes(interestText)) score += 1;
+      for (const term of interestText.split(/\s+/)) {
+        if (term && haystack.includes(term)) score += 0.18;
+      }
+      if (params.durationLabel && offer.durationLabel && normalizeSearchText(offer.durationLabel).includes(normalizeSearchText(params.durationLabel))) score += 0.25;
+      if (params.courseMode && offer.modality && normalizeSearchText(offer.modality).includes(normalizeSearchText(params.courseMode))) score += 0.2;
+      return { offer, score };
+    })
+    .sort((left, right) => right.score - left.score);
+
+  return scored[0] && scored[0].score >= 0.65 ? scored[0].offer : null;
+}
+
+async function generateLandingPageForOffer(offerId: number, leadContext?: {
+  interestedCourse?: string | null;
+  courseMode?: string | null;
+  objective?: string | null;
+  level?: string | null;
+  summary?: string | null;
+}) {
+  const offer = await prisma.offer.findUnique({ where: { id: offerId } });
+  if (!offer) throw new Error("Oferta nao encontrada.");
+
+  const promptConfig = await getOfferLandingPromptSettings(offerId);
+  const approvedFacts = serializeOfferJsonList(offer.approvedFacts);
+  const promptInput = buildLandingGenerationPromptInput({
+    offerTitle: offer.title,
+    offerSlug: offer.slug,
+    shortDescription: offer.shortDescription,
+    durationLabel: offer.durationLabel,
+    modality: offer.modality,
+    approvedFacts: approvedFacts.length ? approvedFacts : [offer.shortDescription || offer.title],
+    prompt: {
+      systemPrompt: promptConfig.systemPrompt,
+      toneGuidelines: promptConfig.toneGuidelines,
+      requiredRules: promptConfig.requiredRules,
+      ctaRules: promptConfig.ctaRules
+    },
+    leadContext
+  });
+
+  logEvent("info", "landing.generate.started", { offerId, slug: offer.slug });
+  const aiConfig = await syncRuntimeAIConfigFromDatabase();
+  const resp = await fetchWithRetry(`${aiConfig.baseUrl}/responses`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${OPENAI_API_KEY}`
+    },
+    body: JSON.stringify({
+      model: aiConfig.model,
+      input: promptInput,
+      max_output_tokens: 900
+    })
+  });
+
+  if (!resp.ok) {
+    const detail = await resp.text().catch(() => "");
+    logEvent("error", "landing.generate.failed", { offerId, slug: offer.slug, statusCode: resp.status, message: detail });
+    throw new Error(`Falha ao gerar landing (${resp.status}).`);
+  }
+
+  const data = await resp.json();
+  const sectionsJson = extractFirstJsonObject(parseResponseOutputText(data));
+  if (!sectionsJson) {
+    logEvent("error", "landing.generate.failed", { offerId, slug: offer.slug, message: "json_invalido" });
+    throw new Error("Resposta da IA para landing veio sem JSON valido.");
+  }
+
+  const latest = await prisma.landingPage.findFirst({
+    where: { offerId },
+    orderBy: { version: "desc" }
+  });
+  const page = await prisma.landingPage.create({
+    data: {
+      offerId,
+      version: (latest?.version || 0) + 1,
+      status: "draft",
+      sectionsJson: sectionsJson as object,
+      promptSnapshot: {
+        ...promptConfig,
+        scope: promptConfig.scope,
+        offerId: promptConfig.offerId
+      },
+      sourceFactsSnapshot: {
+        title: offer.title,
+        slug: offer.slug,
+        durationLabel: offer.durationLabel,
+        modality: offer.modality,
+        shortDescription: offer.shortDescription,
+        approvedFacts
+      }
+    }
+  });
+  logEvent("info", "landing.generate.succeeded", { offerId, landingPageId: page.id, version: page.version, slug: offer.slug });
+  return page;
+}
+
+async function publishLandingPage(offerId: number, landingPageId?: number) {
+  const target = landingPageId
+    ? await prisma.landingPage.findUnique({ where: { id: landingPageId } })
+    : await prisma.landingPage.findFirst({
+      where: { offerId },
+      orderBy: { version: "desc" }
+    });
+  if (!target || target.offerId !== offerId) {
+    throw new Error("Landing nao encontrada para publicacao.");
+  }
+
+  await prisma.landingPage.updateMany({
+    where: {
+      offerId,
+      status: "published"
+    },
+    data: {
+      status: "archived"
+    }
+  });
+
+  const published = await prisma.landingPage.update({
+    where: { id: target.id },
+    data: {
+      status: "published",
+      publishedAt: new Date()
+    }
+  });
+  return published;
+}
+
+async function ensurePublishedLandingForOffer(offerId: number, leadContext?: {
+  interestedCourse?: string | null;
+  courseMode?: string | null;
+  objective?: string | null;
+  level?: string | null;
+  summary?: string | null;
+}) {
+  const existing = await prisma.landingPage.findFirst({
+    where: {
+      offerId,
+      status: "published"
+    },
+    orderBy: { publishedAt: "desc" }
+  });
+  if (existing) return existing;
+  const generated = await generateLandingPageForOffer(offerId, leadContext);
+  return publishLandingPage(offerId, generated.id);
+}
+
+async function ensureLandingDelivery(contact: {
+  id: number;
+  waId: string;
+  handoffNeeded: boolean;
+}, offer: {
+  id: number;
+  slug: string;
+}, page: {
+  id: number;
+}) {
+  const existing = await prisma.landingDelivery.findFirst({
+    where: {
+      contactId: contact.id,
+      offerId: offer.id,
+      landingPageId: page.id
+    }
+  });
+  if (existing) return existing;
+
+  const token = signLandingDeliveryToken({
+    contactId: contact.id,
+    offerId: offer.id,
+    landingPageId: page.id
+  });
+
+  return prisma.landingDelivery.create({
+    data: {
+      contactId: contact.id,
+      offerId: offer.id,
+      landingPageId: page.id,
+      token,
+      deliveryChannel: "whatsapp"
+    }
+  });
+}
+
 function extractWebhookData(payload: unknown): { waId: string | null; waMessageId: string | null } {
   const msg = (payload as any)?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
   const waId = normalizeWaId(String(msg?.from || ""));
@@ -2507,10 +3243,129 @@ async function runAutoReplyForContact(contactId: number): Promise<void> {
       enrichLeadWithAI(contact.id).catch((err) => {
         console.error("Enrichment error:", err);
       });
+      processLeadLandingAutomation(contact.id).catch((err) => {
+        console.error("Landing automation error:", err);
+      });
     });
   } finally {
     autoReplyProcessingContacts.delete(contactId);
   }
+}
+
+async function processLeadLandingAutomation(contactId: number): Promise<void> {
+  const contact = await prisma.contact.findUnique({
+    where: { id: contactId }
+  });
+
+  if (!contact || contact.handoffNeeded) {
+    if (contact) {
+      logEvent("info", "landing.send.skipped", {
+        contactId: contact.id,
+        waId: contact.waId,
+        message: "handoff_ativo"
+      });
+    }
+    return;
+  }
+
+  const promptSettings = await getGlobalLandingPromptSettings();
+  if (!promptSettings.autoGenerateEnabled || !promptSettings.autoSendEnabled) {
+    logEvent("info", "landing.send.skipped", {
+      contactId: contact.id,
+      waId: contact.waId,
+      message: "automacao_desativada"
+    });
+    return;
+  }
+
+  if ((contact.interestConfidence || 0) < promptSettings.confidenceThreshold) {
+    logEvent("info", "landing.send.skipped", {
+      contactId: contact.id,
+      waId: contact.waId,
+      message: "baixa_confianca",
+      interestConfidence: contact.interestConfidence
+    });
+    return;
+  }
+
+  const offer = await findMatchingOffer({
+    interestedCourse: contact.interestedCourse,
+    courseMode: contact.courseMode,
+    durationLabel: null
+  });
+
+  if (!offer) {
+    logEvent("info", "landing.send.skipped", {
+      contactId: contact.id,
+      waId: contact.waId,
+      message: "oferta_nao_encontrada"
+    });
+    return;
+  }
+
+  logEvent("info", "offer.matched", {
+    contactId: contact.id,
+    waId: contact.waId,
+    offerId: offer.id,
+    slug: offer.slug
+  });
+
+  const page = await ensurePublishedLandingForOffer(offer.id, {
+    interestedCourse: contact.interestedCourse,
+    courseMode: contact.courseMode,
+    objective: contact.objective,
+    level: contact.level,
+    summary: contact.aiSummary
+  });
+  const delivery = await ensureLandingDelivery(contact, offer, page);
+
+  if (contact.lastLandingPageId === page.id && contact.lastLandingOfferId === offer.id) {
+    logEvent("info", "landing.send.skipped", {
+      contactId: contact.id,
+      waId: contact.waId,
+      offerId: offer.id,
+      landingPageId: page.id,
+      message: "versao_ja_enviada"
+    });
+    return;
+  }
+
+  const publicUrl = buildPublicLandingUrl(offer.slug, delivery.token);
+  const outbound = utf8Text(`Separei uma pagina com tudo sobre ${offer.title} para voce: ${publicUrl}`);
+  await sendWhatsAppText(contact.waId, outbound);
+  const outMsg = await prisma.message.create({
+    data: {
+      contactId: contact.id,
+      direction: "out",
+      body: outbound,
+      waMessageId: null
+    }
+  });
+
+  await prisma.contact.update({
+    where: { id: contact.id },
+    data: {
+      lastLandingSentAt: new Date(),
+      lastLandingOfferId: offer.id,
+      lastLandingPageId: page.id
+    }
+  });
+
+  broadcastMessage(contact.waId, contact.id, {
+    id: outMsg.id,
+    direction: "out",
+    body: outbound,
+    createdAt: outMsg.createdAt
+  });
+
+  logEvent("info", "landing.sent", {
+    contactId: contact.id,
+    waId: contact.waId,
+    offerId: offer.id,
+    landingPageId: page.id,
+    deliveryId: delivery.id,
+    url: publicUrl
+  });
 }
 
 async function generateReply(
@@ -2617,7 +3472,14 @@ async function enrichLeadWithAI(contactId: number): Promise<void> {
         aiSummary: result.summary && result.summary !== "NÃ£o informado" ? result.summary : undefined,
         age: result.age && result.age !== "NÃ£o informado" ? result.age : undefined,
         level: result.level && result.level !== "NÃ£o informado" ? result.level : undefined,
-        objective: result.objective && result.objective !== "NÃ£o informado" ? result.objective : undefined
+        objective: result.objective && result.objective !== "NÃ£o informado" ? result.objective : undefined,
+        interestedCourse: result.interestedCourse && result.interestedCourse !== "NÃ£o informado" ? result.interestedCourse : undefined,
+        courseMode: result.courseMode && result.courseMode !== "NÃ£o informado" ? result.courseMode : undefined,
+        email: typeof result.email === "string" ? extractEmailFromText(result.email) || undefined : undefined,
+        interestConfidence:
+          typeof result.interestConfidence === "number" && Number.isFinite(result.interestConfidence)
+            ? Math.max(0, Math.min(1, Number(result.interestConfidence.toFixed(2))))
+            : undefined
       },
       include: { stage: true }
     });
@@ -2901,6 +3763,7 @@ function mapLeadSummary(
     id: number;
     waId: string;
     name: string | null;
+    email: string | null;
     stageId: number | null;
     leadStatus: string;
     source: string | null;
@@ -2914,8 +3777,12 @@ function mapLeadSummary(
     interestedCourse: string | null;
     courseMode: string | null;
     availability: string | null;
+    interestConfidence: number | null;
     qualificationScore: number | null;
     handoffNeeded: boolean;
+    lastLandingSentAt: Date | null;
+    lastLandingOfferId: number | null;
+    lastLandingPageId: number | null;
     lastInteractionAt: Date | null;
     createdAt: Date;
     stage?: { id: number; name: string; color: string; position: number } | null;
@@ -2928,6 +3795,7 @@ function mapLeadSummary(
     id: contact.id,
     waId: contact.waId,
     name: contact.name,
+    email: contact.email,
     stageId: contact.stageId,
     stage: contact.stage || null,
     leadStatus: contact.leadStatus,
@@ -2942,8 +3810,12 @@ function mapLeadSummary(
     interestedCourse: contact.interestedCourse,
     courseMode: contact.courseMode,
     availability: contact.availability,
+    interestConfidence: contact.interestConfidence,
     qualificationScore: contact.qualificationScore,
     handoffNeeded: contact.handoffNeeded,
+    lastLandingSentAt: contact.lastLandingSentAt,
+    lastLandingOfferId: contact.lastLandingOfferId,
+    lastLandingPageId: contact.lastLandingPageId,
     lastInteractionAt: contact.lastInteractionAt,
     createdAt: contact.createdAt,
     openTasks: contact.tasks || [],
@@ -2956,6 +3828,7 @@ function mapLeadDetails(
     id: number;
     waId: string;
     name: string | null;
+    email: string | null;
     stageId: number | null;
     leadStatus: string;
     source: string | null;
@@ -2969,8 +3842,12 @@ function mapLeadDetails(
     interestedCourse: string | null;
     courseMode: string | null;
     availability: string | null;
+    interestConfidence: number | null;
     qualificationScore: number | null;
     handoffNeeded: boolean;
+    lastLandingSentAt: Date | null;
+    lastLandingOfferId: number | null;
+    lastLandingPageId: number | null;
     lastInteractionAt: Date | null;
     createdAt: Date;
     stage?: { id: number; name: string; color: string; position: number } | null;
@@ -3376,6 +4253,209 @@ function buildAISettingsResponse() {
     language: "pt-BR",
     provider: config.baseUrl.includes("openai.com") ? "OpenAI" : "Custom"
   };
+}
+
+function buildDefaultLandingPromptValues(): LandingPromptValues {
+  return {
+    systemPrompt: [
+      "Monte uma landing page publica com foco em conversao para a Santos Tech.",
+      "A copy deve ser objetiva, premium, clara e orientada a acao.",
+      "Nunca invente informacoes que nao estejam nos fatos aprovados da oferta."
+    ].join("\n"),
+    toneGuidelines: [
+      "Tom confiante, humano e direto.",
+      "Evite jargao tecnico desnecessario.",
+      "Use frases escaneaveis e CTA forte."
+    ].join("\n"),
+    requiredRules: [
+      "Nao inventar preco, carga horaria, datas, certificado ou promessas.",
+      "Usar somente fatos aprovados da oferta.",
+      "Headline curta e clara.",
+      "CTA final alinhado ao objetivo comercial."
+    ],
+    ctaRules: [
+      "O CTA deve convidar o lead a falar com a equipe ou continuar a matricula.",
+      "O texto auxiliar deve reduzir friccao e reforcar proximo passo."
+    ],
+    autoGenerateEnabled: true,
+    autoSendEnabled: true,
+    confidenceThreshold: 0.75
+  };
+}
+
+function normalizeLandingRules(value: unknown, fallback: string[]): string[] {
+  if (!Array.isArray(value)) return fallback;
+  const rules = value
+    .map((entry) => (typeof entry === "string" ? utf8Text(entry.trim()) : ""))
+    .filter(Boolean);
+  return rules.length > 0 ? rules : fallback;
+}
+
+function normalizeBoolean(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function normalizeConfidenceThreshold(value: unknown, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.min(1, Number(value.toFixed(2))));
+}
+
+function mapLandingPromptConfigRecord(record: {
+  systemPrompt: string;
+  toneGuidelines: string | null;
+  requiredRules: unknown;
+  ctaRules: unknown;
+  active: boolean;
+}): LandingPromptValues {
+  const defaults = buildDefaultLandingPromptValues();
+  return {
+    systemPrompt: utf8Text(record.systemPrompt || defaults.systemPrompt),
+    toneGuidelines: utf8Text(record.toneGuidelines || defaults.toneGuidelines),
+    requiredRules: normalizeLandingRules(record.requiredRules, defaults.requiredRules),
+    ctaRules: normalizeLandingRules(record.ctaRules, defaults.ctaRules),
+    autoGenerateEnabled: defaults.autoGenerateEnabled,
+    autoSendEnabled: defaults.autoSendEnabled,
+    confidenceThreshold: defaults.confidenceThreshold
+  };
+}
+
+async function ensureGlobalLandingPromptConfig() {
+  const defaults = buildDefaultLandingPromptValues();
+  const existing = await prisma.landingPromptConfig.findFirst({
+    where: { scope: LANDING_PROMPT_GLOBAL_SCOPE },
+    orderBy: { updatedAt: "desc" }
+  });
+  if (existing) return existing;
+  return prisma.landingPromptConfig.create({
+    data: {
+      scope: LANDING_PROMPT_GLOBAL_SCOPE,
+      systemPrompt: defaults.systemPrompt,
+      toneGuidelines: defaults.toneGuidelines,
+      requiredRules: defaults.requiredRules,
+      ctaRules: {
+        rules: defaults.ctaRules,
+        autoGenerateEnabled: defaults.autoGenerateEnabled,
+        autoSendEnabled: defaults.autoSendEnabled,
+        confidenceThreshold: defaults.confidenceThreshold
+      },
+      active: true
+    }
+  });
+}
+
+async function getGlobalLandingPromptSettings(): Promise<LandingPromptValues> {
+  const record = await ensureGlobalLandingPromptConfig();
+  const mapped = mapLandingPromptConfigRecord(record);
+  const ctaRules = typeof record.ctaRules === "object" && record.ctaRules !== null ? record.ctaRules as Record<string, unknown> : {};
+  return {
+    ...mapped,
+    ctaRules: normalizeLandingRules(ctaRules.rules, mapped.ctaRules),
+    autoGenerateEnabled: normalizeBoolean(ctaRules.autoGenerateEnabled, true),
+    autoSendEnabled: normalizeBoolean(ctaRules.autoSendEnabled, true),
+    confidenceThreshold: normalizeConfidenceThreshold(ctaRules.confidenceThreshold, 0.75)
+  };
+}
+
+async function getOfferLandingPromptSettings(offerId: number): Promise<LandingPromptValues & { scope: string; offerId: number | null }> {
+  const globalConfig = await getGlobalLandingPromptSettings();
+  const override = await prisma.landingPromptConfig.findFirst({
+    where: {
+      scope: LANDING_PROMPT_OFFER_SCOPE,
+      offerId,
+      active: true
+    },
+    orderBy: { updatedAt: "desc" }
+  });
+
+  if (!override) {
+    return { ...globalConfig, scope: LANDING_PROMPT_GLOBAL_SCOPE, offerId: null };
+  }
+
+  const mapped = mapLandingPromptConfigRecord(override);
+  const ctaRules = typeof override.ctaRules === "object" && override.ctaRules !== null ? override.ctaRules as Record<string, unknown> : {};
+  return {
+    systemPrompt: mapped.systemPrompt || globalConfig.systemPrompt,
+    toneGuidelines: mapped.toneGuidelines || globalConfig.toneGuidelines,
+    requiredRules: mapped.requiredRules.length ? mapped.requiredRules : globalConfig.requiredRules,
+    ctaRules: normalizeLandingRules(ctaRules.rules, mapped.ctaRules.length ? mapped.ctaRules : globalConfig.ctaRules),
+    autoGenerateEnabled: normalizeBoolean(ctaRules.autoGenerateEnabled, globalConfig.autoGenerateEnabled),
+    autoSendEnabled: normalizeBoolean(ctaRules.autoSendEnabled, globalConfig.autoSendEnabled),
+    confidenceThreshold: normalizeConfidenceThreshold(ctaRules.confidenceThreshold, globalConfig.confidenceThreshold),
+    scope: LANDING_PROMPT_OFFER_SCOPE,
+    offerId
+  };
+}
+
+function mergeLandingPromptPayload(current: LandingPromptValues, payload: unknown): LandingPromptValues {
+  const body = typeof payload === "object" && payload !== null ? payload as Record<string, unknown> : {};
+  return {
+    systemPrompt: typeof body.systemPrompt === "string" && body.systemPrompt.trim() ? utf8Text(body.systemPrompt.trim()) : current.systemPrompt,
+    toneGuidelines: typeof body.toneGuidelines === "string" && body.toneGuidelines.trim() ? utf8Text(body.toneGuidelines.trim()) : current.toneGuidelines,
+    requiredRules: body.requiredRules !== undefined ? normalizeLandingRules(body.requiredRules, current.requiredRules) : current.requiredRules,
+    ctaRules: body.ctaRules !== undefined ? normalizeLandingRules(body.ctaRules, current.ctaRules) : current.ctaRules,
+    autoGenerateEnabled: body.autoGenerateEnabled !== undefined ? normalizeBoolean(body.autoGenerateEnabled, current.autoGenerateEnabled) : current.autoGenerateEnabled,
+    autoSendEnabled: body.autoSendEnabled !== undefined ? normalizeBoolean(body.autoSendEnabled, current.autoSendEnabled) : current.autoSendEnabled,
+    confidenceThreshold: body.confidenceThreshold !== undefined ? normalizeConfidenceThreshold(body.confidenceThreshold, current.confidenceThreshold) : current.confidenceThreshold
+  };
+}
+
+async function persistGlobalLandingPromptSettings(payload: unknown): Promise<LandingPromptValues> {
+  const current = await getGlobalLandingPromptSettings();
+  const next = mergeLandingPromptPayload(current, payload);
+  const existing = await ensureGlobalLandingPromptConfig();
+  await prisma.landingPromptConfig.update({
+    where: { id: existing.id },
+    data: {
+      scope: LANDING_PROMPT_GLOBAL_SCOPE,
+      systemPrompt: next.systemPrompt,
+      toneGuidelines: next.toneGuidelines,
+      requiredRules: next.requiredRules,
+      ctaRules: {
+        rules: next.ctaRules,
+        autoGenerateEnabled: next.autoGenerateEnabled,
+        autoSendEnabled: next.autoSendEnabled,
+        confidenceThreshold: next.confidenceThreshold
+      },
+      active: true
+    }
+  });
+  return getGlobalLandingPromptSettings();
+}
+
+async function persistOfferLandingPromptSettings(offerId: number, payload: unknown) {
+  const current = await getOfferLandingPromptSettings(offerId);
+  const next = mergeLandingPromptPayload(current, payload);
+  const existing = await prisma.landingPromptConfig.findFirst({
+    where: {
+      scope: LANDING_PROMPT_OFFER_SCOPE,
+      offerId
+    }
+  });
+  const data = {
+    scope: LANDING_PROMPT_OFFER_SCOPE,
+    offerId,
+    systemPrompt: next.systemPrompt,
+    toneGuidelines: next.toneGuidelines,
+    requiredRules: next.requiredRules,
+    ctaRules: {
+      rules: next.ctaRules,
+      autoGenerateEnabled: next.autoGenerateEnabled,
+      autoSendEnabled: next.autoSendEnabled,
+      confidenceThreshold: next.confidenceThreshold
+    },
+    active: true
+  };
+
+  if (existing) {
+    await prisma.landingPromptConfig.update({
+      where: { id: existing.id },
+      data
+    });
+  } else {
+    await prisma.landingPromptConfig.create({ data });
+  }
+
+  return getOfferLandingPromptSettings(offerId);
 }
 
 async function ensureAIConfigRecord() {

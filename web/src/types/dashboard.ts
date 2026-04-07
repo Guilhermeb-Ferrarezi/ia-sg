@@ -82,6 +82,7 @@ export type Lead = {
   id: number;
   waId: string;
   name: string | null;
+  email?: string | null;
   stageId: number | null;
   stage: PipelineStage | null;
   leadStatus: LeadStatus | string;
@@ -91,6 +92,7 @@ export type Lead = {
   interestedCourse: string | null;
   courseMode: string | null;
   availability: string | null;
+  interestConfidence?: number | null;
   qualificationScore: number | null;
   handoffNeeded: boolean;
   customBotPersona: string | null;
@@ -98,6 +100,9 @@ export type Lead = {
   age: string | null;
   level: string | null;
   objective: string | null;
+  lastLandingSentAt?: string | null;
+  lastLandingOfferId?: number | null;
+  lastLandingPageId?: number | null;
   lastInteractionAt: string | null;
   createdAt: string;
   openTasks?: LeadTask[];
@@ -298,4 +303,73 @@ export type WhatsAppProfile = {
   profilePictureUrl: string | null;
   websites: string[];
   vertical: string | null;
+};
+
+export type Offer = {
+  id: number;
+  title: string;
+  slug: string;
+  aliases: string[];
+  durationLabel: string | null;
+  modality: string | null;
+  shortDescription: string | null;
+  approvedFacts: string[];
+  ctaLabel: string;
+  ctaUrl: string;
+  visualTheme: string | null;
+  isActive: boolean;
+  latestLanding?: LandingPageSummary | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type LandingPromptConfig = {
+  systemPrompt: string;
+  toneGuidelines: string;
+  requiredRules: string[];
+  ctaRules: string[];
+  autoGenerateEnabled: boolean;
+  autoSendEnabled: boolean;
+  confidenceThreshold: number;
+  scope?: string;
+  offerId?: number | null;
+};
+
+export type LandingSections = {
+  hero?: {
+    eyebrow?: string;
+    headline?: string;
+    subheadline?: string;
+    highlights?: string[];
+  };
+  benefits?: Array<{ title: string; description: string }>;
+  proof?: {
+    title?: string;
+    items?: string[];
+  };
+  faq?: Array<{ question: string; answer: string }>;
+  cta?: {
+    label?: string;
+    helper?: string;
+  };
+};
+
+export type LandingPageSummary = {
+  id: number;
+  offerId: number;
+  version: number;
+  status: string;
+  sectionsJson: LandingSections;
+  promptSnapshot?: unknown;
+  sourceFactsSnapshot?: unknown;
+  publishedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type LandingMetrics = {
+  deliveries: number;
+  views: number;
+  clicks: number;
+  clickRate: number;
 };

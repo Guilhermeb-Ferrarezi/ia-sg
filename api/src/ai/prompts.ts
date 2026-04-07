@@ -39,6 +39,14 @@ export const CRM_ENRICHMENT_SYSTEM_PROMPT = [
   "Nao escreva markdown, comentarios ou texto fora do JSON."
 ].join("\n");
 
+export const LANDING_GENERATION_SYSTEM_PROMPT = [
+  "Voce e um estrategista de conversao da Santos Tech especializado em landing pages de cursos.",
+  "Sua tarefa e gerar apenas um JSON valido para uma landing publica.",
+  "Use somente os fatos aprovados fornecidos.",
+  "Nao invente preco, certificacao, vagas, datas, duracao, resultados ou promessas.",
+  "Nao escreva HTML, markdown, comentarios ou texto fora do JSON."
+].join("\n");
+
 export function buildFaqSystemPrompt(faqContext: string): string {
   if (faqContext.trim().length > 0) {
     return [
@@ -142,10 +150,15 @@ export function buildLeadEnrichmentPrompt(history: string): string {
     '  "summary": "Resumo curto e profissional em 2 ou 3 linhas sobre a situacao atual do lead",',
     '  "age": "Idade ou faixa etaria (ex: 25 anos, Crianca, Adulto)",',
     '  "level": "Nivel de conhecimento (ex: Iniciante, Intermediario, Avancado)",',
-    '  "objective": "Objetivo principal (ex: Aprender Python, Carreira, Hobby)"',
+    '  "objective": "Objetivo principal (ex: Aprender Python, Carreira, Hobby)",',
+    '  "interestedCourse": "Curso ou oferta principal mencionada",',
+    '  "courseMode": "Modalidade preferida, como Online, Presencial ou Hibrido",',
+    '  "durationLabel": "Duracao mencionada, como 1 mes, 3 meses ou Nao informado",',
+    '  "email": "E-mail do lead quando estiver explicito na conversa",',
+    '  "interestConfidence": 0.0',
     "}",
     "",
-    'Responda APENAS o JSON. Se nao souber algum campo, coloque "Nao informado".'
+    'Responda APENAS o JSON. Se nao souber algum campo, coloque "Nao informado". Use interestConfidence entre 0 e 1.'
   ].join("\n");
 }
 
@@ -166,6 +179,106 @@ export function buildLeadEnrichmentPromptInput(history: string): PromptInputMess
         {
           type: "input_text",
           text: buildLeadEnrichmentPrompt(history)
+        }
+      ]
+    }
+  ];
+}
+
+export function buildLandingGenerationPrompt(input: {
+  offerTitle: string;
+  offerSlug: string;
+  shortDescription?: string | null;
+  durationLabel?: string | null;
+  modality?: string | null;
+  approvedFacts: string[];
+  prompt: {
+    systemPrompt: string;
+    toneGuidelines?: string | null;
+    requiredRules: string[];
+    ctaRules: string[];
+  };
+  leadContext?: {
+    interestedCourse?: string | null;
+    courseMode?: string | null;
+    objective?: string | null;
+    level?: string | null;
+    summary?: string | null;
+  } | null;
+}): string {
+  return [
+    "Crie uma landing page publica em formato JSON para a oferta abaixo.",
+    "",
+    "--- Oferta oficial ---",
+    `Titulo: ${input.offerTitle}`,
+    `Slug: ${input.offerSlug}`,
+    `Descricao curta: ${input.shortDescription || "Nao informado"}`,
+    `Duracao: ${input.durationLabel || "Nao informado"}`,
+    `Modalidade: ${input.modality || "Nao informado"}`,
+    "Fatos aprovados:",
+    ...input.approvedFacts.map((fact, index) => `${index + 1}. ${fact}`),
+    "",
+    "--- Diretrizes de tom ---",
+    input.prompt.toneGuidelines || "Sem diretriz adicional.",
+    "",
+    "--- Regras obrigatorias ---",
+    ...input.prompt.requiredRules.map((rule, index) => `${index + 1}. ${rule}`),
+    "",
+    "--- Regras de CTA ---",
+    ...input.prompt.ctaRules.map((rule, index) => `${index + 1}. ${rule}`),
+    "",
+    "--- Contexto complementar do lead ---",
+    `Interesse detectado: ${input.leadContext?.interestedCourse || "Nao informado"}`,
+    `Modalidade preferida: ${input.leadContext?.courseMode || "Nao informado"}`,
+    `Objetivo: ${input.leadContext?.objective || "Nao informado"}`,
+    `Nivel: ${input.leadContext?.level || "Nao informado"}`,
+    `Resumo: ${input.leadContext?.summary || "Nao informado"}`,
+    "",
+    "--- Formato de resposta ---",
+    "{",
+    '  "hero": {',
+    '    "eyebrow": "Texto curto",',
+    '    "headline": "Titulo principal",',
+    '    "subheadline": "Subtitulo objetivo",',
+    '    "highlights": ["Item 1", "Item 2", "Item 3"]',
+    "  },",
+    '  "benefits": [',
+    '    { "title": "Beneficio", "description": "Descricao curta" }',
+    "  ],",
+    '  "proof": {',
+    '    "title": "Titulo da secao",',
+    '    "items": ["Prova 1", "Prova 2", "Prova 3"]',
+    "  },",
+    '  "faq": [',
+    '    { "question": "Pergunta", "answer": "Resposta curta" }',
+    "  ],",
+    '  "cta": {',
+    '    "label": "Texto do CTA",',
+    '    "helper": "Texto auxiliar para conversao"',
+    "  }",
+    "}",
+    "",
+    "Responda apenas com JSON valido."
+  ].join("\n");
+}
+
+export function buildLandingGenerationPromptInput(input: Parameters<typeof buildLandingGenerationPrompt>[0]): PromptInputMessage[] {
+  return [
+    {
+      role: "system",
+      content: [
+        {
+          type: "input_text",
+          text: [LANDING_GENERATION_SYSTEM_PROMPT, input.prompt.systemPrompt].filter(Boolean).join("\n\n")
+        }
+      ]
+    },
+    {
+      role: "user",
+      content: [
+        {
+          type: "input_text",
+          text: buildLandingGenerationPrompt(input)
         }
       ]
     }

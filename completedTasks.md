@@ -160,3 +160,15 @@ Atualizado em: 2026-03-20
 - [x] Novo componente `ui/dialog` em padrao shadcn/Radix para suportar o modal responsivo.
 - [x] Build de `web` validado com sucesso apos a mudanca do painel para modal.
 
+## Atualizacao extra - 2026-04-07 (Landings dinamicas por interesse)
+
+- [x] Extensao do schema Prisma com `email` e metadados de landing em `Contact`, alem das entidades `Offer`, `LandingPromptConfig`, `LandingPage`, `LandingDelivery` e `LandingEvent`.
+- [x] SQL de migracao versionado em `api/prisma/migrations/20260407_add_offers_landings/migration.sql` e schema aplicado ao banco com Prisma.
+- [x] Enriquecimento de lead por IA ampliado para extrair `interestedCourse`, `courseMode`, `email` e `interestConfidence`.
+- [x] CRUD autenticado de ofertas, configuracao de prompt global/por oferta e operacoes de landing (generate, publish, versions, preview, metrics).
+- [x] Endpoints publicos de landing com rota por `slug`, tracking de `view` e `click` por token assinado.
+- [x] Automacao no fluxo do webhook para casar oferta, garantir landing publicada, enviar link por WhatsApp e registrar auditoria persistida.
+- [x] Nova area administrativa `Landings` no frontend com catalogo de ofertas, configuracao de prompt, preview e metricas.
+- [x] Nova superficie publica `/ofertas/:slug` no frontend atual com renderizacao da landing e CTA rastreado.
+- [x] Builds de `api` e `web` validados com sucesso apos a implementacao.
+

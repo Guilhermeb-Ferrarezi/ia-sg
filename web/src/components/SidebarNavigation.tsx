@@ -1,10 +1,10 @@
 import * as Collapsible from "@radix-ui/react-collapsible";
-import { CalendarDays, ChevronLeft, ChevronRight, LayoutGrid, LogOut, MessageSquare, Settings, ShieldAlert, Sparkles, BarChart3, ScrollText } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight, GraduationCap, LayoutGrid, LogOut, MessageSquare, Settings, ShieldAlert, Sparkles, BarChart3, ScrollText } from "lucide-react";
 import SidebarItem from "./SidebarItem";
 import { TooltipProvider } from "./ui/tooltip";
 import { cn } from "../lib/utils";
 
-export type AppPanel = "crm" | "faqs" | "chat" | "analytics" | "calendar" | "operation" | "logs" | "settings";
+export type AppPanel = "crm" | "faqs" | "chat" | "analytics" | "calendar" | "operation" | "logs" | "offers" | "settings";
 
 type SidebarNavigationProps = {
   activePanel: AppPanel;
@@ -67,6 +67,7 @@ export default function SidebarNavigation({
             <SidebarItem label="Analytics" icon={BarChart3} isActive={activePanel === "analytics"} isCollapsed={collapsed} onClick={() => onSelectPanel("analytics")} />
             <SidebarItem label="Calendário" icon={CalendarDays} isActive={activePanel === "calendar"} isCollapsed={collapsed} onClick={() => onSelectPanel("calendar")} />
             <SidebarItem label="Logs" icon={ScrollText} isActive={activePanel === "logs"} isCollapsed={collapsed} onClick={() => onSelectPanel("logs")} />
+            <SidebarItem label="Landings" icon={GraduationCap} isActive={activePanel === "offers"} isCollapsed={collapsed} onClick={() => onSelectPanel("offers")} />
             <SidebarItem
               label="Operação"
               icon={ShieldAlert}

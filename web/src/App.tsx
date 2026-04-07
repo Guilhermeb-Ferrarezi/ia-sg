@@ -13,6 +13,7 @@ import SystemHealthSection from "./components/SystemHealthSection";
 import WebhookEventsSection from "./components/WebhookEventsSection";
 import LogsSection from "./components/LogsSection";
 import SettingsSection from "./components/SettingsSection";
+import OffersSection from "./components/OffersSection";
 import PaginationControls from "./components/PaginationControls";
 import StatCard from "./components/StatCard";
 import LeadQualificationPanel from "./components/LeadQualificationPanel";
@@ -21,7 +22,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "./co
 import { apiFetch } from "./lib/apiFetch";
 import { buildLeadProfileDraft, getQualificationCompletion, getQualificationSignals, parseQualificationScore, type LeadProfileDraft } from "./lib/leadQualification";
 import { resolveWebSocketUrl } from "./lib/ws";
-import { BarChart3, CalendarDays, LayoutGrid, Menu, MessageSquare, ScrollText, Settings, ShieldAlert, Sparkles, type LucideIcon } from "lucide-react";
+import { BarChart3, CalendarDays, GraduationCap, LayoutGrid, Menu, MessageSquare, ScrollText, Settings, ShieldAlert, Sparkles, type LucideIcon } from "lucide-react";
 import type { AppLog, AuthUser, ConfirmDialogState, ContactMessage, ConversionMetrics, FaqItem, Lead, LogsResponse, PaginationMeta, PipelineStage, SystemHealthDetails, SystemReadiness, TaskPriority, TaskStatus, Toast, WebhookEvent, WebhookEventsResponse } from "./types/dashboard";
 import ToastContainer from "./components/ToastContainer";
 
@@ -755,6 +756,7 @@ export default function App() {
     { panel: "analytics", label: "Analytics", icon: BarChart3 },
     { panel: "calendar", label: "Calendário", icon: CalendarDays },
     { panel: "logs", label: "Logs", icon: ScrollText },
+    { panel: "offers", label: "Landings", icon: GraduationCap },
     { panel: "operation", label: "Operação", icon: ShieldAlert },
     { panel: "settings", label: "Configurações", icon: Settings }
   ];
@@ -2458,6 +2460,12 @@ export default function App() {
 
 
         ) : null}
+
+        <OffersSection
+          active={activePanel === "offers"}
+          addToast={addToast}
+          updateToast={updateToast}
+        />
 
         <SettingsSection
           active={activePanel === "settings"}

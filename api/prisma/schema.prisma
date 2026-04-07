@@ -11,6 +11,7 @@ model Contact {
   id                Int            @id @default(autoincrement())
   waId              String         @unique
   name              String?
+  email             String?
   stageId           Int?
   stage             PipelineStage? @relation(fields: [stageId], references: [id], onDelete: SetNull)
   leadStatus        String         @default("open")
@@ -25,19 +26,26 @@ model Contact {
   interestedCourse  String?
   courseMode        String?
   availability      String?
+  interestConfidence Float?
   qualificationScore Int?
   handoffNeeded     Boolean        @default(false)
+  lastLandingSentAt DateTime?
+  lastLandingOfferId Int?
+  lastLandingPageId Int?
   lastInteractionAt DateTime?
   createdAt         DateTime       @default(now())
   messages          Message[]
   tasks             Task[]
   tags              ContactTag[]
+  landingDeliveries LandingDelivery[]
 
   @@index([stageId])
   @@index([leadStatus])
   @@index([handoffNeeded])
   @@index([qualificationScore])
   @@index([lastInteractionAt])
+  @@index([lastLandingOfferId])
+  @@index([lastLandingPageId])
 }
 
 model Message {
@@ -136,6 +144,102 @@ model AiConfig {
   humanDelayMaxMs      Int      @default(6500)
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
+}
+
+model Offer {
+  id                Int                  @id @default(autoincrement())
+  title             String
+  slug              String               @unique
+  aliases           Json?
+  durationLabel     String?
+  modality          String?
+  shortDescription  String?
+  approvedFacts     Json?
+  ctaLabel          String
+  ctaUrl            String
+  visualTheme       String?
+  isActive          Boolean              @default(true)
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+  landingPages      LandingPage[]
+  promptConfigs     LandingPromptConfig[]
+  landingDeliveries LandingDelivery[]
+
+  @@index([isActive])
+  @@index([title])
+}
+
+model LandingPromptConfig {
+  id             Int       @id @default(autoincrement())
+  scope          String
+  offerId        Int?
+  offer          Offer?    @relation(fields: [offerId], references: [id], onDelete: Cascade)
+  systemPrompt   String
+  toneGuidelines String?
+  requiredRules  Json?
+  ctaRules       Json?
+  active         Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([scope, active])
+  @@index([offerId, active])
+}
+
+model LandingPage {
+  id                  Int               @id @default(autoincrement())
+  offerId             Int
+  offer               Offer             @relation(fields: [offerId], references: [id], onDelete: Cascade)
+  version             Int
+  status              String            @default("draft")
+  sectionsJson        Json
+  promptSnapshot      Json?
+  sourceFactsSnapshot Json?
+  publishedAt         DateTime?
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+  deliveries          LandingDelivery[]
+
+  @@unique([offerId, version])
+  @@index([offerId, status])
+  @@index([publishedAt])
+}
+
+model LandingDelivery {
+  id             Int           @id @default(autoincrement())
+  contactId      Int
+  offerId        Int
+  landingPageId  Int
+  token          String        @unique
+  deliveryChannel String       @default("whatsapp")
+  sentAt         DateTime      @default(now())
+  lastViewedAt   DateTime?
+  lastClickedAt  DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  contact        Contact       @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  offer          Offer         @relation(fields: [offerId], references: [id], onDelete: Cascade)
+  landingPage    LandingPage   @relation(fields: [landingPageId], references: [id], onDelete: Cascade)
+  events         LandingEvent[]
+
+  @@index([contactId, offerId])
+  @@index([offerId, sentAt])
+  @@index([landingPageId])
+}
+
+model LandingEvent {
+  id          Int             @id @default(autoincrement())
+  deliveryId  Int
+  eventType   String
+  requestMeta Json?
+  userAgent   String?
+  ip          String?
+  referrer    String?
+  createdAt   DateTime        @default(now())
+  delivery    LandingDelivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+
+  @@index([deliveryId, eventType])
+  @@index([createdAt])
 }
 
 model WebhookEvent {
