@@ -178,3 +178,9 @@ Atualizado em: 2026-03-20
 - [x] CRUD completo na lista de `Ofertas publicadas`, com criar nova oferta, editar, ativar/pausar e excluir direto do catalogo administrativo.
 - [x] Builds de `api` e `web` validados com sucesso apos a implementacao.
 
+## Atualizacao extra - 2026-04-07 (Refino visual da area Landings)
+
+- [x] `OffersSection.tsx` recebeu page header, metric cards mais limpos e tabs com navegacao visual alinhada ao painel administrativo.
+- [x] Sidebar de sessoes/ofertas e card de operacoes foram reorganizados com hierarquia mais clara, espacamento generoso e lista de versoes simplificada.
+- [x] Build de `web` validado com sucesso em `bun run build` apos o refino visual.
+

@@ -589,28 +589,33 @@ export default function OffersSection({
   if (!active) return null;
 
   return (
-    <section className="space-y-6 panel-enter">
-      <div className="grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
-        <div className="rounded-3xl border border-slate-800 bg-slate-900/60 p-5 shadow-2xl shadow-black/20">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="text-[11px] font-bold uppercase tracking-[0.3em] text-cyan-300/80">Landings</p>
-              <h2 className="mt-1 text-xl font-black text-white">Chat criador + catalogo</h2>
+    <section className="space-y-8 panel-enter">
+      <div className="space-y-2">
+        <h1 className="text-3xl font-black tracking-tight text-white sm:text-4xl">Landings</h1>
+        <p className="max-w-2xl text-sm text-slate-400 sm:text-base">Gerenciamento de landing pages</p>
+      </div>
+
+      <div className="grid gap-6 xl:grid-cols-[340px_minmax(0,1fr)]">
+        <div className="rounded-[32px] border border-slate-800/80 bg-slate-900/50 p-6 shadow-xl shadow-black/10">
+          <div className="flex flex-col gap-4 border-b border-slate-800/80 pb-5 sm:flex-row sm:items-start sm:justify-between">
+            <div className="space-y-2">
+              <h2 className="text-2xl font-black tracking-tight text-white">Chat criador + catalogo</h2>
+              <p className="max-w-xs text-sm leading-6 text-slate-400">
+                Organize criacoes por chat, rascunhos manuais e ofertas publicadas no mesmo workspace.
+              </p>
             </div>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-3">
               <button
                 type="button"
-                className="rounded-2xl border border-violet-500/30 bg-violet-500/10 px-3 py-2 text-xs font-bold uppercase tracking-wider text-violet-100"
+                className="inline-flex items-center justify-center gap-2 rounded-xl bg-violet-500 px-4 py-3 text-sm font-bold text-white shadow-lg shadow-violet-500/20 transition-all hover:-translate-y-0.5 hover:bg-violet-400 active:translate-y-0"
                 onClick={() => void createSession()}
               >
-                <span className="inline-flex items-center gap-1">
-                  <Plus className="h-3.5 w-3.5" />
-                  Chat
-                </span>
+                <Plus className="h-4 w-4" />
+                Chat
               </button>
               <button
                 type="button"
-                className="rounded-2xl border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-xs font-bold uppercase tracking-wider text-cyan-200"
+                className="inline-flex items-center justify-center gap-2 rounded-xl bg-cyan-500 px-4 py-3 text-sm font-bold text-slate-950 shadow-lg shadow-cyan-500/20 transition-all hover:-translate-y-0.5 hover:bg-cyan-400 active:translate-y-0"
                 onClick={startManualOfferCreation}
               >
                 Manual
@@ -634,7 +639,11 @@ export default function OffersSection({
                       setSelectedOfferId(null);
                       setActiveTab("chat");
                     }}
-                    className={`w-full rounded-2xl border p-4 text-left transition-all ${selectedSessionId === session.id ? "border-violet-400/40 bg-violet-500/10" : "border-slate-800 bg-slate-950/60 hover:border-slate-700"}`}
+                    className={`w-full rounded-[26px] border px-4 py-4 text-left transition-all ${
+                      selectedSessionId === session.id
+                        ? "border-violet-400/30 bg-violet-500/10 ring-1 ring-violet-500/20"
+                        : "border-slate-800/80 bg-slate-950/70 hover:border-slate-700/80 hover:bg-slate-950"
+                    }`}
                   >
                     <div className="flex items-center justify-between gap-3">
                       <div>
@@ -669,7 +678,7 @@ export default function OffersSection({
                 <button
                   type="button"
                   onClick={startManualOfferCreation}
-                  className="inline-flex items-center gap-2 rounded-2xl border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-xs font-bold text-cyan-100"
+                  className="inline-flex items-center gap-2 rounded-xl bg-cyan-500 px-4 py-2.5 text-xs font-bold text-slate-950 shadow-md shadow-cyan-500/20 transition-all hover:-translate-y-0.5 hover:bg-cyan-400"
                 >
                   <Plus className="h-4 w-4" />
                   Nova oferta
@@ -677,10 +686,14 @@ export default function OffersSection({
               </div>
               <div className="space-y-3">
                 {offers.map((offer) => (
-                  <div
-                    key={offer.id}
-                    className={`w-full rounded-2xl border p-4 text-left transition-all ${selectedOfferId === offer.id ? "border-cyan-400/40 bg-cyan-500/10" : "border-slate-800 bg-slate-950/60 hover:border-slate-700"}`}
-                  >
+                   <div
+                     key={offer.id}
+                     className={`w-full rounded-[26px] border px-4 py-4 text-left transition-all ${
+                       selectedOfferId === offer.id
+                         ? "border-cyan-400/30 bg-cyan-500/10 ring-1 ring-cyan-500/20"
+                         : "border-slate-800/80 bg-slate-950/70 hover:border-slate-700/80 hover:bg-slate-950"
+                     }`}
+                   >
                     <button type="button" onClick={() => selectOfferForEditing(offer.id)} className="w-full text-left">
                       <div className="flex items-center justify-between gap-3">
                         <div>
@@ -741,7 +754,7 @@ export default function OffersSection({
           {selectedSession ? (
             <>
               <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
-                <div className="rounded-3xl border border-slate-800 bg-slate-900/60 p-5 shadow-2xl shadow-black/20">
+                <div className="rounded-[32px] border border-slate-800/80 bg-slate-900/50 p-6 shadow-xl shadow-black/10">
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-[11px] font-bold uppercase tracking-[0.3em] text-violet-300/80">Workspace do chatbot</p>
@@ -751,10 +764,10 @@ export default function OffersSection({
                       {selectedSession.status}
                     </span>
                   </div>
-                  <div className="mt-4 grid gap-3 md:grid-cols-3">
-                    <MetricCard icon={<MessageSquare className="h-4 w-4 text-violet-200" />} label="Mensagens" value={selectedSession.chatHistory.length} helper="Historico da criacao" />
-                    <MetricCard icon={<MonitorPlay className="h-4 w-4 text-cyan-200" />} label="Preview" value={selectedSession.readiness.canPreview ? 1 : 0} helper={selectedSession.readiness.canPreview ? "Pronto para gerar" : `Faltando: ${selectedSession.readiness.missingPreviewFields.join(", ") || "dados"}`} />
-                    <MetricCard icon={<Sparkles className="h-4 w-4 text-emerald-200" />} label="Publicacao" value={selectedSession.readiness.canPublish ? 1 : 0} helper={selectedSession.readiness.canPublish ? "Pronto para publicar" : `Faltando: ${selectedSession.readiness.missingPublishFields.join(", ") || "dados"}`} />
+                  <div className="mt-5 grid gap-4 md:grid-cols-3">
+                    <MetricCard icon={<MessageSquare className="h-4 w-4 text-violet-200" />} iconToneClass="bg-violet-500/10 ring-1 ring-violet-500/20" label="Mensagens" value={selectedSession.chatHistory.length} helper="Historico da criacao" />
+                    <MetricCard icon={<MonitorPlay className="h-4 w-4 text-cyan-200" />} iconToneClass="bg-cyan-500/10 ring-1 ring-cyan-500/20" label="Preview" value={selectedSession.readiness.canPreview ? 1 : 0} helper={selectedSession.readiness.canPreview ? "Pronto para gerar" : `Faltando: ${selectedSession.readiness.missingPreviewFields.join(", ") || "dados"}`} />
+                    <MetricCard icon={<Sparkles className="h-4 w-4 text-emerald-200" />} iconToneClass="bg-emerald-500/10 ring-1 ring-emerald-500/20" label="Publicacao" value={selectedSession.readiness.canPublish ? 1 : 0} helper={selectedSession.readiness.canPublish ? "Pronto para publicar" : `Faltando: ${selectedSession.readiness.missingPublishFields.join(", ") || "dados"}`} />
                   </div>
                 </div>
 
@@ -783,8 +796,8 @@ export default function OffersSection({
                 </div>
               </div>
 
-              <div className="rounded-3xl border border-slate-800 bg-slate-900/60 p-2 shadow-2xl shadow-black/20">
-                <div className="flex flex-wrap gap-2">
+              <div className="border-b border-slate-800/80">
+                <div className="flex flex-wrap gap-2 sm:gap-3">
                   <SectionTabButton active={activeTab === "chat"} icon={<MessageSquare className="h-4 w-4" />} label="Chat criador" onClick={() => setActiveTab("chat")} />
                   <SectionTabButton active={activeTab === "prompt"} icon={<Bot className="h-4 w-4" />} label="Prompt" onClick={() => setActiveTab("prompt")} />
                   <SectionTabButton active={activeTab === "preview"} icon={<MonitorPlay className="h-4 w-4" />} label="Preview" onClick={() => setActiveTab("preview")} />
@@ -798,37 +811,54 @@ export default function OffersSection({
           <>
           <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
             <div className="grid gap-4 md:grid-cols-3">
-              <MetricCard icon={<Send className="h-4 w-4 text-cyan-200" />} label="Envios" value={metrics?.deliveries ?? 0} helper="Links enviados pelo WhatsApp" />
-              <MetricCard icon={<Eye className="h-4 w-4 text-emerald-200" />} label="Views" value={metrics?.views ?? 0} helper="Aberturas rastreadas" />
-              <MetricCard icon={<Link2 className="h-4 w-4 text-amber-200" />} label="Cliques" value={metrics?.clicks ?? 0} helper={`CTR ${metrics?.clickRate ?? 0}%`} />
+              <MetricCard icon={<Send className="h-4 w-4 text-cyan-200" />} iconToneClass="bg-cyan-500/10 ring-1 ring-cyan-500/20" label="Envios" value={metrics?.deliveries ?? 0} helper="Links enviados pelo WhatsApp" />
+              <MetricCard icon={<Eye className="h-4 w-4 text-emerald-200" />} iconToneClass="bg-emerald-500/10 ring-1 ring-emerald-500/20" label="Views" value={metrics?.views ?? 0} helper="Aberturas rastreadas" />
+              <MetricCard icon={<Link2 className="h-4 w-4 text-amber-200" />} iconToneClass="bg-amber-500/10 ring-1 ring-amber-500/20" label="Cliques" value={metrics?.clicks ?? 0} helper={`CTR ${metrics?.clickRate ?? 0}%`} />
             </div>
 
-            <div className="rounded-3xl border border-slate-800 bg-slate-900/60 p-5 shadow-2xl shadow-black/20">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-[11px] font-bold uppercase tracking-[0.3em] text-cyan-300/80">Operacoes</p>
-                  <h3 className="mt-1 text-lg font-bold text-white">Geracao e publicacao</h3>
+            <div className="rounded-[32px] border border-slate-800/80 bg-slate-900/50 p-6 shadow-xl shadow-black/10">
+              <div className="flex flex-col gap-4 border-b border-slate-800/80 pb-5">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="space-y-2">
+                    <h3 className="text-xl font-black tracking-tight text-white">Geracao e publicacao</h3>
+                    <p className="text-sm leading-6 text-slate-400">
+                      Controle o ciclo da landing selecionada, do preview com IA ate a publicacao final.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span
+                      className={`rounded-full px-3 py-1 text-[10px] font-bold uppercase tracking-[0.28em] ${
+                        selectedOffer
+                          ? selectedOffer.isActive
+                            ? "bg-emerald-500/15 text-emerald-200"
+                            : "bg-amber-500/15 text-amber-200"
+                          : "bg-slate-800 text-slate-300"
+                      }`}
+                    >
+                      {selectedOffer ? (selectedOffer.isActive ? "Ativa" : "Pausada") : "Rascunho"}
+                    </span>
+                    {selectedOffer?.latestLanding ? (
+                      <span className="rounded-full bg-cyan-500/10 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.28em] text-cyan-100">
+                        v{selectedOffer.latestLanding.version}
+                      </span>
+                    ) : null}
+                    {preview ? (
+                      <span className="rounded-full bg-slate-800 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.28em] text-slate-200">
+                        {preview.status}
+                      </span>
+                    ) : null}
+                  </div>
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
+
+                <div className="flex flex-wrap gap-2">
                   {selectedOffer ? (
                     <button
                       type="button"
                       onClick={() => void toggleOfferStatus(selectedOffer)}
                       disabled={togglingOfferId === selectedOffer.id}
-                      className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs font-bold uppercase tracking-wider text-amber-100 disabled:opacity-50"
+                      className="inline-flex items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs font-bold text-amber-100 transition-all hover:bg-amber-500/15 disabled:opacity-50"
                     >
                       {togglingOfferId === selectedOffer.id ? "Atualizando..." : selectedOffer.isActive ? "Pausar oferta" : "Ativar oferta"}
-                    </button>
-                  ) : null}
-                  {selectedOffer ? (
-                    <button
-                      type="button"
-                      onClick={() => void deleteOffer(selectedOffer)}
-                      disabled={deletingOfferId === selectedOffer.id}
-                      className="inline-flex items-center gap-2 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-bold uppercase tracking-wider text-rose-100 disabled:opacity-50"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                      {deletingOfferId === selectedOffer.id ? "Excluindo..." : "Excluir"}
                     </button>
                   ) : null}
                   {selectedOffer?.latestLanding ? (
@@ -836,58 +866,116 @@ export default function OffersSection({
                       href={`/ofertas/${selectedOffer.slug}`}
                       target="_blank"
                       rel="noreferrer"
-                      className="inline-flex items-center gap-2 rounded-2xl border border-slate-700 px-3 py-2 text-xs font-bold uppercase tracking-wider text-slate-200"
+                      className="inline-flex items-center gap-2 rounded-xl border border-slate-700 px-3 py-2 text-xs font-bold text-slate-200 transition-all hover:border-slate-600 hover:bg-slate-950/70"
                     >
                       <Globe className="h-4 w-4" />
-                      Abrir
+                      Abrir landing
                     </a>
+                  ) : null}
+                  {selectedOffer ? (
+                    <button
+                      type="button"
+                      onClick={() => void deleteOffer(selectedOffer)}
+                      disabled={deletingOfferId === selectedOffer.id}
+                      className="inline-flex items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-bold text-rose-100 transition-all hover:bg-rose-500/15 disabled:opacity-50"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      {deletingOfferId === selectedOffer.id ? "Excluindo..." : "Excluir"}
+                    </button>
                   ) : null}
                 </div>
               </div>
-              <div className="mt-4 flex flex-wrap gap-3">
-                <button type="button" disabled={previewing} className="inline-flex items-center gap-2 rounded-2xl border border-violet-500/30 bg-violet-500/10 px-4 py-3 text-sm font-bold text-violet-100 disabled:opacity-50" onClick={generateDraftPreview}>
-                  {previewing ? <RefreshCw className="h-4 w-4 animate-spin" /> : <MonitorPlay className="h-4 w-4" />}
-                  {previewing ? "Gerando preview..." : "Gerar preview IA"}
+
+              <div className="mt-6 grid gap-3 sm:grid-cols-2">
+                <button
+                  type="button"
+                  disabled={previewing}
+                  className="group flex min-h-[104px] flex-col items-start justify-between rounded-[26px] border border-violet-500/20 bg-violet-500/10 px-5 py-4 text-left transition-all hover:-translate-y-0.5 hover:border-violet-400/30 disabled:opacity-50"
+                  onClick={generateDraftPreview}
+                >
+                  <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-violet-950/60 text-violet-100 ring-1 ring-violet-400/20">
+                    {previewing ? <RefreshCw className="h-4 w-4 animate-spin" /> : <MonitorPlay className="h-4 w-4" />}
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-sm font-bold text-white">{previewing ? "Gerando preview..." : "Gerar preview IA"}</p>
+                    <p className="text-xs leading-5 text-violet-100/80">Atualize a copy e o visual antes de salvar ou publicar.</p>
+                  </div>
                 </button>
-                <button type="button" disabled={!selectedOffer || generating} className="inline-flex items-center gap-2 rounded-2xl border border-cyan-500/30 bg-cyan-500/10 px-4 py-3 text-sm font-bold text-cyan-100 disabled:opacity-50" onClick={generateLanding}>
-                  <WandSparkles className="h-4 w-4" />
-                  {generating ? "Gerando..." : "Gerar landing"}
+
+                <button
+                  type="button"
+                  disabled={!selectedOffer || generating}
+                  className="group flex min-h-[104px] flex-col items-start justify-between rounded-[26px] border border-cyan-500/20 bg-cyan-500/10 px-5 py-4 text-left transition-all hover:-translate-y-0.5 hover:border-cyan-400/30 disabled:opacity-50"
+                  onClick={generateLanding}
+                >
+                  <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-cyan-950/60 text-cyan-100 ring-1 ring-cyan-400/20">
+                    {generating ? <RefreshCw className="h-4 w-4 animate-spin" /> : <WandSparkles className="h-4 w-4" />}
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-sm font-bold text-white">{generating ? "Gerando..." : "Gerar landing"}</p>
+                    <p className="text-xs leading-5 text-cyan-100/80">Crie uma nova versao oficial da landing para a oferta selecionada.</p>
+                  </div>
                 </button>
-                <button type="button" disabled={!selectedOffer || publishing || !preview} className="inline-flex items-center gap-2 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm font-bold text-emerald-100 disabled:opacity-50" onClick={() => publishLanding(preview?.id)}>
-                  <Sparkles className="h-4 w-4" />
-                  {publishing ? "Publicando..." : "Publicar"}
+
+                <button
+                  type="button"
+                  disabled={!selectedOffer || publishing || !preview}
+                  className="group flex min-h-[104px] flex-col items-start justify-between rounded-[26px] border border-emerald-500/20 bg-emerald-500/10 px-5 py-4 text-left transition-all hover:-translate-y-0.5 hover:border-emerald-400/30 disabled:opacity-50 sm:col-span-2"
+                  onClick={() => publishLanding(preview?.id)}
+                >
+                  <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-emerald-950/60 text-emerald-100 ring-1 ring-emerald-400/20">
+                    {publishing ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-sm font-bold text-white">{publishing ? "Publicando..." : "Publicar"}</p>
+                    <p className="text-xs leading-5 text-emerald-100/80">Envie a versao atual para a rota publica e atualize o catalogo ativo.</p>
+                  </div>
                 </button>
               </div>
-              <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-950/70 p-4 text-sm text-slate-300">
-                <p className="font-semibold text-white">Versoes disponiveis</p>
-                <div className="mt-3 space-y-2">
-                  {versions.map((version) => (
+
+              <div className="mt-6 border-t border-slate-800/80 pt-5">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h4 className="text-sm font-bold text-white">Versoes disponiveis</h4>
+                    <p className="mt-1 text-xs text-slate-500">Selecione uma versao para abrir no preview.</p>
+                  </div>
+                  <span className="text-xs text-slate-500">{versions.length ? `${versions.length} itens` : "Sem versoes"}</span>
+                </div>
+                <div className="mt-4 overflow-hidden rounded-[24px] border border-slate-800/80 bg-slate-950/40">
+                  {versions.map((version, index) => (
                     <button
                       key={version.id}
                       type="button"
-                      className="flex w-full items-center justify-between rounded-2xl border border-slate-800 px-3 py-2 text-left hover:border-slate-700"
+                      className={`flex w-full items-center justify-between gap-4 px-4 py-4 text-left transition-colors hover:bg-slate-900/70 ${
+                        index > 0 ? "border-t border-slate-800/70" : ""
+                      }`}
                       onClick={() => {
                         setPreview(version);
                         if (selectedOffer) setPreviewOffer(selectedOffer);
                         setActiveTab("preview");
                       }}
                     >
-                      <span>v{version.version} | {version.status}</span>
+                      <div>
+                        <p className="text-sm font-semibold text-white">Versao {version.version}</p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          {version.status === "published" ? "Publicada na rota ao vivo" : "Disponivel para conferencia no preview"}
+                        </p>
+                      </div>
                       {version.status !== "published" ? (
-                        <span className="text-xs text-cyan-200">preview</span>
+                        <span className="rounded-full bg-cyan-500/10 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.28em] text-cyan-100">preview</span>
                       ) : (
-                        <span className="text-xs text-emerald-200">publicada</span>
+                        <span className="rounded-full bg-emerald-500/10 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.28em] text-emerald-100">publicada</span>
                       )}
                     </button>
                   ))}
-                  {!versions.length ? <p className="text-slate-500">Nenhuma versao gerada.</p> : null}
+                  {!versions.length ? <div className="px-4 py-5 text-sm text-slate-500">Nenhuma versao gerada.</div> : null}
                 </div>
               </div>
             </div>
           </div>
 
-          <div className="rounded-3xl border border-slate-800 bg-slate-900/60 p-2 shadow-2xl shadow-black/20">
-            <div className="flex flex-wrap gap-2">
+          <div className="border-b border-slate-800/80">
+            <div className="flex flex-wrap gap-2 sm:gap-3">
               <SectionTabButton active={activeTab === "details"} icon={<Globe className="h-4 w-4" />} label="Informacoes" onClick={() => setActiveTab("details")} />
               <SectionTabButton active={activeTab === "prompt"} icon={<Bot className="h-4 w-4" />} label="Prompt" onClick={() => setActiveTab("prompt")} />
               <SectionTabButton active={activeTab === "preview"} icon={<MonitorPlay className="h-4 w-4" />} label="Preview" onClick={() => setActiveTab("preview")} />
@@ -1204,15 +1292,29 @@ export default function OffersSection({
   );
 }
 
-function MetricCard({ icon, label, value, helper }: { icon: ReactNode; label: string; value: number; helper: string }) {
+function MetricCard({
+  icon,
+  iconToneClass = "bg-slate-950/80 ring-1 ring-white/10",
+  label,
+  value,
+  helper
+}: {
+  icon: ReactNode;
+  iconToneClass?: string;
+  label: string;
+  value: number;
+  helper: string;
+}) {
   return (
-    <div className="rounded-3xl border border-slate-800 bg-slate-900/60 p-5 shadow-2xl shadow-black/20">
-      <div className="flex items-center justify-between gap-3">
-        <div className="rounded-2xl border border-white/10 bg-white/5 p-3">{icon}</div>
-        <p className="text-3xl font-black text-white">{value}</p>
+    <div className="rounded-[28px] border border-slate-800/80 bg-slate-900/50 p-6 shadow-sm">
+      <div className="flex items-start justify-between gap-4">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-400">{label}</p>
+        <div className={`flex h-11 w-11 items-center justify-center rounded-2xl ${iconToneClass}`}>{icon}</div>
       </div>
-      <p className="mt-4 text-xs font-bold uppercase tracking-[0.3em] text-slate-500">{label}</p>
-      <p className="mt-1 text-sm text-slate-300">{helper}</p>
+      <div className="mt-8 space-y-2">
+        <p className="text-4xl font-black tracking-tight text-white">{value}</p>
+        <p className="text-sm leading-6 text-slate-400">{helper}</p>
+      </div>
     </div>
   );
 }
@@ -1232,10 +1334,10 @@ function SectionTabButton({
     <button
       type="button"
       onClick={onClick}
-      className={`inline-flex items-center gap-2 rounded-2xl px-4 py-3 text-sm font-bold transition-all ${
+      className={`inline-flex items-center gap-2 border-b-2 px-1 pb-3 pt-1 text-sm font-bold transition-colors ${
         active
-          ? "border border-cyan-400/20 bg-cyan-500/10 text-cyan-100 shadow-lg shadow-cyan-950/20"
-          : "border border-transparent bg-slate-950/40 text-slate-400 hover:border-slate-700 hover:text-slate-100"
+          ? "border-cyan-400 text-white"
+          : "border-transparent text-slate-500 hover:text-slate-200"
       }`}
     >
       {icon}
