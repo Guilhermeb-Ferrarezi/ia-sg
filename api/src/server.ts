@@ -1558,6 +1558,29 @@ app.patch("/api/offers/:id/status", requireSession, async (req, res) => {
   }
 });
 
+app.delete("/api/offers/:id", requireSession, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ message: "ID de oferta invalido." });
+    return;
+  }
+
+  try {
+    const offer = await prisma.offer.delete({
+      where: { id }
+    });
+    logEvent("info", "offer.deleted", { offerId: offer.id, slug: offer.slug });
+    broadcastEvent("offers_updated");
+    res.json({ message: "Oferta removida com sucesso." });
+  } catch (err) {
+    if (isPrismaNotFoundError(err)) {
+      res.status(404).json({ message: "Oferta nao encontrada." });
+      return;
+    }
+    throw err;
+  }
+});
+
 app.get("/api/settings/landing-prompt", requireSession, async (_req, res) => {
   res.json(await getGlobalLandingPromptSettings());
 });

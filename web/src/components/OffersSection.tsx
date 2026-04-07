@@ -13,6 +13,7 @@ import {
   Save,
   Send,
   Sparkles,
+  Trash2,
   WandSparkles
 } from "lucide-react";
 import { apiFetch } from "../lib/apiFetch";
@@ -170,6 +171,8 @@ export default function OffersSection({
   const [generating, setGenerating] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [publishing, setPublishing] = useState(false);
+  const [deletingOfferId, setDeletingOfferId] = useState<number | null>(null);
+  const [togglingOfferId, setTogglingOfferId] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState<OffersTab>("details");
 
@@ -185,7 +188,12 @@ export default function OffersSection({
   const loadOffers = useCallback(async () => {
     const response = await apiFetch<{ offers: Offer[] }>("/offers");
     setOffers(response.offers);
-    setSelectedOfferId((current) => current ?? response.offers[0]?.id ?? null);
+    setSelectedOfferId((current) => {
+      if (current && response.offers.some((offer) => offer.id === current)) {
+        return current;
+      }
+      return response.offers[0]?.id ?? null;
+    });
   }, []);
 
   const loadGlobalPrompt = useCallback(async () => {
@@ -298,6 +306,72 @@ export default function OffersSection({
       updateToast(toastId, err instanceof Error ? err.message : "Falha ao salvar oferta.", "error");
     } finally {
       setSavingOffer(false);
+    }
+  };
+
+  const startManualOfferCreation = useCallback(() => {
+    setSelectedSessionId(null);
+    setSelectedOfferId(null);
+    setOfferDraft(emptyOfferDraft);
+    setOfferPrompt(globalPrompt);
+    setPreview(null);
+    setPreviewOffer(null);
+    setPreviewLeadContext(emptyPreviewLeadContext);
+    setVersions([]);
+    setMetrics(null);
+    setActiveTab("details");
+  }, [globalPrompt]);
+
+  const selectOfferForEditing = useCallback((offerId: number) => {
+    setSelectedOfferId(offerId);
+    setSelectedSessionId(null);
+    setActiveTab("details");
+  }, []);
+
+  const toggleOfferStatus = async (offer: Offer) => {
+    setTogglingOfferId(offer.id);
+    const toastId = addToast(`${offer.isActive ? "Pausando" : "Ativando"} oferta...`, "loading");
+    try {
+      await apiFetch(`/offers/${offer.id}/status`, {
+        method: "PATCH",
+        body: JSON.stringify({ isActive: !offer.isActive })
+      });
+      await loadOffers();
+      if (selectedOfferId === offer.id) {
+        await loadOfferContext(offer.id);
+      }
+      updateToast(toastId, `Oferta ${offer.isActive ? "pausada" : "ativada"} com sucesso.`, "success");
+    } catch (err) {
+      updateToast(toastId, err instanceof Error ? err.message : "Falha ao atualizar status da oferta.", "error");
+    } finally {
+      setTogglingOfferId(null);
+    }
+  };
+
+  const deleteOffer = async (offer: Offer) => {
+    const confirmed = window.confirm(`Excluir a oferta "${offer.title}" e todas as versoes publicadas?`);
+    if (!confirmed) return;
+
+    setDeletingOfferId(offer.id);
+    const toastId = addToast("Excluindo oferta...", "loading");
+    try {
+      await apiFetch(`/offers/${offer.id}`, { method: "DELETE" });
+      if (selectedOfferId === offer.id) {
+        setSelectedOfferId(null);
+        setOfferDraft(emptyOfferDraft);
+        setOfferPrompt(globalPrompt);
+        setPreview(null);
+        setPreviewOffer(null);
+        setPreviewLeadContext(emptyPreviewLeadContext);
+        setVersions([]);
+        setMetrics(null);
+      }
+      await loadOffers();
+      updateToast(toastId, "Oferta removida com sucesso.", "success");
+    } catch (err) {
+      updateToast(toastId, err instanceof Error ? err.message : "Falha ao excluir oferta.", "error");
+    } finally {
+      setDeletingOfferId(null);
     }
   };
 
@@ -537,15 +611,7 @@ export default function OffersSection({
               <button
                 type="button"
                 className="rounded-2xl border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-xs font-bold uppercase tracking-wider text-cyan-200"
-                onClick={() => {
-                  setSelectedSessionId(null);
-                  setSelectedOfferId(null);
-                  setOfferDraft(emptyOfferDraft);
-                  setPreview(null);
-                  setPreviewOffer(null);
-                  setPreviewLeadContext(emptyPreviewLeadContext);
-                  setActiveTab("details");
-                }}
+                onClick={startManualOfferCreation}
               >
                 Manual
               </button>
@@ -595,37 +661,69 @@ export default function OffersSection({
             </div>
 
             <div className="border-t border-slate-800 pt-5">
-              <div className="mb-3 flex items-center gap-2">
-                <Globe className="h-4 w-4 text-cyan-300" />
-                <p className="text-xs font-bold uppercase tracking-[0.3em] text-cyan-200/80">Ofertas publicadas</p>
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <Globe className="h-4 w-4 text-cyan-300" />
+                  <p className="text-xs font-bold uppercase tracking-[0.3em] text-cyan-200/80">Ofertas publicadas</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={startManualOfferCreation}
+                  className="inline-flex items-center gap-2 rounded-2xl border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-xs font-bold text-cyan-100"
+                >
+                  <Plus className="h-4 w-4" />
+                  Nova oferta
+                </button>
               </div>
               <div className="space-y-3">
                 {offers.map((offer) => (
-                  <button
+                  <div
                     key={offer.id}
-                    type="button"
-                    onClick={() => {
-                      setSelectedOfferId(offer.id);
-                      setSelectedSessionId(null);
-                      setActiveTab("details");
-                    }}
                     className={`w-full rounded-2xl border p-4 text-left transition-all ${selectedOfferId === offer.id ? "border-cyan-400/40 bg-cyan-500/10" : "border-slate-800 bg-slate-950/60 hover:border-slate-700"}`}
                   >
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <p className="text-sm font-bold text-white">{offer.title}</p>
-                        <p className="mt-1 text-xs text-slate-400">/{offer.slug}</p>
+                    <button type="button" onClick={() => selectOfferForEditing(offer.id)} className="w-full text-left">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-bold text-white">{offer.title}</p>
+                          <p className="mt-1 text-xs text-slate-400">/{offer.slug}</p>
+                        </div>
+                        <span className={`rounded-full px-2 py-1 text-[10px] font-bold uppercase tracking-[0.2em] ${offer.isActive ? "bg-emerald-500/15 text-emerald-300" : "bg-slate-700/70 text-slate-300"}`}>
+                          {offer.isActive ? "Ativa" : "Pausada"}
+                        </span>
                       </div>
-                      <span className={`rounded-full px-2 py-1 text-[10px] font-bold uppercase tracking-[0.2em] ${offer.isActive ? "bg-emerald-500/15 text-emerald-300" : "bg-slate-700/70 text-slate-300"}`}>
-                        {offer.isActive ? "Ativa" : "Pausada"}
-                      </span>
-                    </div>
+                    </button>
                     <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-slate-300">
                       {offer.durationLabel ? <span className="rounded-full bg-slate-800 px-2 py-1">{offer.durationLabel}</span> : null}
                       {offer.modality ? <span className="rounded-full bg-slate-800 px-2 py-1">{offer.modality}</span> : null}
                       {offer.latestLanding ? <span className="rounded-full bg-cyan-500/15 px-2 py-1 text-cyan-200">v{offer.latestLanding.version}</span> : null}
                     </div>
-                  </button>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => selectOfferForEditing(offer.id)}
+                        className="rounded-xl border border-slate-700 px-3 py-2 text-xs font-bold text-slate-100"
+                      >
+                        Editar
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void toggleOfferStatus(offer)}
+                        disabled={togglingOfferId === offer.id}
+                        className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs font-bold text-amber-100 disabled:opacity-50"
+                      >
+                        {togglingOfferId === offer.id ? "Atualizando..." : offer.isActive ? "Pausar" : "Ativar"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void deleteOffer(offer)}
+                        disabled={deletingOfferId === offer.id}
+                        className="inline-flex items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-bold text-rose-100 disabled:opacity-50"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        {deletingOfferId === offer.id ? "Excluindo..." : "Excluir"}
+                      </button>
+                    </div>
+                  </div>
                 ))}
                 {!offers.length && !loading ? (
                   <div className="rounded-2xl border border-dashed border-slate-700 p-5 text-sm text-slate-400">
@@ -711,17 +809,40 @@ export default function OffersSection({
                   <p className="text-[11px] font-bold uppercase tracking-[0.3em] text-cyan-300/80">Operacoes</p>
                   <h3 className="mt-1 text-lg font-bold text-white">Geracao e publicacao</h3>
                 </div>
-                {selectedOffer?.latestLanding ? (
-                  <a
-                    href={`/ofertas/${selectedOffer.slug}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-2 rounded-2xl border border-slate-700 px-3 py-2 text-xs font-bold uppercase tracking-wider text-slate-200"
-                  >
-                    <Globe className="h-4 w-4" />
-                    Abrir
-                  </a>
-                ) : null}
+                <div className="flex flex-wrap items-center gap-2">
+                  {selectedOffer ? (
+                    <button
+                      type="button"
+                      onClick={() => void toggleOfferStatus(selectedOffer)}
+                      disabled={togglingOfferId === selectedOffer.id}
+                      className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs font-bold uppercase tracking-wider text-amber-100 disabled:opacity-50"
+                    >
+                      {togglingOfferId === selectedOffer.id ? "Atualizando..." : selectedOffer.isActive ? "Pausar oferta" : "Ativar oferta"}
+                    </button>
+                  ) : null}
+                  {selectedOffer ? (
+                    <button
+                      type="button"
+                      onClick={() => void deleteOffer(selectedOffer)}
+                      disabled={deletingOfferId === selectedOffer.id}
+                      className="inline-flex items-center gap-2 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-bold uppercase tracking-wider text-rose-100 disabled:opacity-50"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      {deletingOfferId === selectedOffer.id ? "Excluindo..." : "Excluir"}
+                    </button>
+                  ) : null}
+                  {selectedOffer?.latestLanding ? (
+                    <a
+                      href={`/ofertas/${selectedOffer.slug}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-2 rounded-2xl border border-slate-700 px-3 py-2 text-xs font-bold uppercase tracking-wider text-slate-200"
+                    >
+                      <Globe className="h-4 w-4" />
+                      Abrir
+                    </a>
+                  ) : null}
+                </div>
               </div>
               <div className="mt-4 flex flex-wrap gap-3">
                 <button type="button" disabled={previewing} className="inline-flex items-center gap-2 rounded-2xl border border-violet-500/30 bg-violet-500/10 px-4 py-3 text-sm font-bold text-violet-100 disabled:opacity-50" onClick={generateDraftPreview}>

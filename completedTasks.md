@@ -175,5 +175,6 @@ Atualizado em: 2026-03-20
 - [x] Novo fluxo de criacao por `Chat criador`, com sessao persistida no banco, historico da conversa, draft estruturado da oferta e publicacao final sem depender do formulario no primeiro passo.
 - [x] Nova entidade `LandingCreationSession`, endpoints de chat/prompt/preview/publicacao e workspace administrativo para criar landings via chatbot mantendo a arquitetura JSON + rota publica.
 - [x] Card explicativo de arquitetura no painel de `Landings`, mostrando como o chat vira draft, preview JSON, `Offer`, `LandingPage` e rota publica React.
+- [x] CRUD completo na lista de `Ofertas publicadas`, com criar nova oferta, editar, ativar/pausar e excluir direto do catalogo administrativo.
 - [x] Builds de `api` e `web` validados com sucesso apos a implementacao.
 
