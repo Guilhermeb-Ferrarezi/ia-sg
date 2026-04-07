@@ -4,7 +4,6 @@ import {
   Bot,
   Eye,
   Globe,
-  Layers3,
   Link2,
   MessageSquare,
   MonitorPlay,
@@ -598,11 +597,8 @@ export default function OffersSection({
       <div className="grid gap-6 xl:grid-cols-[340px_minmax(0,1fr)]">
         <div className="rounded-[32px] border border-slate-800/80 bg-slate-900/50 p-6 shadow-xl shadow-black/10">
           <div className="flex flex-col gap-4 border-b border-slate-800/80 pb-5 sm:flex-row sm:items-start sm:justify-between">
-            <div className="space-y-2">
+            <div>
               <h2 className="text-2xl font-black tracking-tight text-white">Chat criador + catalogo</h2>
-              <p className="max-w-xs text-sm leading-6 text-slate-400">
-                Organize criacoes por chat, rascunhos manuais e ofertas publicadas no mesmo workspace.
-              </p>
             </div>
             <div className="flex flex-wrap gap-3">
               <button
@@ -654,11 +650,6 @@ export default function OffersSection({
                         {session.status}
                       </span>
                     </div>
-                    <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-slate-300">
-                      {session.offerDraft.title ? <span className="rounded-full bg-slate-800 px-2 py-1">{session.offerDraft.title}</span> : null}
-                      {session.readiness.canPreview ? <span className="rounded-full bg-cyan-500/15 px-2 py-1 text-cyan-200">preview ok</span> : null}
-                      {session.readiness.canPublish ? <span className="rounded-full bg-emerald-500/15 px-2 py-1 text-emerald-200">pronta para publicar</span> : null}
-                    </div>
                   </button>
                 ))}
                 {!sessions.length && !sessionLoading ? (
@@ -705,11 +696,6 @@ export default function OffersSection({
                         </span>
                       </div>
                     </button>
-                    <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-slate-300">
-                      {offer.durationLabel ? <span className="rounded-full bg-slate-800 px-2 py-1">{offer.durationLabel}</span> : null}
-                      {offer.modality ? <span className="rounded-full bg-slate-800 px-2 py-1">{offer.modality}</span> : null}
-                      {offer.latestLanding ? <span className="rounded-full bg-cyan-500/15 px-2 py-1 text-cyan-200">v{offer.latestLanding.version}</span> : null}
-                    </div>
                     <div className="mt-4 flex flex-wrap gap-2">
                       <button
                         type="button"
@@ -757,25 +743,23 @@ export default function OffersSection({
                 <div className="rounded-[32px] border border-slate-800/80 bg-slate-900/50 p-6 shadow-xl shadow-black/10">
                   <div className="flex items-center justify-between gap-3">
                     <div>
-                      <p className="text-[11px] font-bold uppercase tracking-[0.3em] text-violet-300/80">Workspace do chatbot</p>
-                      <h3 className="mt-1 text-lg font-bold text-white">{selectedSession.title}</h3>
+                      <h3 className="text-lg font-bold text-white">{selectedSession.title}</h3>
                     </div>
                     <span className={`rounded-full px-3 py-1 text-[10px] font-bold uppercase tracking-[0.3em] ${selectedSession.status === "published" ? "bg-emerald-500/15 text-emerald-200" : selectedSession.status === "preview_ready" ? "bg-cyan-500/15 text-cyan-200" : "bg-violet-500/15 text-violet-200"}`}>
                       {selectedSession.status}
                     </span>
                   </div>
                   <div className="mt-5 grid gap-4 md:grid-cols-3">
-                    <MetricCard icon={<MessageSquare className="h-4 w-4 text-violet-200" />} iconToneClass="bg-violet-500/10 ring-1 ring-violet-500/20" label="Mensagens" value={selectedSession.chatHistory.length} helper="Historico da criacao" />
-                    <MetricCard icon={<MonitorPlay className="h-4 w-4 text-cyan-200" />} iconToneClass="bg-cyan-500/10 ring-1 ring-cyan-500/20" label="Preview" value={selectedSession.readiness.canPreview ? 1 : 0} helper={selectedSession.readiness.canPreview ? "Pronto para gerar" : `Faltando: ${selectedSession.readiness.missingPreviewFields.join(", ") || "dados"}`} />
-                    <MetricCard icon={<Sparkles className="h-4 w-4 text-emerald-200" />} iconToneClass="bg-emerald-500/10 ring-1 ring-emerald-500/20" label="Publicacao" value={selectedSession.readiness.canPublish ? 1 : 0} helper={selectedSession.readiness.canPublish ? "Pronto para publicar" : `Faltando: ${selectedSession.readiness.missingPublishFields.join(", ") || "dados"}`} />
+                    <MetricCard icon={<MessageSquare className="h-4 w-4 text-violet-200" />} iconToneClass="bg-violet-500/10 ring-1 ring-violet-500/20" label="Mensagens" value={selectedSession.chatHistory.length} helper="Historico" />
+                    <MetricCard icon={<MonitorPlay className="h-4 w-4 text-cyan-200" />} iconToneClass="bg-cyan-500/10 ring-1 ring-cyan-500/20" label="Preview" value={selectedSession.readiness.canPreview ? 1 : 0} helper={selectedSession.readiness.canPreview ? "Pronto" : "Pendente"} />
+                    <MetricCard icon={<Sparkles className="h-4 w-4 text-emerald-200" />} iconToneClass="bg-emerald-500/10 ring-1 ring-emerald-500/20" label="Publicacao" value={selectedSession.readiness.canPublish ? 1 : 0} helper={selectedSession.readiness.canPublish ? "Pronto" : "Pendente"} />
                   </div>
                 </div>
 
                 <div className="rounded-3xl border border-slate-800 bg-slate-900/60 p-5 shadow-2xl shadow-black/20">
                   <div className="flex items-center justify-between gap-3">
                     <div>
-                      <p className="text-[11px] font-bold uppercase tracking-[0.3em] text-cyan-300/80">Acoes</p>
-                      <h3 className="mt-1 text-lg font-bold text-white">Preview e publicacao</h3>
+                      <h3 className="text-lg font-bold text-white">Preview e publicacao</h3>
                     </div>
                     {selectedSession.publishedOfferId ? (
                       <span className="rounded-full bg-emerald-500/15 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.3em] text-emerald-200">
@@ -1045,9 +1029,6 @@ export default function OffersSection({
                   <Bot className="h-4 w-4 text-violet-300" />
                   <h3 className="text-lg font-black text-white">Contexto do lead para preview</h3>
                 </div>
-                <p className="mt-2 text-sm text-slate-400">
-                  Use esse contexto para testar variacoes da copy antes de publicar a landing.
-                </p>
                 <div className="mt-5 space-y-3">
                   <input className="w-full rounded-2xl border border-slate-800 bg-slate-950 px-4 py-3 text-sm text-white" placeholder="Curso/interesse detectado" value={previewLeadContext.interestedCourse} onChange={(e) => setPreviewLeadContext((current) => ({ ...current, interestedCourse: e.target.value }))} />
                   <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
@@ -1069,20 +1050,13 @@ export default function OffersSection({
                     <Sparkles className="h-4 w-4 text-cyan-300" />
                     <h3 className="text-xl font-black text-white">Preview da landing</h3>
                   </div>
-                  <span className="rounded-full border border-cyan-400/20 bg-cyan-500/10 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.3em] text-cyan-200">
-                    estilo editor
-                  </span>
                 </div>
-                <p className="mt-2 text-sm text-slate-400">
-                  Preencha os dados, ajuste o prompt e gere o preview visual sem precisar publicar.
-                </p>
 
                 {preview && previewOffer ? (
                   <>
                     <div className="mt-4 flex flex-wrap items-center gap-3 text-xs text-slate-400">
                       <span className="rounded-full border border-slate-700 bg-slate-950/70 px-3 py-1">status: {preview.status}</span>
                       <span className="rounded-full border border-slate-700 bg-slate-950/70 px-3 py-1">versao: {preview.version}</span>
-                      <span className="rounded-full border border-slate-700 bg-slate-950/70 px-3 py-1">{previewOffer.slug}</span>
                     </div>
                     <div className="mt-6 overflow-hidden rounded-[28px] border border-white/10 bg-slate-950/60">
                       <div className="flex items-center gap-2 border-b border-white/10 bg-slate-950/80 px-4 py-3">
@@ -1118,9 +1092,6 @@ export default function OffersSection({
                   <MessageSquare className="h-4 w-4 text-violet-300" />
                   <h3 className="text-lg font-bold text-white">Chat criador</h3>
                 </div>
-                <p className="mt-2 text-sm text-slate-400">
-                  Converse com a IA sobre o curso, a promessa, o publico e o CTA. Ela monta o rascunho da landing para voce.
-                </p>
                 <div className="mt-5 space-y-3">
                   <div className="max-h-[420px] space-y-3 overflow-y-auto rounded-3xl border border-slate-800 bg-slate-950/70 p-4 supabase-scroll">
                     {selectedSession.chatHistory.map((message, index) => (
@@ -1156,7 +1127,6 @@ export default function OffersSection({
               </div>
 
               <div className="space-y-4">
-                <ArchitectureCard />
                 <div className="rounded-3xl border border-slate-800 bg-slate-900/60 p-5 shadow-2xl shadow-black/20">
                   <div className="flex items-center gap-2">
                     <Sparkles className="h-4 w-4 text-cyan-300" />
@@ -1343,23 +1313,6 @@ function SectionTabButton({
       {icon}
       {label}
     </button>
-  );
-}
-
-function ArchitectureCard() {
-  return (
-    <div className="rounded-3xl border border-slate-800 bg-slate-900/60 p-5 shadow-2xl shadow-black/20">
-      <div className="flex items-center gap-2">
-        <Layers3 className="h-4 w-4 text-cyan-300" />
-        <h3 className="text-lg font-bold text-white">Arquitetura da landing</h3>
-      </div>
-      <div className="mt-4 space-y-3 text-sm text-slate-300">
-        <DraftLine label="1. Chat" value="A IA conversa com voce e monta um draft estruturado da oferta." />
-        <DraftLine label="2. Preview" value="Esse draft vira JSON de secoes da landing, sem HTML livre vindo da IA." />
-        <DraftLine label="3. Publicacao" value="Ao publicar, o draft vira Offer + LandingPage no banco." />
-        <DraftLine label="4. Rota publica" value="A rota /ofertas/:slug renderiza a pagina no React usando esse JSON." />
-      </div>
-    </div>
   );
 }
 

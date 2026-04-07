@@ -182,5 +182,6 @@ Atualizado em: 2026-03-20
 
 - [x] `OffersSection.tsx` recebeu page header, metric cards mais limpos e tabs com navegacao visual alinhada ao painel administrativo.
 - [x] Sidebar de sessoes/ofertas e card de operacoes foram reorganizados com hierarquia mais clara, espacamento generoso e lista de versoes simplificada.
+- [x] Workspace de criacao ficou mais enxuto, com menos textos explicativos, sem card de arquitetura e apenas contexto util nas sessoes e no preview.
 - [x] Build de `web` validado com sucesso em `bun run build` apos o refino visual.
 
