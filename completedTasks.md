@@ -170,5 +170,10 @@ Atualizado em: 2026-03-20
 - [x] Automacao no fluxo do webhook para casar oferta, garantir landing publicada, enviar link por WhatsApp e registrar auditoria persistida.
 - [x] Nova area administrativa `Landings` no frontend com catalogo de ofertas, configuracao de prompt, preview e metricas.
 - [x] Nova superficie publica `/ofertas/:slug` no frontend atual com renderizacao da landing e CTA rastreado.
+- [x] Preview sob demanda no painel de `Landings`, com geracao temporaria por IA a partir do formulario atual e renderizacao visual completa antes de salvar/publicar.
+- [x] Reorganizacao da area `Landings` em abas separadas para `Informacoes`, `Prompt` e `Preview`, deixando o fluxo de edicao mais claro.
+- [x] Novo fluxo de criacao por `Chat criador`, com sessao persistida no banco, historico da conversa, draft estruturado da oferta e publicacao final sem depender do formulario no primeiro passo.
+- [x] Nova entidade `LandingCreationSession`, endpoints de chat/prompt/preview/publicacao e workspace administrativo para criar landings via chatbot mantendo a arquitetura JSON + rota publica.
+- [x] Card explicativo de arquitetura no painel de `Landings`, mostrando como o chat vira draft, preview JSON, `Offer`, `LandingPage` e rota publica React.
 - [x] Builds de `api` e `web` validados com sucesso apos a implementacao.
 

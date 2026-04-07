@@ -164,6 +164,7 @@ model Offer {
   landingPages      LandingPage[]
   promptConfigs     LandingPromptConfig[]
   landingDeliveries LandingDelivery[]
+  publishedSessions LandingCreationSession[] @relation("PublishedOfferSessions")
 
   @@index([isActive])
   @@index([title])
@@ -240,6 +241,23 @@ model LandingEvent {
 
   @@index([deliveryId, eventType])
   @@index([createdAt])
+}
+
+model LandingCreationSession {
+  id                Int      @id @default(autoincrement())
+  title             String?
+  status            String   @default("draft")
+  offerDraftJson    Json?
+  promptDraftJson   Json?
+  chatHistoryJson   Json?
+  previewSectionsJson Json?
+  publishedOfferId  Int?
+  publishedOffer    Offer?   @relation("PublishedOfferSessions", fields: [publishedOfferId], references: [id], onDelete: SetNull)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([status, updatedAt])
+  @@index([publishedOfferId])
 }
 
 model WebhookEvent {

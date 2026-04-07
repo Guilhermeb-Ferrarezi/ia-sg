@@ -373,3 +373,57 @@ export type LandingMetrics = {
   clicks: number;
   clickRate: number;
 };
+
+export type LandingPreviewLeadContext = {
+  interestedCourse: string;
+  courseMode: string;
+  objective: string;
+  level: string;
+  summary: string;
+};
+
+export type LandingPreviewResponse = {
+  offer: Offer;
+  landing: LandingPageSummary;
+};
+
+export type LandingCreationMessage = {
+  role: "user" | "assistant";
+  content: string;
+  createdAt: string;
+};
+
+export type LandingCreationDraft = {
+  title: string;
+  slug: string;
+  aliases: string[];
+  durationLabel: string;
+  modality: string;
+  shortDescription: string;
+  approvedFacts: string[];
+  ctaLabel: string;
+  ctaUrl: string;
+  visualTheme: string;
+  isActive: boolean;
+};
+
+export type LandingCreationReadiness = {
+  canPreview: boolean;
+  canPublish: boolean;
+  missingPreviewFields: string[];
+  missingPublishFields: string[];
+};
+
+export type LandingCreationSession = {
+  id: number;
+  title: string;
+  status: string;
+  offerDraft: LandingCreationDraft;
+  promptDraft: LandingPromptConfig;
+  chatHistory: LandingCreationMessage[];
+  readiness: LandingCreationReadiness;
+  preview: LandingPreviewResponse | null;
+  publishedOfferId: number | null;
+  createdAt: string;
+  updatedAt: string;
+};

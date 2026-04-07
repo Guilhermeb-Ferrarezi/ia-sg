@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiFetch } from "../lib/apiFetch";
-import type { AISettings, WhatsAppProfile } from "../types/dashboard";
+import type { AISettings, LandingPromptConfig, WhatsAppProfile } from "../types/dashboard";
 import {
   Bot,
   Brain,
@@ -19,6 +19,7 @@ import {
   MessageSquare,
   Pencil,
   Phone,
+  Presentation,
   RefreshCw,
   Save,
   Settings,
@@ -31,7 +32,7 @@ import {
   Zap,
 } from "lucide-react";
 
-type SettingsTab = "ai" | "whatsapp";
+type SettingsTab = "ai" | "whatsapp" | "landing";
 type ToastType = "success" | "error" | "info" | "loading";
 
 const VERTICALS = [
@@ -127,6 +128,10 @@ export default function SettingsSection({
   const [aiError, setAiError] = useState("");
   const [aiDraft, setAiDraft] = useState<Partial<AISettings>>({});
   const [customModelMode, setCustomModelMode] = useState(false);
+  const [landing, setLanding] = useState<LandingPromptConfig | null>(null);
+  const [landingLoading, setLandingLoading] = useState(false);
+  const [landingSaving, setLandingSaving] = useState(false);
+  const [landingError, setLandingError] = useState("");
 
   // WhatsApp Profile state
   const [wp, setWp] = useState<WhatsAppProfile | null>(null);
@@ -139,11 +144,13 @@ export default function SettingsSection({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const aiRef = useRef<AISettings | null>(null);
   const wpRef = useRef<WhatsAppProfile | null>(null);
+  const landingRef = useRef<LandingPromptConfig | null>(null);
 
   useEffect(() => {
     aiRef.current = ai;
     wpRef.current = wp;
-  }, [ai, wp]);
+    landingRef.current = landing;
+  }, [ai, wp, landing]);
 
   const loadAI = useCallback(async () => {
     setAiLoading(true);
@@ -177,11 +184,27 @@ export default function SettingsSection({
     }
   }, [addToast]);
 
+  const loadLanding = useCallback(async () => {
+    setLandingLoading(true);
+    setLandingError("");
+    try {
+      const data = await apiFetch<LandingPromptConfig>("/settings/landing-prompt");
+      setLanding(data);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Falha ao carregar prompt da landing.";
+      setLandingError(message);
+      if (landingRef.current) addToast(message, "error");
+    } finally {
+      setLandingLoading(false);
+    }
+  }, [addToast]);
+
   useEffect(() => {
     if (!active) return;
     void loadAI();
     void loadWP();
-  }, [active, loadAI, loadWP]);
+    void loadLanding();
+  }, [active, loadAI, loadWP, loadLanding]);
 
   const saveAI = async () => {
     setAiSaving(true);
@@ -221,6 +244,27 @@ export default function SettingsSection({
       updateToast(toastId, message, "error");
     } finally {
       setWpSaving(false);
+    }
+  };
+
+  const saveLanding = async () => {
+    if (!landing) return;
+    setLandingSaving(true);
+    setLandingError("");
+    const toastId = addToast("Salvando prompt da landing...", "loading");
+    try {
+      const data = await apiFetch<LandingPromptConfig>("/settings/landing-prompt", {
+        method: "PUT",
+        body: JSON.stringify(landing),
+      });
+      setLanding(data);
+      updateToast(toastId, "Prompt global da landing salvo com sucesso!", "success");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Falha ao salvar prompt da landing.";
+      setLandingError(message);
+      updateToast(toastId, message, "error");
+    } finally {
+      setLandingSaving(false);
     }
   };
 
@@ -297,7 +341,7 @@ export default function SettingsSection({
 
   const aiHasChanges = Object.keys(aiDraft).length > 0;
   const wpHasChanges = Object.keys(wpDraft).length > 0;
-  const settingsBootLoading = aiLoading && wpLoading && !ai && !wp;
+  const settingsBootLoading = aiLoading && wpLoading && landingLoading && !ai && !wp && !landing;
   const knownOpenAiModelIds: string[] = OPENAI_MODEL_GROUPS.flatMap((group) =>
     group.options.map((option) => option.value)
   );
@@ -430,6 +474,12 @@ export default function SettingsSection({
           onClick={() => setTab("ai")}
           icon={Brain}
           label="Inteligencia Artificial"
+        />
+        <TabButton
+          active={tab === "landing"}
+          onClick={() => setTab("landing")}
+          icon={Presentation}
+          label="Landing Page"
         />
         <TabButton
           active={tab === "whatsapp"}
@@ -698,6 +748,190 @@ export default function SettingsSection({
               </div>
             </>
           )}
+        </div>
+      )}
+
+      {tab === "landing" && (
+        <div className="space-y-6 panel-enter" key="landing-tab">
+          {landingLoading && !landing ? (
+            <PanelLoadingState
+              title="Carregando prompt da landing"
+              description="Buscando a configuracao global usada para gerar as landing pages."
+              icon={Presentation}
+              accent="emerald"
+            />
+          ) : !landing && landingError ? (
+            <PanelErrorState
+              title="Falha ao carregar prompt da landing"
+              description={landingError}
+              onRetry={() => void loadLanding()}
+            />
+          ) : landing ? (
+            <>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3 fade-in-up stagger-1">
+                <StatusCard
+                  icon={Presentation}
+                  label="Escopo"
+                  value="Global"
+                  color="cyan"
+                />
+                <StatusCard
+                  icon={Sparkles}
+                  label="Auto gerar"
+                  value={landing.autoGenerateEnabled ? "Ativo" : "Pausado"}
+                  color={landing.autoGenerateEnabled ? "emerald" : "amber"}
+                />
+                <StatusCard
+                  icon={Zap}
+                  label="Auto enviar"
+                  value={landing.autoSendEnabled ? "Ativo" : "Pausado"}
+                  color={landing.autoSendEnabled ? "emerald" : "amber"}
+                />
+              </div>
+
+              <SettingsCard
+                title="Prompt Mestre da Landing"
+                icon={Presentation}
+                color="cyan"
+                stagger={2}
+              >
+                <div className="space-y-5">
+                  <LandingTextarea
+                    label="Prompt principal"
+                    helper="Instrucao base que define a estrutura, a intencao comercial e os limites da copy."
+                    value={landing.systemPrompt}
+                    minHeight="min-h-[180px]"
+                    onChange={(value) => setLanding((current) => (current ? { ...current, systemPrompt: value } : current))}
+                  />
+
+                  <LandingTextarea
+                    label="Guia de tom"
+                    helper="Tom, ritmo, energia visual e estilo desejado para as landings."
+                    value={landing.toneGuidelines}
+                    minHeight="min-h-[130px]"
+                    onChange={(value) => setLanding((current) => (current ? { ...current, toneGuidelines: value } : current))}
+                  />
+                </div>
+              </SettingsCard>
+
+              <SettingsCard
+                title="Regras e Automacao"
+                icon={Shield}
+                color="amber"
+                stagger={3}
+              >
+                <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
+                  <div className="space-y-5">
+                    <LandingTextarea
+                      label="Regras obrigatorias"
+                      helper="Uma regra por linha. Ex.: nao inventar preco, nao prometer certificado."
+                      value={landing.requiredRules.join("\n")}
+                      minHeight="min-h-[150px]"
+                      onChange={(value) =>
+                        setLanding((current) =>
+                          current
+                            ? {
+                                ...current,
+                                requiredRules: value
+                                  .split(/\r?\n/)
+                                  .map((item) => item.trim())
+                                  .filter(Boolean),
+                              }
+                            : current
+                        )
+                      }
+                    />
+
+                    <LandingTextarea
+                      label="Regras de CTA"
+                      helper="Uma regra por linha para controlar a chamada final e o texto auxiliar."
+                      value={landing.ctaRules.join("\n")}
+                      minHeight="min-h-[130px]"
+                      onChange={(value) =>
+                        setLanding((current) =>
+                          current
+                            ? {
+                                ...current,
+                                ctaRules: value
+                                  .split(/\r?\n/)
+                                  .map((item) => item.trim())
+                                  .filter(Boolean),
+                              }
+                            : current
+                        )
+                      }
+                    />
+                  </div>
+
+                  <div className="space-y-4">
+                    <LandingToggle
+                      label="Gerar landing automaticamente"
+                      checked={landing.autoGenerateEnabled}
+                      onChange={(checked) =>
+                        setLanding((current) => (current ? { ...current, autoGenerateEnabled: checked } : current))
+                      }
+                    />
+                    <LandingToggle
+                      label="Enviar link automaticamente"
+                      checked={landing.autoSendEnabled}
+                      onChange={(checked) =>
+                        setLanding((current) => (current ? { ...current, autoSendEnabled: checked } : current))
+                      }
+                    />
+                    <label className="block rounded-2xl border border-slate-700 bg-slate-950/70 p-4">
+                      <span className="text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-500">
+                        Confianca minima
+                      </span>
+                      <input
+                        className="mt-3 w-full rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-sm text-slate-100 outline-none transition-all duration-300 focus:border-cyan-500/50 focus:ring-2 focus:ring-cyan-500/20"
+                        type="number"
+                        min="0"
+                        max="1"
+                        step="0.05"
+                        value={landing.confidenceThreshold}
+                        onChange={(event) =>
+                          setLanding((current) =>
+                            current
+                              ? { ...current, confidenceThreshold: Number(event.target.value) || 0 }
+                              : current
+                          )
+                        }
+                      />
+                      <p className="mt-2 text-xs text-slate-500">
+                        So gera/envia landing automaticamente acima deste nivel de confianca.
+                      </p>
+                    </label>
+                  </div>
+                </div>
+              </SettingsCard>
+
+              <div className="flex items-center justify-end gap-3 fade-in-up stagger-4">
+                <button
+                  type="button"
+                  onClick={() => void loadLanding()}
+                  disabled={landingLoading}
+                  className="flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-4 py-2.5 text-sm font-medium text-slate-300 transition-all duration-300 hover:bg-slate-800 hover:border-cyan-500/30"
+                >
+                  <RefreshCw className={`h-4 w-4 ${landingLoading ? "animate-spin" : ""}`} />
+                  Recarregar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void saveLanding()}
+                  disabled={landingSaving || !landing}
+                  className="group relative flex items-center gap-2 overflow-hidden rounded-xl bg-gradient-to-r from-cyan-600 to-sky-500 px-6 py-2.5 text-sm font-semibold text-white shadow-lg shadow-cyan-500/20 transition-all duration-500 hover:shadow-xl hover:shadow-cyan-500/30 hover:scale-[1.02] disabled:opacity-50 disabled:hover:scale-100 disabled:hover:shadow-lg"
+                >
+                  <div className="absolute inset-0 bg-gradient-to-r from-cyan-400 to-sky-300 opacity-0 transition-opacity duration-500 group-hover:opacity-20" />
+                  {landingSaving ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Save className="h-4 w-4 transition-transform duration-300 group-hover:scale-110" />
+                  )}
+                  {landingSaving ? "Salvando..." : "Salvar Prompt da Landing"}
+                </button>
+              </div>
+            </>
+          ) : null}
         </div>
       )}
 
@@ -1180,6 +1414,52 @@ function InputField({
         </p>
       )}
     </div>
+  );
+}
+
+function LandingTextarea({
+  label,
+  helper,
+  value,
+  onChange,
+  minHeight,
+}: {
+  label: string;
+  helper: string;
+  value: string;
+  onChange: (value: string) => void;
+  minHeight: string;
+}) {
+  return (
+    <label className="block space-y-2">
+      <span className="flex items-center gap-2 text-sm font-medium text-slate-300">
+        <Presentation className="h-3.5 w-3.5 text-slate-500" />
+        {label}
+      </span>
+      <p className="text-xs leading-6 text-slate-500">{helper}</p>
+      <textarea
+        className={`w-full resize-y rounded-xl border border-slate-700 bg-slate-950/80 px-4 py-3 text-sm text-slate-200 placeholder-slate-600 transition-all duration-300 focus:border-cyan-500/50 focus:ring-2 focus:ring-cyan-500/20 focus:outline-none hover:border-slate-600 supabase-scroll ${minHeight}`}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    </label>
+  );
+}
+
+function LandingToggle({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="flex items-center justify-between gap-4 rounded-2xl border border-slate-700 bg-slate-950/70 px-4 py-3">
+      <span className="text-sm font-medium text-slate-200">{label}</span>
+      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+    </label>
   );
 }
 

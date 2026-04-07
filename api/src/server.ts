@@ -5,6 +5,7 @@ import dotenv from "dotenv";
 import { PrismaClient } from "@prisma/client";
 import { WebSocketServer, WebSocket } from "ws";
 import {
+  buildLandingCreationPromptInput,
   buildLandingGenerationPromptInput,
   buildLeadEnrichmentPromptInput,
   buildReplyPromptInput,
@@ -41,6 +42,26 @@ type LandingPromptValues = {
   autoGenerateEnabled: boolean;
   autoSendEnabled: boolean;
   confidenceThreshold: number;
+};
+
+type LandingCreationDraftValues = {
+  title: string;
+  slug: string;
+  aliases: string[];
+  durationLabel: string;
+  modality: string;
+  shortDescription: string;
+  approvedFacts: string[];
+  ctaLabel: string;
+  ctaUrl: string;
+  visualTheme: string;
+  isActive: boolean;
+};
+
+type LandingCreationHistoryMessage = {
+  role: "user" | "assistant";
+  content: string;
+  createdAt: string;
 };
 
 const PORT = Number(process.env.PORT || "3000");
@@ -1632,6 +1653,159 @@ app.get("/api/offers/:id/landing/preview", requireSession, async (req, res) => {
   res.json({ landing: mapLandingPageSummary(page) });
 });
 
+app.post("/api/landings/preview", requireSession, async (req, res) => {
+  try {
+    const offer = normalizeOfferPreviewPayload(req.body?.offer);
+    const prompt = mergeLandingPromptPayload(await getGlobalLandingPromptSettings(), req.body?.prompt);
+    const leadContext = normalizeLandingLeadContext(req.body?.leadContext);
+    const sectionsJson = await generateLandingSectionsForOfferData({
+      offer,
+      promptConfig: prompt,
+      leadContext,
+      eventMeta: {
+        eventPrefix: "landing.preview",
+        offerId: null,
+        slug: offer.slug
+      }
+    });
+
+    res.json({
+      offer: {
+        id: 0,
+        title: offer.title,
+        slug: offer.slug,
+        aliases: [],
+        durationLabel: offer.durationLabel,
+        modality: offer.modality,
+        shortDescription: offer.shortDescription,
+        approvedFacts: offer.approvedFacts,
+        ctaLabel: offer.ctaLabel,
+        ctaUrl: offer.ctaUrl,
+        visualTheme: null,
+        isActive: true,
+        latestLanding: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      },
+      landing: {
+        id: 0,
+        offerId: 0,
+        version: 0,
+        status: "preview",
+        sectionsJson,
+        promptSnapshot: prompt,
+        sourceFactsSnapshot: offer,
+        publishedAt: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      }
+    });
+  } catch (err) {
+    res.status(400).json({ message: formatError(err) });
+  }
+});
+
+app.get("/api/landing-creation/sessions", requireSession, async (_req, res) => {
+  const sessions = await prisma.landingCreationSession.findMany({
+    orderBy: [{ updatedAt: "desc" }],
+    take: 30
+  });
+  res.json({ sessions: sessions.map(mapLandingCreationSession) });
+});
+
+app.post("/api/landing-creation/sessions", requireSession, async (_req, res) => {
+  try {
+    const session = await createLandingCreationSession();
+    broadcastEvent("landing_sessions_updated");
+    res.status(201).json({ session: mapLandingCreationSession(session) });
+  } catch (err) {
+    res.status(500).json({ message: formatError(err) });
+  }
+});
+
+app.get("/api/landing-creation/sessions/:id", requireSession, async (req, res) => {
+  const sessionId = Number(req.params.id);
+  if (!Number.isInteger(sessionId) || sessionId <= 0) {
+    res.status(400).json({ message: "Sessao invalida." });
+    return;
+  }
+  try {
+    const session = await getLandingCreationSessionOrThrow(sessionId);
+    res.json({ session: mapLandingCreationSession(session) });
+  } catch (err) {
+    res.status(404).json({ message: formatError(err) });
+  }
+});
+
+app.post("/api/landing-creation/sessions/:id/messages", requireSession, async (req, res) => {
+  const sessionId = Number(req.params.id);
+  const message = typeof req.body?.message === "string" ? req.body.message.trim() : "";
+  if (!Number.isInteger(sessionId) || sessionId <= 0) {
+    res.status(400).json({ message: "Sessao invalida." });
+    return;
+  }
+  if (!message) {
+    res.status(400).json({ message: "Mensagem obrigatoria." });
+    return;
+  }
+  try {
+    const session = await runLandingCreationChatTurn(sessionId, message);
+    broadcastEvent("landing_sessions_updated");
+    res.json({ session: mapLandingCreationSession(session) });
+  } catch (err) {
+    res.status(500).json({ message: formatError(err) });
+  }
+});
+
+app.put("/api/landing-creation/sessions/:id/prompt", requireSession, async (req, res) => {
+  const sessionId = Number(req.params.id);
+  if (!Number.isInteger(sessionId) || sessionId <= 0) {
+    res.status(400).json({ message: "Sessao invalida." });
+    return;
+  }
+  try {
+    const session = await saveLandingCreationPrompt(sessionId, req.body);
+    broadcastEvent("landing_sessions_updated");
+    res.json({ session: mapLandingCreationSession(session) });
+  } catch (err) {
+    res.status(400).json({ message: formatError(err) });
+  }
+});
+
+app.post("/api/landing-creation/sessions/:id/preview", requireSession, async (req, res) => {
+  const sessionId = Number(req.params.id);
+  if (!Number.isInteger(sessionId) || sessionId <= 0) {
+    res.status(400).json({ message: "Sessao invalida." });
+    return;
+  }
+  try {
+    const session = await generateLandingPreviewForSession(sessionId, req.body);
+    broadcastEvent("landing_sessions_updated");
+    res.json({ session: mapLandingCreationSession(session) });
+  } catch (err) {
+    res.status(400).json({ message: formatError(err) });
+  }
+});
+
+app.post("/api/landing-creation/sessions/:id/publish", requireSession, async (req, res) => {
+  const sessionId = Number(req.params.id);
+  if (!Number.isInteger(sessionId) || sessionId <= 0) {
+    res.status(400).json({ message: "Sessao invalida." });
+    return;
+  }
+  try {
+    const result = await publishLandingCreationSession(sessionId, req.body);
+    broadcastEvent("landing_sessions_updated");
+    broadcastEvent("offers_updated");
+    res.json({
+      session: mapLandingCreationSession(result.session),
+      landing: mapLandingPageSummary(result.landingPage)
+    });
+  } catch (err) {
+    res.status(400).json({ message: formatError(err) });
+  }
+});
+
 app.get("/api/offers/:id/landing/metrics", requireSession, async (req, res) => {
   const offerId = Number(req.params.id);
   if (!Number.isInteger(offerId) || offerId <= 0) {
@@ -2487,6 +2661,153 @@ function normalizeSearchText(input: string): string {
   return normalizeSlug(input).replace(/-/g, " ").trim();
 }
 
+function normalizeOfferPreviewPayload(payload: unknown): {
+  title: string;
+  slug: string;
+  shortDescription: string | null;
+  durationLabel: string | null;
+  modality: string | null;
+  approvedFacts: string[];
+  ctaLabel: string;
+  ctaUrl: string;
+} {
+  const body = typeof payload === "object" && payload !== null ? payload as Record<string, unknown> : {};
+  const title = typeof body.title === "string" ? utf8Text(body.title).trim() : "";
+  const slug = normalizeSlug(typeof body.slug === "string" ? body.slug : title);
+  const approvedFacts = parseStringArray(body.approvedFacts);
+  const ctaLabel = typeof body.ctaLabel === "string" ? utf8Text(body.ctaLabel).trim() : "";
+  const ctaUrl = typeof body.ctaUrl === "string" ? utf8Text(body.ctaUrl).trim() : "";
+
+  if (!title) throw new Error("Informe o titulo da oferta para gerar o preview.");
+  if (!slug) throw new Error("Informe um slug valido para gerar o preview.");
+  if (!ctaLabel) throw new Error("Informe o texto do CTA para gerar o preview.");
+  if (!ctaUrl) throw new Error("Informe a URL do CTA para gerar o preview.");
+  if (!approvedFacts.length) throw new Error("Informe ao menos um fato aprovado para gerar o preview.");
+
+  return {
+    title,
+    slug,
+    shortDescription: typeof body.shortDescription === "string" && body.shortDescription.trim() ? utf8Text(body.shortDescription.trim()) : null,
+    durationLabel: typeof body.durationLabel === "string" && body.durationLabel.trim() ? utf8Text(body.durationLabel.trim()) : null,
+    modality: typeof body.modality === "string" && body.modality.trim() ? utf8Text(body.modality.trim()) : null,
+    approvedFacts,
+    ctaLabel,
+    ctaUrl
+  };
+}
+
+function normalizeLandingLeadContext(payload: unknown): {
+  interestedCourse?: string | null;
+  courseMode?: string | null;
+  objective?: string | null;
+  level?: string | null;
+  summary?: string | null;
+} {
+  const body = typeof payload === "object" && payload !== null ? payload as Record<string, unknown> : {};
+  const pick = (key: string) =>
+    typeof body[key] === "string" && String(body[key]).trim()
+      ? utf8Text(String(body[key]).trim())
+      : null;
+
+  return {
+    interestedCourse: pick("interestedCourse"),
+    courseMode: pick("courseMode"),
+    objective: pick("objective"),
+    level: pick("level"),
+    summary: pick("summary")
+  };
+}
+
+function buildDefaultLandingCreationDraft(): LandingCreationDraftValues {
+  return {
+    title: "",
+    slug: "",
+    aliases: [],
+    durationLabel: "",
+    modality: "",
+    shortDescription: "",
+    approvedFacts: [],
+    ctaLabel: "",
+    ctaUrl: "",
+    visualTheme: "",
+    isActive: true
+  };
+}
+
+function normalizeLandingCreationDraft(payload: unknown, fallback?: LandingCreationDraftValues): LandingCreationDraftValues {
+  const base = fallback ? { ...fallback } : buildDefaultLandingCreationDraft();
+  const body = typeof payload === "object" && payload !== null ? payload as Record<string, unknown> : {};
+
+  if (typeof body.title === "string") base.title = utf8Text(body.title).trim();
+  if (typeof body.slug === "string") base.slug = normalizeSlug(body.slug);
+  if (body.aliases !== undefined) base.aliases = parseStringArray(body.aliases);
+  if (typeof body.durationLabel === "string") base.durationLabel = utf8Text(body.durationLabel).trim();
+  if (typeof body.modality === "string") base.modality = utf8Text(body.modality).trim();
+  if (typeof body.shortDescription === "string") base.shortDescription = utf8Text(body.shortDescription).trim();
+  if (body.approvedFacts !== undefined) base.approvedFacts = parseStringArray(body.approvedFacts);
+  if (typeof body.ctaLabel === "string") base.ctaLabel = utf8Text(body.ctaLabel).trim();
+  if (typeof body.ctaUrl === "string") base.ctaUrl = utf8Text(body.ctaUrl).trim();
+  if (typeof body.visualTheme === "string") base.visualTheme = utf8Text(body.visualTheme).trim();
+  if (typeof body.isActive === "boolean") base.isActive = body.isActive;
+
+  if (!base.slug && base.title) {
+    base.slug = normalizeSlug(base.title);
+  }
+
+  return base;
+}
+
+function normalizeLandingCreationHistory(payload: unknown): LandingCreationHistoryMessage[] {
+  if (!Array.isArray(payload)) return [];
+  return payload
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") return null;
+      const item = entry as Record<string, unknown>;
+      const role = item.role === "assistant" ? "assistant" : item.role === "user" ? "user" : null;
+      const content = typeof item.content === "string" ? utf8Text(item.content).trim() : "";
+      const createdAt = typeof item.createdAt === "string" && item.createdAt.trim() ? item.createdAt : new Date().toISOString();
+      if (!role || !content) return null;
+      return { role, content, createdAt };
+    })
+    .filter((entry): entry is LandingCreationHistoryMessage => Boolean(entry));
+}
+
+function computeLandingDraftReadiness(draft: LandingCreationDraftValues) {
+  const missingPreviewFields: string[] = [];
+  const missingPublishFields: string[] = [];
+
+  if (!draft.title) missingPreviewFields.push("title");
+  if (!draft.shortDescription && draft.approvedFacts.length === 0) missingPreviewFields.push("content");
+
+  if (!draft.title) missingPublishFields.push("title");
+  if (!draft.slug) missingPublishFields.push("slug");
+  if (draft.approvedFacts.length === 0) missingPublishFields.push("approvedFacts");
+  if (!draft.ctaLabel) missingPublishFields.push("ctaLabel");
+  if (!draft.ctaUrl) missingPublishFields.push("ctaUrl");
+
+  return {
+    canPreview: missingPreviewFields.length === 0,
+    canPublish: missingPublishFields.length === 0,
+    missingPreviewFields,
+    missingPublishFields
+  };
+}
+
+function buildPreviewOfferFromDraft(draft: LandingCreationDraftValues) {
+  return {
+    title: draft.title || "Nova oferta",
+    slug: draft.slug || normalizeSlug(draft.title || "nova-oferta"),
+    shortDescription: draft.shortDescription || draft.title || "Oferta em criacao",
+    durationLabel: draft.durationLabel || null,
+    modality: draft.modality || null,
+    approvedFacts: draft.approvedFacts.length ? draft.approvedFacts : [draft.shortDescription || draft.title || "Oferta em criacao"],
+    ctaLabel: draft.ctaLabel || "Quero saber mais",
+    ctaUrl: draft.ctaUrl || "https://wa.me/",
+    visualTheme: draft.visualTheme || null,
+    isActive: draft.isActive
+  };
+}
+
 function parseStringArray(value: unknown): string[] {
   if (Array.isArray(value)) {
     return value
@@ -2573,6 +2894,74 @@ function mapLandingPageSummary(page: {
     publishedAt: page.publishedAt,
     createdAt: page.createdAt,
     updatedAt: page.updatedAt
+  };
+}
+
+function mapLandingCreationSession(session: {
+  id: number;
+  title: string | null;
+  status: string;
+  offerDraftJson: unknown;
+  promptDraftJson: unknown;
+  chatHistoryJson: unknown;
+  previewSectionsJson: unknown;
+  publishedOfferId: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+}): Record<string, unknown> {
+  const draft = normalizeLandingCreationDraft(session.offerDraftJson);
+  const promptDraft = mergeLandingPromptPayload(buildDefaultLandingPromptValues(), session.promptDraftJson);
+  const chatHistory = normalizeLandingCreationHistory(session.chatHistoryJson);
+  const readiness = computeLandingDraftReadiness(draft);
+  const previewOffer = buildPreviewOfferFromDraft(draft);
+  const previewSections = session.previewSectionsJson && typeof session.previewSectionsJson === "object"
+    ? session.previewSectionsJson
+    : null;
+
+  return {
+    id: session.id,
+    title: session.title || draft.title || `Nova landing ${session.id}`,
+    status: session.status,
+    offerDraft: draft,
+    promptDraft,
+    chatHistory,
+    readiness,
+    preview: previewSections
+      ? {
+          offer: {
+            id: session.publishedOfferId || 0,
+            title: previewOffer.title,
+            slug: previewOffer.slug,
+            aliases: draft.aliases,
+            durationLabel: previewOffer.durationLabel,
+            modality: previewOffer.modality,
+            shortDescription: previewOffer.shortDescription,
+            approvedFacts: previewOffer.approvedFacts,
+            ctaLabel: previewOffer.ctaLabel,
+            ctaUrl: previewOffer.ctaUrl,
+            visualTheme: previewOffer.visualTheme,
+            isActive: previewOffer.isActive,
+            latestLanding: null,
+            createdAt: session.createdAt,
+            updatedAt: session.updatedAt
+          },
+          landing: {
+            id: 0,
+            offerId: session.publishedOfferId || 0,
+            version: 0,
+            status: "preview",
+            sectionsJson: previewSections,
+            promptSnapshot: promptDraft,
+            sourceFactsSnapshot: draft,
+            publishedAt: null,
+            createdAt: session.createdAt,
+            updatedAt: session.updatedAt
+          }
+        }
+      : null,
+    publishedOfferId: session.publishedOfferId,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt
   };
 }
 
@@ -2663,52 +3052,25 @@ async function generateLandingPageForOffer(offerId: number, leadContext?: {
 }) {
   const offer = await prisma.offer.findUnique({ where: { id: offerId } });
   if (!offer) throw new Error("Oferta nao encontrada.");
-
   const promptConfig = await getOfferLandingPromptSettings(offerId);
   const approvedFacts = serializeOfferJsonList(offer.approvedFacts);
-  const promptInput = buildLandingGenerationPromptInput({
-    offerTitle: offer.title,
-    offerSlug: offer.slug,
-    shortDescription: offer.shortDescription,
-    durationLabel: offer.durationLabel,
-    modality: offer.modality,
-    approvedFacts: approvedFacts.length ? approvedFacts : [offer.shortDescription || offer.title],
-    prompt: {
-      systemPrompt: promptConfig.systemPrompt,
-      toneGuidelines: promptConfig.toneGuidelines,
-      requiredRules: promptConfig.requiredRules,
-      ctaRules: promptConfig.ctaRules
+  const sectionsJson = await generateLandingSectionsForOfferData({
+    offer: {
+      title: offer.title,
+      slug: offer.slug,
+      shortDescription: offer.shortDescription,
+      durationLabel: offer.durationLabel,
+      modality: offer.modality,
+      approvedFacts
     },
-    leadContext
+    promptConfig,
+    leadContext,
+    eventMeta: {
+      eventPrefix: "landing.generate",
+      offerId,
+      slug: offer.slug
+    }
   });
-
-  logEvent("info", "landing.generate.started", { offerId, slug: offer.slug });
-  const aiConfig = await syncRuntimeAIConfigFromDatabase();
-  const resp = await fetchWithRetry(`${aiConfig.baseUrl}/responses`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${OPENAI_API_KEY}`
-    },
-    body: JSON.stringify({
-      model: aiConfig.model,
-      input: promptInput,
-      max_output_tokens: 900
-    })
-  });
-
-  if (!resp.ok) {
-    const detail = await resp.text().catch(() => "");
-    logEvent("error", "landing.generate.failed", { offerId, slug: offer.slug, statusCode: resp.status, message: detail });
-    throw new Error(`Falha ao gerar landing (${resp.status}).`);
-  }
-
-  const data = await resp.json();
-  const sectionsJson = extractFirstJsonObject(parseResponseOutputText(data));
-  if (!sectionsJson) {
-    logEvent("error", "landing.generate.failed", { offerId, slug: offer.slug, message: "json_invalido" });
-    throw new Error("Resposta da IA para landing veio sem JSON valido.");
-  }
 
   const latest = await prisma.landingPage.findFirst({
     where: { offerId },
@@ -2737,6 +3099,347 @@ async function generateLandingPageForOffer(offerId: number, leadContext?: {
   });
   logEvent("info", "landing.generate.succeeded", { offerId, landingPageId: page.id, version: page.version, slug: offer.slug });
   return page;
+}
+
+async function generateLandingSectionsForOfferData(params: {
+  offer: {
+    title: string;
+    slug: string;
+    shortDescription: string | null;
+    durationLabel: string | null;
+    modality: string | null;
+    approvedFacts: string[];
+  };
+  promptConfig: {
+    systemPrompt: string;
+    toneGuidelines: string;
+    requiredRules: string[];
+    ctaRules: string[];
+  };
+  leadContext?: {
+    interestedCourse?: string | null;
+    courseMode?: string | null;
+    objective?: string | null;
+    level?: string | null;
+    summary?: string | null;
+  };
+  eventMeta: {
+    eventPrefix: string;
+    offerId?: number | null;
+    slug: string;
+  };
+}) {
+  const approvedFacts = params.offer.approvedFacts.length
+    ? params.offer.approvedFacts
+    : [params.offer.shortDescription || params.offer.title];
+  const promptInput = buildLandingGenerationPromptInput({
+    offerTitle: params.offer.title,
+    offerSlug: params.offer.slug,
+    shortDescription: params.offer.shortDescription,
+    durationLabel: params.offer.durationLabel,
+    modality: params.offer.modality,
+    approvedFacts,
+    prompt: {
+      systemPrompt: params.promptConfig.systemPrompt,
+      toneGuidelines: params.promptConfig.toneGuidelines,
+      requiredRules: params.promptConfig.requiredRules,
+      ctaRules: params.promptConfig.ctaRules
+    },
+    leadContext: params.leadContext
+  });
+
+  logEvent("info", `${params.eventMeta.eventPrefix}.started`, {
+    offerId: params.eventMeta.offerId,
+    slug: params.eventMeta.slug
+  });
+  const aiConfig = await syncRuntimeAIConfigFromDatabase();
+  const resp = await fetchWithRetry(`${aiConfig.baseUrl}/responses`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${OPENAI_API_KEY}`
+    },
+    body: JSON.stringify({
+      model: aiConfig.model,
+      input: promptInput,
+      max_output_tokens: 900
+    })
+  });
+
+  if (!resp.ok) {
+    const detail = await resp.text().catch(() => "");
+    logEvent("error", `${params.eventMeta.eventPrefix}.failed`, {
+      offerId: params.eventMeta.offerId,
+      slug: params.eventMeta.slug,
+      statusCode: resp.status,
+      message: detail
+    });
+    throw new Error(`Falha ao gerar landing (${resp.status}).`);
+  }
+
+  const data = await resp.json();
+  const sectionsJson = extractFirstJsonObject(parseResponseOutputText(data));
+  if (!sectionsJson) {
+    logEvent("error", `${params.eventMeta.eventPrefix}.failed`, {
+      offerId: params.eventMeta.offerId,
+      slug: params.eventMeta.slug,
+      message: "json_invalido"
+    });
+    throw new Error("Resposta da IA para landing veio sem JSON valido.");
+  }
+
+  return sectionsJson;
+}
+
+async function createLandingCreationSession() {
+  const promptDraft = await getGlobalLandingPromptSettings();
+  const session = await prisma.landingCreationSession.create({
+    data: {
+      title: "Nova landing",
+      status: "draft",
+      offerDraftJson: buildDefaultLandingCreationDraft(),
+      promptDraftJson: promptDraft,
+      chatHistoryJson: []
+    }
+  });
+  logEvent("info", "landing.creation.session.created", { sessionId: session.id });
+  return session;
+}
+
+async function getLandingCreationSessionOrThrow(sessionId: number) {
+  const session = await prisma.landingCreationSession.findUnique({
+    where: { id: sessionId }
+  });
+  if (!session) throw new Error("Sessao de criacao nao encontrada.");
+  return session;
+}
+
+async function runLandingCreationChatTurn(sessionId: number, userMessage: string) {
+  const session = await getLandingCreationSessionOrThrow(sessionId);
+  const draft = normalizeLandingCreationDraft(session.offerDraftJson);
+  const history = normalizeLandingCreationHistory(session.chatHistoryJson);
+  const nextHistory = [
+    ...history,
+    {
+      role: "user" as const,
+      content: utf8Text(userMessage).trim(),
+      createdAt: new Date().toISOString()
+    }
+  ];
+
+  const aiConfig = await syncRuntimeAIConfigFromDatabase();
+  const resp = await fetchWithRetry(`${aiConfig.baseUrl}/responses`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${OPENAI_API_KEY}`
+    },
+    body: JSON.stringify({
+      model: aiConfig.model,
+      input: buildLandingCreationPromptInput({
+        currentDraft: draft,
+        history: nextHistory.map((message) => ({
+          role: message.role,
+          content: message.content
+        }))
+      }),
+      max_output_tokens: 700
+    })
+  });
+
+  if (!resp.ok) {
+    const detail = await resp.text().catch(() => "");
+    logEvent("error", "landing.creation.chat.failed", { sessionId, statusCode: resp.status, message: detail });
+    throw new Error(`Falha ao conversar com a IA (${resp.status}).`);
+  }
+
+  const data = await resp.json();
+  const parsed = extractFirstJsonObject(parseResponseOutputText(data));
+  if (!parsed) {
+    logEvent("error", "landing.creation.chat.failed", { sessionId, message: "json_invalido" });
+    throw new Error("A resposta da IA veio sem JSON valido.");
+  }
+
+  const assistantMessage =
+    typeof parsed.assistantMessage === "string" && parsed.assistantMessage.trim()
+      ? utf8Text(parsed.assistantMessage).trim()
+      : "Rascunho atualizado. Pode seguir com mais detalhes ou gerar o preview.";
+  const nextDraft = normalizeLandingCreationDraft(parsed.draft, draft);
+  const updatedHistory = [
+    ...nextHistory,
+    {
+      role: "assistant" as const,
+      content: assistantMessage,
+      createdAt: new Date().toISOString()
+    }
+  ];
+
+  const updated = await prisma.landingCreationSession.update({
+    where: { id: sessionId },
+    data: {
+      title: nextDraft.title || session.title || "Nova landing",
+      status: "draft",
+      offerDraftJson: nextDraft,
+      chatHistoryJson: updatedHistory
+    }
+  });
+  logEvent("info", "landing.creation.chat.succeeded", { sessionId });
+  return updated;
+}
+
+async function generateLandingPreviewForSession(sessionId: number, payload: unknown) {
+  const session = await getLandingCreationSessionOrThrow(sessionId);
+  const mergedDraft = normalizeLandingCreationDraft(
+    typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>).offerDraft : undefined,
+    normalizeLandingCreationDraft(session.offerDraftJson)
+  );
+  const promptDraft = mergeLandingPromptPayload(
+    mergeLandingPromptPayload(buildDefaultLandingPromptValues(), session.promptDraftJson),
+    typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>).promptDraft : undefined
+  );
+  const leadContext = normalizeLandingLeadContext(
+    typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>).leadContext : undefined
+  );
+  const previewOffer = buildPreviewOfferFromDraft(mergedDraft);
+  const sectionsJson = await generateLandingSectionsForOfferData({
+    offer: {
+      title: previewOffer.title,
+      slug: previewOffer.slug,
+      shortDescription: previewOffer.shortDescription,
+      durationLabel: previewOffer.durationLabel,
+      modality: previewOffer.modality,
+      approvedFacts: previewOffer.approvedFacts
+    },
+    promptConfig: promptDraft,
+    leadContext,
+    eventMeta: {
+      eventPrefix: "landing.creation.preview",
+      offerId: null,
+      slug: previewOffer.slug
+    }
+  });
+
+  const updated = await prisma.landingCreationSession.update({
+    where: { id: sessionId },
+    data: {
+      title: mergedDraft.title || session.title || "Nova landing",
+      status: "preview_ready",
+      offerDraftJson: mergedDraft,
+      promptDraftJson: promptDraft,
+      previewSectionsJson: sectionsJson as object
+    }
+  });
+  logEvent("info", "landing.creation.preview.generated", { sessionId });
+  return updated;
+}
+
+async function saveLandingCreationPrompt(sessionId: number, payload: unknown) {
+  const session = await getLandingCreationSessionOrThrow(sessionId);
+  const nextPrompt = mergeLandingPromptPayload(
+    mergeLandingPromptPayload(buildDefaultLandingPromptValues(), session.promptDraftJson),
+    payload
+  );
+  return prisma.landingCreationSession.update({
+    where: { id: sessionId },
+    data: {
+      promptDraftJson: nextPrompt
+    }
+  });
+}
+
+async function publishLandingCreationSession(sessionId: number, payload: unknown) {
+  const session = await getLandingCreationSessionOrThrow(sessionId);
+  const draft = normalizeLandingCreationDraft(
+    typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>).offerDraft : undefined,
+    normalizeLandingCreationDraft(session.offerDraftJson)
+  );
+  const promptDraft = mergeLandingPromptPayload(
+    mergeLandingPromptPayload(buildDefaultLandingPromptValues(), session.promptDraftJson),
+    typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>).promptDraft : undefined
+  );
+  const readiness = computeLandingDraftReadiness(draft);
+  if (!readiness.canPublish) {
+    throw new Error(`Campos obrigatorios para publicar: ${readiness.missingPublishFields.join(", ")}`);
+  }
+
+  const offerData = {
+    title: draft.title,
+    slug: draft.slug,
+    aliases: draft.aliases,
+    durationLabel: draft.durationLabel || null,
+    modality: draft.modality || null,
+    shortDescription: draft.shortDescription || null,
+    approvedFacts: draft.approvedFacts,
+    ctaLabel: draft.ctaLabel,
+    ctaUrl: draft.ctaUrl,
+    visualTheme: draft.visualTheme || null,
+    isActive: draft.isActive
+  };
+
+  let offerId = session.publishedOfferId || null;
+  if (offerId) {
+    await prisma.offer.update({
+      where: { id: offerId },
+      data: offerData
+    });
+  } else {
+    const createdOffer = await prisma.offer.create({ data: offerData });
+    offerId = createdOffer.id;
+  }
+
+  const sectionsJson = session.previewSectionsJson && typeof session.previewSectionsJson === "object"
+    ? session.previewSectionsJson
+    : await generateLandingSectionsForOfferData({
+        offer: {
+          title: offerData.title,
+          slug: offerData.slug,
+          shortDescription: offerData.shortDescription,
+          durationLabel: offerData.durationLabel,
+          modality: offerData.modality,
+          approvedFacts: offerData.approvedFacts
+        },
+        promptConfig: promptDraft,
+        eventMeta: {
+          eventPrefix: "landing.creation.publish",
+          offerId,
+          slug: offerData.slug
+        }
+      });
+
+  const latest = await prisma.landingPage.findFirst({
+    where: { offerId },
+    orderBy: { version: "desc" }
+  });
+  await prisma.landingPage.updateMany({
+    where: { offerId, status: "published" },
+    data: { status: "archived" }
+  });
+
+  const landingPage = await prisma.landingPage.create({
+    data: {
+      offerId,
+      version: (latest?.version || 0) + 1,
+      status: "published",
+      sectionsJson: sectionsJson as object,
+      promptSnapshot: promptDraft,
+      sourceFactsSnapshot: draft,
+      publishedAt: new Date()
+    }
+  });
+
+  const updatedSession = await prisma.landingCreationSession.update({
+    where: { id: sessionId },
+    data: {
+      title: draft.title,
+      status: "published",
+      offerDraftJson: draft,
+      promptDraftJson: promptDraft,
+      previewSectionsJson: sectionsJson as object,
+      publishedOfferId: offerId
+    }
+  });
+  logEvent("info", "landing.creation.published", { sessionId, offerId, landingPageId: landingPage.id });
+  return { session: updatedSession, landingPage };
 }
 
 async function publishLandingPage(offerId: number, landingPageId?: number) {

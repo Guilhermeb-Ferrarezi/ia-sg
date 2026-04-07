@@ -47,6 +47,15 @@ export const LANDING_GENERATION_SYSTEM_PROMPT = [
   "Nao escreva HTML, markdown, comentarios ou texto fora do JSON."
 ].join("\n");
 
+export const LANDING_CREATION_SYSTEM_PROMPT = [
+  "Voce e um consultor de criacao de ofertas e landing pages da Santos Tech.",
+  "Sua tarefa e conduzir uma conversa curta com o operador e atualizar um draft estruturado da oferta.",
+  "Voce pode sugerir titulo, slug, beneficios e CTA quando isso estiver claro no contexto.",
+  "Nao invente preco, datas, carga horaria exata, certificacao, promessas irreais ou URLs definitivas quando nao forem informadas.",
+  "Quando nao souber um campo, deixe vazio e peca o dado faltante de forma objetiva.",
+  "Responda apenas com JSON valido."
+].join("\n");
+
 export function buildFaqSystemPrompt(faqContext: string): string {
   if (faqContext.trim().length > 0) {
     return [
@@ -279,6 +288,86 @@ export function buildLandingGenerationPromptInput(input: Parameters<typeof build
         {
           type: "input_text",
           text: buildLandingGenerationPrompt(input)
+        }
+      ]
+    }
+  ];
+}
+
+export function buildLandingCreationPrompt(input: {
+  currentDraft: {
+    title: string;
+    slug: string;
+    aliases: string[];
+    durationLabel: string;
+    modality: string;
+    shortDescription: string;
+    approvedFacts: string[];
+    ctaLabel: string;
+    ctaUrl: string;
+    visualTheme: string;
+    isActive: boolean;
+  };
+  history: ReplyHistoryMessage[];
+}): string {
+  const historyText =
+    input.history.length > 0
+      ? input.history
+          .map((message) => `${message.role === "assistant" ? "Assistente" : "Operador"}: ${message.content}`)
+          .join("\n")
+      : "Nenhuma mensagem ainda.";
+
+  return [
+    "Atualize o draft da oferta com base na conversa abaixo.",
+    "Preserve informacoes uteis ja capturadas e melhore a organizacao do draft.",
+    "Se um campo nao estiver claro, mantenha vazio.",
+    "A mensagem do assistente deve ser curta, pratica e focada no proximo passo.",
+    "",
+    "--- Draft atual ---",
+    JSON.stringify(input.currentDraft, null, 2),
+    "",
+    "--- Conversa ---",
+    historyText,
+    "",
+    "--- Formato de resposta ---",
+    "{",
+    '  "assistantMessage": "Mensagem curta para o operador",',
+    '  "draft": {',
+    '    "title": "Titulo sugerido da oferta",',
+    '    "slug": "slug-sugerido",',
+    '    "aliases": ["Alias 1"],',
+    '    "durationLabel": "Duracao ou vazio",',
+    '    "modality": "Modalidade ou vazio",',
+    '    "shortDescription": "Descricao curta",',
+    '    "approvedFacts": ["Fato aprovado 1"],',
+    '    "ctaLabel": "Texto do CTA",',
+    '    "ctaUrl": "URL final ou vazio",',
+    '    "visualTheme": "Direcao visual opcional",',
+    '    "isActive": true',
+    "  }",
+    "}",
+    "",
+    "Responda apenas com JSON valido."
+  ].join("\n");
+}
+
+export function buildLandingCreationPromptInput(input: Parameters<typeof buildLandingCreationPrompt>[0]): PromptInputMessage[] {
+  return [
+    {
+      role: "system",
+      content: [
+        {
+          type: "input_text",
+          text: LANDING_CREATION_SYSTEM_PROMPT
+        }
+      ]
+    },
+    {
+      role: "user",
+      content: [
+        {
+          type: "input_text",
+          text: buildLandingCreationPrompt(input)
         }
       ]
     }
