@@ -1,5 +1,5 @@
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Toast } from "../types/dashboard";
 
 type ToastContainerProps = {
@@ -19,19 +19,21 @@ export default function ToastContainer({ toasts, removeToast }: ToastContainerPr
 
 function ToastItem({ toast, onRemove }: { toast: Toast; onRemove: () => void }) {
     const [isVisible, setIsVisible] = useState(false);
+    const onRemoveRef = useRef(onRemove);
+    onRemoveRef.current = onRemove;
 
     useEffect(() => {
-        // Trigger enter animation on next frame
         const raf = requestAnimationFrame(() => setIsVisible(true));
         const timer = setTimeout(() => {
             setIsVisible(false);
-            setTimeout(onRemove, 350);
+            setTimeout(() => onRemoveRef.current(), 350);
         }, 5000);
         return () => {
             cancelAnimationFrame(raf);
             clearTimeout(timer);
         };
-    }, [onRemove]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     const config = {
         success: {

@@ -52,6 +52,7 @@ export default function App() {
   const [activePanel, setActivePanel] = useState<AppPanel>("crm");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [offersWorkspaceOpen, setOffersWorkspaceOpen] = useState(false);
   const [activeChatWaId, setActiveChatWaId] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
 
@@ -1324,6 +1325,7 @@ export default function App() {
     selectedLead
       ? stages.find((stage) => stage.id === (leadDraft?.stageId ?? selectedLead.stageId)) || selectedLead.stage || null
       : null;
+  const immersiveOffersMode = activePanel === "offers" && offersWorkspaceOpen;
 
   const handleConfirmAction = async () => {
     if (!confirmDialog) return;
@@ -1397,19 +1399,26 @@ export default function App() {
 
   return (
     <main className="min-h-screen overflow-x-hidden bg-[#020617] text-slate-100 selection:bg-cyan-500/30">
-      <SidebarNavigation
-        activePanel={activePanel}
-        onSelectPanel={handleSelectPanel}
-        onLogout={handleLogout}
-        collapsed={sidebarCollapsed}
-        onCollapsedChange={setSidebarCollapsed}
-        logoutSubmitting={submitting}
-        failedEventsCount={failedWebhookEventsCount}
-      />
+      {!immersiveOffersMode ? (
+        <SidebarNavigation
+          activePanel={activePanel}
+          onSelectPanel={handleSelectPanel}
+          onLogout={handleLogout}
+          collapsed={sidebarCollapsed}
+          onCollapsedChange={setSidebarCollapsed}
+          logoutSubmitting={submitting}
+          failedEventsCount={failedWebhookEventsCount}
+        />
+      ) : null}
 
-      <section className={`min-h-screen overflow-x-clip transition-[padding-left] duration-300 ${sidebarCollapsed ? "md:pl-20" : "md:pl-64"}`}>
-        <div className="min-w-0 space-y-6 px-3 py-4 md:px-4 md:py-4">
-          <header className="sticky top-0 z-30 flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-800 bg-slate-900/95 px-4 py-3 backdrop-blur md:static md:bg-slate-900/50 md:backdrop-blur-0">
+      <section
+        className={`min-h-screen overflow-x-clip transition-[padding-left] duration-300 ${
+          immersiveOffersMode ? "pl-0" : sidebarCollapsed ? "md:pl-20" : "md:pl-64"
+        }`}
+      >
+        <div className={`min-w-0 ${immersiveOffersMode ? "px-0 py-0" : "space-y-6 px-3 py-4 md:px-4 md:py-4"}`}>
+          {!immersiveOffersMode ? (
+            <header className="sticky top-0 z-30 flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-800 bg-slate-900/95 px-4 py-3 backdrop-blur md:static md:bg-slate-900/50 md:backdrop-blur-0">
             <div className="flex items-center gap-3">
               <Sheet open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
                 <SheetTrigger asChild>
@@ -1483,7 +1492,8 @@ export default function App() {
                 {refreshing ? "Atualizando..." : "Atualizar"}
               </button>
             </div>
-          </header>
+            </header>
+          ) : null}
 
         {activePanel === "crm" ? (
           <section key="crm" className="space-y-8 panel-enter">
@@ -2463,6 +2473,7 @@ export default function App() {
 
         <OffersSection
           active={activePanel === "offers"}
+          onWorkspaceModeChange={setOffersWorkspaceOpen}
           addToast={addToast}
           updateToast={updateToast}
         />

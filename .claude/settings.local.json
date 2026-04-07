@@ -3,7 +3,8 @@
     "allow": [
       "mcp__ide__getDiagnostics",
       "Bash(npm run:*)",
-      "Bash(npx prisma:*)"
+      "Bash(npx prisma:*)",
+      "Bash(cmd /c deploy_and_push.bat)"
     ]
   }
 }

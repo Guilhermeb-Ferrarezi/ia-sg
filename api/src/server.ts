@@ -1,4 +1,4 @@
-﻿import crypto from "crypto";
+import crypto from "crypto";
 import http from "http";
 import express from "express";
 import dotenv from "dotenv";
@@ -1807,6 +1807,54 @@ app.post("/api/landing-creation/sessions/:id/preview", requireSession, async (re
     res.json({ session: mapLandingCreationSession(session) });
   } catch (err) {
     res.status(400).json({ message: formatError(err) });
+  }
+});
+
+app.patch("/api/landing-creation/sessions/:id", requireSession, async (req, res) => {
+  const sessionId = Number(req.params.id);
+  if (!Number.isInteger(sessionId) || sessionId <= 0) {
+    res.status(400).json({ message: "Sessao invalida." });
+    return;
+  }
+
+  try {
+    const session = await getLandingCreationSessionOrThrow(sessionId);
+    const updates: any = {};
+
+    if (req.body.offerDraft) {
+      updates.offerDraftJson = normalizeLandingCreationDraft(
+        req.body.offerDraft,
+        normalizeLandingCreationDraft(session.offerDraftJson)
+      );
+    }
+
+    if (req.body.promptDraft) {
+      updates.promptDraftJson = req.body.promptDraft;
+    }
+
+    const updated = await prisma.landingCreationSession.update({
+      where: { id: sessionId },
+      data: updates
+    });
+
+    broadcastEvent("landing_sessions_updated");
+    res.json({ session: mapLandingCreationSession(updated) });
+  } catch (err) {
+    res.status(500).json({ message: formatError(err) });
+  }
+});
+
+app.delete("/api/landing-creation/sessions/:id", requireSession, async (req, res) => {
+  const sessionId = Number(req.params.id);
+  if (!Number.isInteger(sessionId) || sessionId <= 0) {
+    res.status(400).json({ message: "Sessao invalida." });
+    return;
+  }
+  try {
+    await prisma.landingCreationSession.deleteMany({ where: { id: sessionId } });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ message: formatError(err) });
   }
 });
 

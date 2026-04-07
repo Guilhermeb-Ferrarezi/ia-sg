@@ -1,4 +1,4 @@
-﻿# Completed Tasks
+# Completed Tasks
 ## Refactor - Modularizacao do server.ts (Mar 2026)
 - [x] Extracao dos prompts de IA para modulo dedicado.
 - [x] Extracao das rotas de auth, system e settings para arquivos proprios.
@@ -183,5 +183,26 @@ Atualizado em: 2026-03-20
 - [x] `OffersSection.tsx` recebeu page header, metric cards mais limpos e tabs com navegacao visual alinhada ao painel administrativo.
 - [x] Sidebar de sessoes/ofertas e card de operacoes foram reorganizados com hierarquia mais clara, espacamento generoso e lista de versoes simplificada.
 - [x] Workspace de criacao ficou mais enxuto, com menos textos explicativos, sem card de arquitetura e apenas contexto util nas sessoes e no preview.
+- [x] Fluxo de criacao migrado para um workspace fullscreen estilo Lovable, com chat a esquerda, preview central e retorno simples para a lista de ofertas publicadas.
+- [x] Modo de criacao passou a esconder a sidebar e o header do app, ocupando a tela inteira com apenas o botao de voltar no topo.
+- [x] Feed do chat de criacao foi refinado para parecer uma thread de builder, com separadores de data, cards de mensagem mais editoriais e composer mais proximo do estilo Lovable.
+- [x] Chat de criacao foi simplificado novamente para ficar mais proximo de um chat real, com menos chrome interno, menos espacamento morto e bubbles mais limpas.
+- [x] Composer do chat passou a autoajustar a altura conforme o texto digitado, sem tamanho fixo predefinido.
+- [x] Composer do workspace passou a enviar com `Enter`, manter quebra de linha com `Shift+Enter` e usar o botao de envio separado visualmente da caixa de texto.
 - [x] Build de `web` validado com sucesso em `bun run build` apos o refino visual.
-
+- [x] Cores do chat de criacao unificadas com o painel de preview (`bg-slate-900/40`, `bg-slate-950/70` para bubbles, `bg-slate-900/60` para composer), eliminando o desalinhamento de tons entre as duas areas.
+- [x] Exibicao otimista da mensagem do usuario no chat de criacao: a mensagem aparece imediatamente ao enviar, sem esperar o roundtrip da API. Em caso de erro, rollback automatico e restauracao do texto no composer.
+- [x] Chat do workspace expande para o centro da tela (max 720px) quando nao ha preview gerado, com transicao suave ao gerar preview para split view. Botoes de acao (Gerar preview, Publicar) fixos no header.
+- [x] Removido o background/border da caixa de chat quando centralizado, fazendo com que o chat se misture visualmente com o fundo do aplicativo conforme solicitado.
+- [x] Adicionado botao "Preencher dados" e painel lateral (drawer) para edicao manual dos campos da oferta (Titulo, Slug, Duracao, Modalidade, CTA, etc.), permitindo que o usuario preencha as informacoes diretamente sem depender apenas do chat.
+- [x] Otimizacao das cores das bubbles de chat (gradientes e opacidade) para garantir legibilidade total sobre o fundo da pagina.
+- [x] Adicionada barra lateral (sidebar) no workspace de criação, listando o histórico de rascunhos (chats) recentes para troca rápida entre sessões.
+- [x] Implementada a rota `PATCH /api/landing-creation/sessions/:id` no backend, corrigindo o erro 404 ao tentar atualizar manualmente os dados do rascunho via painel lateral.
+- [x] Ajuste de layout responsivo no workspace: Sidebar (280px) + Chat (Dynamic) + Preview (Dynamic), mantendo a fluidez visual do "builder".
+- [x] Workspace configurado com altura fixa (`h-[calc(100vh-80px)]`) e scroll interno, garantindo que o histórico de chats e a área de mensagens fiquem sempre visíveis e operáveis sem rolar a página inteira.
+- [x] Atualizado o background do campo de input (composer) para `bg-slate-900/90` com sombra externa e anel de brilho sutil, proporcionando melhor destaque visual sobre o fundo transparente.
+- [x] Implementado **Debounce de 3 segundos** no painel de edição de rascunhos. O sistema agora aguarda o usuário parar de digitar para enviar o salvamento automático, eliminando lentidões e requisições excessivas (PATCH).
+- [x] Barra lateral de rascunhos ajustada para ocupar **100% da altura** disponível no workspace, com scroll interno independente e visual integrado.
+- [x] Adicionado **Menu de Contexto (Clique Direito)** nos itens do histórico de chats. Agora é possível excluir rascunhos diretamente pela barra lateral de forma rápida.
+- [x] Corrigido bug de duplicação de inputs no painel de rascunhos.
+- [x] Design de workspace extremamente modernizado com *framer-motion*: introdução de glassmorphism avançado (backdrop-blur), micro-interações intensas com efeito `spring` e layouts fluídos, implementando a experiência exigida de visual deslumbrante e interatividade máxima.

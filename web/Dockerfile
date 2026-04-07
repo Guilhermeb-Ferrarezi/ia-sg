@@ -1,11 +1,11 @@
-FROM oven/bun:1.1-alpine AS deps
+FROM oven/bun:1-alpine AS deps
 
 WORKDIR /app
 
 COPY package.json bun.lock ./
 RUN bun install
 
-FROM node:20-alpine AS build
+FROM oven/bun:1-alpine AS build
 
 WORKDIR /app
 
@@ -17,7 +17,7 @@ ENV VITE_API_URL=$VITE_API_URL
 ARG VITE_WS_URL=/ws
 ENV VITE_WS_URL=$VITE_WS_URL
 
-RUN npm run build
+RUN bun run build
 
 FROM nginx:alpine
 
