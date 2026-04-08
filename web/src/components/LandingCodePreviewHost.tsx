@@ -16,8 +16,6 @@ import {
 } from "lucide-react";
 
 import type { LandingCodeBundle } from "../types/dashboard";
-import { Badge } from "./ui/badge";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
 import * as BadgeModule from "./ui/badge";
 import * as ButtonModule from "./ui/button";
 import * as CardModule from "./ui/card";
@@ -86,8 +84,8 @@ export default function LandingCodePreviewHost({
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const requestIdRef = useRef(0);
   const [frameReady, setFrameReady] = useState(false);
-  const [runtimeState, setRuntimeState] = useState<RuntimeState>("preparing");
-  const [runtimeError, setRuntimeError] = useState("");
+  const [, setRuntimeState] = useState<RuntimeState>("preparing");
+  const [, setRuntimeError] = useState("");
   const stylesMarkup = useMemo(() => getHeadStylesMarkup(), []);
   const srcDoc = useMemo(() => buildIframeDocument(stylesMarkup), [stylesMarkup]);
 
@@ -276,41 +274,6 @@ export default function LandingCodePreviewHost({
         onLoad={() => setFrameReady(true)}
         className="min-h-[900px] w-full border-0 bg-transparent"
       />
-
-      {runtimeState !== "ready" ? (
-        <div className="pointer-events-none absolute inset-0 flex items-start justify-end p-4">
-          <Card className="max-w-md border-slate-700/80 bg-slate-950/88 shadow-2xl backdrop-blur-xl">
-            <CardHeader>
-              <div className="flex items-center gap-3">
-                <Badge variant={runtimeState === "error" ? "outline" : "secondary"}>
-                  {runtimeState === "error" ? "Preview com erro" : "Sandbox ativo"}
-                </Badge>
-                <span className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">
-                  {bundle.source === "fallback" ? "Bundle fallback" : "Bundle IA"}
-                </span>
-              </div>
-              <CardTitle className="text-xl">
-                {runtimeState === "error" ? "Nao foi possivel executar o bundle" : "Preparando preview React"}
-              </CardTitle>
-              <CardDescription>
-                {runtimeState === "error"
-                  ? runtimeError
-                  : "Compilando o TSX gerado pela IA e renderizando a landing no iframe isolado."}
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="flex flex-wrap gap-2">
-              {bundle.usedComponents.slice(0, 6).map((componentName) => (
-                <Badge key={componentName} variant="secondary">
-                  {componentName}
-                </Badge>
-              ))}
-              {!bundle.usedComponents.length ? (
-                <Badge variant="secondary">Sem componentes mapeados</Badge>
-              ) : null}
-            </CardContent>
-          </Card>
-        </div>
-      ) : null}
     </div>
   );
 }

@@ -40,7 +40,7 @@ export const CRM_ENRICHMENT_SYSTEM_PROMPT = [
 ].join("\n");
 
 export const LANDING_GENERATION_SYSTEM_PROMPT = [
-  "Voce e um estrategista de conversao da Santos Tech especializado em landing pages de cursos.",
+  "Voce e um estrategista de captacao da Santos Tech especializado em landing pages para atrair interessados em cursos.",
   "Sua tarefa e gerar apenas um JSON valido para uma landing publica.",
   "Use somente os fatos aprovados fornecidos.",
   "Nao invente preco, certificacao, vagas, datas, duracao, resultados ou promessas.",
@@ -48,20 +48,25 @@ export const LANDING_GENERATION_SYSTEM_PROMPT = [
 ].join("\n");
 
 export const LANDING_CODE_GENERATION_SYSTEM_PROMPT = [
-  "Voce e um designer e engenheiro frontend da Santos Tech especializado em landing pages de alta conversao.",
+  "Voce e um designer e engenheiro frontend da Santos Tech especializado em landing pages para despertar interesse em cursos.",
   "Sua tarefa e gerar apenas um JSON valido contendo um bundle React para uma landing page.",
-  "Use exclusivamente React, Tailwind e componentes baseados em shadcn/Radix permitidos.",
-  "Nao use bibliotecas externas de UI, nao use HTML puro como base principal da interface e nao use APIs de rede ou browser sensiveis.",
+  "Use React, Tailwind e os componentes permitidos como base tecnica, mas tenha liberdade criativa real para compor a interface.",
+  "Busque uma direcao visual forte, menos generica, com hierarquia clara, ritmo entre secoes e escolhas de layout menos engessadas.",
+  "Voce nao precisa transformar tudo em cards padrao. Pode usar estrutura livre com sections, grids, colunas, overlays, bandas, blocos editoriais e composicoes mais autorais.",
+  "Pode usar HTML semantico dentro do componente React quando isso melhorar o resultado. Os componentes shadcn/Radix permitidos devem apoiar a interface, nao engessar o desenho.",
+  "Nao use bibliotecas externas de UI e nao use APIs de rede ou browser sensiveis.",
   "Nao invente preco, certificacao, vagas, datas, duracao, resultados ou promessas.",
   "Nao escreva markdown, comentarios ou texto fora do JSON."
 ].join("\n");
 
 export const LANDING_CREATION_SYSTEM_PROMPT = [
   "Voce e um consultor de criacao de ofertas e landing pages da Santos Tech.",
-  "Sua tarefa e conduzir uma conversa curta com o operador e atualizar um draft estruturado da oferta.",
-  "Voce pode sugerir titulo, slug, beneficios e CTA quando isso estiver claro no contexto.",
-  "Quando faltarem definicoes visuais ou estruturais, faca perguntas curtas e objetivas para evitar que a landing fique generica.",
-  "Priorize descobrir cores, tipografia, layout e os pontos principais do conteudo antes de assumir um visual padrao.",
+  "Sua tarefa e planejar como a landing sera executada, atualizar um draft estruturado da oferta e decidir se vale perguntar mais alguma coisa.",
+  "Voce pode sugerir titulo, slug, beneficios, CTA, visualTheme e estrutura quando isso estiver claro no contexto.",
+  "Considere por padrao que a landing serve para atrair interessados em cursos e orientar o interesse, nao para vender como ecommerce ou pagina de checkout.",
+  "Nao faca perguntas por padrao. Primeiro extraia o maximo possivel do prompt e monte um plano curto de execucao.",
+  "So gere asks curtos quando o prompt estiver raso demais para orientar o visual ou o conteudo.",
+  "Quando o prompt for suficiente, siga sem ask obrigatorio.",
   "Nao invente preco, datas, carga horaria exata, certificacao, promessas irreais ou URLs definitivas quando nao forem informadas.",
   "Quando nao souber um campo, deixe vazio e peca o dado faltante de forma objetiva.",
   "Responda apenas com JSON valido."
@@ -343,6 +348,23 @@ export function buildLandingCodeGenerationPrompt(input: {
     "--- Runtime e restricoes ---",
     "A exportacao principal deve ser um componente React default export.",
     "O componente pode receber props com onPrimaryAction para o CTA principal.",
+    "Ao construir o preview, trabalhe em modo lovable editorial imersivo. Priorize uma composicao memoravel, sensorial e autoral em vez de seguir um template rigido.",
+    "Se o contexto visual estiver incompleto, infira uma direcao plausivel e elegante em vez de cair em layout generico.",
+    "Varie estrutura, densidade, contraste, alinhamento, escala e ritmo entre secoes quando isso melhorar a narrativa da landing.",
+    "Use impacto visual por composicao, camadas, gradientes, tipografia expressiva, imagens abstratas de cena e espacamento. Nao dependa apenas de cards repetidos.",
+    "Nao transforme instrucoes de briefing em texto de interface. Nunca renderize frases como 'o operador pediu', 'publico-alvo confirmado', 'paleta escolhida', 'briefing', 'contexto capturado' ou equivalentes.",
+    "Converta fatos do briefing em promessa de aprendizado, momentos de descoberta, aplicacoes praticas e atmosfera visual ligada ao tema. Nao exponha o processo de planejamento para o visitante final.",
+    "A pagina precisa ter atmosfera visual perceptivel. Use fundo com cor, gradiente, glow, contraste entre secoes, formas abstratas, linhas, superficies sobrepostas ou composicao cromatica clara. Evite tela chapada ou sem presenca de background.",
+    "Quando houver paleta sugerida, reflita isso visualmente no background, nas superficies e nos destaques, nao apenas em badges ou botoes.",
+    "Nao trate duracao, modalidade, lista de fatos, badge, card, painel lateral, grade de beneficios ou CTA fixo como estrutura obrigatoria. Use apenas o que realmente melhorar a landing.",
+    "Se algum dado como duracao ou modalidade estiver fraco, generico ou placeholder, prefira omitir em vez de renderizar um bloco so para preencher layout.",
+    "Nao use sempre hero com coluna de texto + card informativo. Nao use a lista de approvedFacts como grade principal da pagina. Varie a composicao quando isso deixar a pagina mais forte.",
+    "Use como referencia de linguagem visual o padrao recente das landings da Santos Tech, mas eleve isso para algo mais lovable: hero forte e direto, secoes com ritmo claro, blocos de aprendizado ou transformacao, atmosfera premium e detalhes visuais que deem vontade de explorar a pagina.",
+    "Quando combinar com o tema, voce pode se inspirar em elementos de cena do proprio assunto, como planilhas, dashboards, interfaces, modulos, trilhas ou artefatos visuais do curso, sem copiar literalmente nenhuma pagina existente.",
+    "Prefira compor uma narrativa de pagina com contraste entre secoes, ancoras editoriais, variacao de escala e blocos assimetricos, em vez de repetir a mesma caixa informativa varias vezes.",
+    "Evite tratar a pagina como checkout, oferta agressiva, promocao relampago ou fechamento de venda imediata. O foco principal deve ser apresentar o curso, despertar interesse e convidar o visitante a saber mais.",
+    "Evite metacopy e placeholders como 'experiencia guiada', 'visao geral', 'proximo passo', 'direcao editorial montada a partir do briefing' ou frases equivalentes.",
+    "Escolha uma entre poucas composicoes fortes: manifesto imersivo, trilha visual de aprendizado, narrativa assimetrica em camadas ou cena tecnica dramatica. Nao misture tudo.",
     "Use imports somente desta allowlist:",
     '1. "react"',
     '2. "@/components/ui/button"',
@@ -355,7 +377,9 @@ export function buildLandingCodeGenerationPrompt(input: {
     '9. "lucide-react"',
     "Arquivos locais relativos tambem sao permitidos.",
     "Nao use fetch, XMLHttpRequest, WebSocket, eval, new Function, document.cookie, localStorage, sessionStorage ou scripts externos.",
-    "Prefira construir a interface com Button, Badge, Card e demais componentes permitidos em vez de divs estilizadas como componente principal.",
+    "Use Button, Badge, Card e demais componentes permitidos quando fizer sentido, mas nao force esses componentes em todas as secoes. Se a pagina ficar melhor quase toda em HTML semantico com um unico Button, prefira isso.",
+    "Voce pode construir secoes com div, section, article, header e grid livremente dentro do TSX.",
+    "Evite repeticao mecanica de blocos iguais. O preview deve parecer pensado, nao montado por molde.",
     "",
     "--- Formato de resposta ---",
     "{",
@@ -376,7 +400,7 @@ export function buildLandingCodeGenerationPrompt(input: {
     '    "text": "#f8fafc",',
     '    "muted": "#94a3b8"',
     "  },",
-    '  "usedComponents": ["Button", "Card", "Badge"],',
+    '  "usedComponents": ["Button"],',
     '  "files": [',
     '    {',
     '      "path": "App.tsx",',
@@ -455,6 +479,17 @@ export function buildLandingCreationPrompt(input: {
   };
   history: ReplyHistoryMessage[];
 }): string {
+  const compactDraft = {
+    title: input.currentDraft.title,
+    slug: input.currentDraft.slug,
+    shortDescription: input.currentDraft.shortDescription,
+    approvedFacts: input.currentDraft.approvedFacts.slice(0, 6),
+    ctaLabel: input.currentDraft.ctaLabel,
+    visualTheme: input.currentDraft.visualTheme,
+    colorPalette: input.currentDraft.colorPalette,
+    typographyStyle: input.currentDraft.typographyStyle,
+    layoutStyle: input.currentDraft.layoutStyle
+  };
   const historyText =
     input.history.length > 0
       ? input.history
@@ -464,12 +499,16 @@ export function buildLandingCreationPrompt(input: {
 
   return [
     "Atualize o draft da oferta com base na conversa abaixo.",
-    "Preserve informacoes uteis ja capturadas e melhore a organizacao do draft.",
-    "Se um campo nao estiver claro, mantenha vazio.",
+    "Preserve informacoes uteis ja capturadas, melhore a organizacao do draft e defina um plano curto de execucao.",
+    "Se um campo nao estiver claro, mantenha vazio ou faca uma inferencia conservadora quando houver base suficiente.",
+    "Classifique a profundidade do prompt como shallow, medium ou deep.",
+    "Use shallow apenas quando o pedido estiver raso demais para orientar o visual e o conteudo.",
+    "Quando for medium ou deep, evite transformar a conversa em interrogatorio.",
     "A mensagem do assistente deve ser curta, pratica e focada no proximo passo.",
+    "Economize raciocinio e texto. Nao escreva plano longo.",
     "",
     "--- Draft atual ---",
-    JSON.stringify(input.currentDraft, null, 2),
+    JSON.stringify(compactDraft, null, 2),
     "",
     "--- Conversa ---",
     historyText,
@@ -477,6 +516,19 @@ export function buildLandingCreationPrompt(input: {
     "--- Formato de resposta ---",
     "{",
     '  "assistantMessage": "Mensagem curta para o operador",',
+    '  "planSummary": "Resumo curto em ate 2 frases de como a landing sera executada",',
+    '  "promptDepth": "shallow | medium | deep",',
+    '  "shouldAsk": true,',
+    '  "readyForVisualGeneration": false,',
+    '  "askQueue": [',
+    '    {',
+    '      "id": "colorPalette",',
+    '      "label": "Direcao visual",',
+    '      "question": "Pergunta contextual ao curso e ao briefing",',
+    '      "placeholder": "Exemplo contextual ao tema da landing",',
+    '      "options": ["Opcao contextual 1", "Opcao contextual 2", "Opcao contextual 3", "Opcao contextual 4"]',
+    '    }',
+    "  ],",
     '  "draft": {',
     '    "title": "Titulo sugerido da oferta",',
     '    "slug": "slug-sugerido",',
@@ -495,11 +547,13 @@ export function buildLandingCreationPrompt(input: {
     "  }",
     "}",
     "",
-    'Se faltarem detalhes de visual ou estrutura, use assistantMessage para pedir respostas curtas no formato:',
-    '"Cores: ..."',
-    '"Tipografia: ..."',
-    '"Layout: ..."',
-    'Se faltarem detalhes de conteudo, peca tambem "Pontos principais: ..." com 3 a 5 itens.',
+    'Quando promptDepth for shallow, use askQueue para montar asks curtos e objetivos.',
+    'Quando promptDepth for medium, so use askQueue se isso ajudar de forma opcional e sem bloquear a geracao visual.',
+    'Quando promptDepth for deep, deixe askQueue vazio e readyForVisualGeneration como true.',
+    'Use ids estaveis em askQueue. Prefira: colorPalette, typographyStyle, layoutStyle, contentNotes, audience, objective, cta.',
+    'Nao use opcoes genericas sempre iguais. As perguntas e opcoes devem refletir o proprio tema do curso quando isso estiver implicito no briefing.',
+    'Se o assunto sugerir uma identidade conhecida, aproveite isso. Exemplo: PowerPoint tende a vermelho alaranjado; Excel tende a verde; Power BI tende a amarelo/dourado.',
+    'As opcoes devem ser curtas, contextuais e no maximo 4 por ask.',
     "",
     "Responda apenas com JSON valido."
   ].join("\n");

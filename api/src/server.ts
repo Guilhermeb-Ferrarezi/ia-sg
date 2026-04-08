@@ -1,13 +1,14 @@
-import crypto from "crypto";
+﻿import crypto from "crypto";
 import http from "http";
 import express from "express";
 import dotenv from "dotenv";
 import { PrismaClient } from "@prisma/client";
 import { WebSocketServer, WebSocket } from "ws";
 import {
-  buildLandingCodeGenerationPromptInput,
+  buildLandingCodeGenerationPrompt,
   buildLandingCreationPromptInput,
   buildLandingGenerationPromptInput,
+  LANDING_CODE_GENERATION_SYSTEM_PROMPT,
   buildLeadEnrichmentPromptInput,
   buildReplyPromptInput,
   extractFirstJsonObject,
@@ -24,8 +25,37 @@ type RequestMeta = {
   rawBody?: Buffer;
 };
 
+type AIModelRoutingMode = "automatic" | "manual";
+
+type AIModelTaskType =
+  | "chat_reply"
+  | "lead_enrichment"
+  | "lead_classification"
+  | "landing_planner"
+  | "landing_generation"
+  | "landing_code_bundle"
+  | "landing_refine"
+  | "landing_visual";
+
+type AIModelTaskOverrides = {
+  chatReplyModel: string;
+  leadEnrichmentModel: string;
+  leadClassificationModel: string;
+  landingPlannerModel: string;
+  landingGenerationModel: string;
+  landingCodeBundleModel: string;
+  landingRefineModel: string;
+  landingVisualFallbackModel: string;
+};
+
 type AIConfigValues = {
   model: string;
+  strongModel: string;
+  cheapModel: string;
+  routingMode: AIModelRoutingMode;
+  taskOverrides: AIModelTaskOverrides;
+  landingPlannerModel: string;
+  landingVisualModel: string;
   baseUrl: string;
   transcriptionModel: string;
   persona: string;
@@ -33,6 +63,13 @@ type AIConfigValues = {
   aiReplyDebounceMs: number;
   humanDelayMinMs: number;
   humanDelayMaxMs: number;
+};
+
+type AIModelResolution = {
+  taskType: AIModelTaskType;
+  selectedModel: string;
+  fallbackModel: string | null;
+  routingReason: string;
 };
 
 type LandingPromptValues = {
@@ -60,11 +97,39 @@ type LandingCreationDraftValues = {
   typographyStyle: string;
   layoutStyle: string;
   isActive: boolean;
+  planner?: LandingPlannerState;
+};
+
+type LandingPlannerPromptDepth = "shallow" | "medium" | "deep";
+
+type LandingPlannerAsk = {
+  id: string;
+  label: string;
+  question: string;
+  placeholder: string;
+  options: string[];
+  helperText?: string;
+};
+
+type LandingPlannerState = {
+  planSummary: string;
+  promptDepth: LandingPlannerPromptDepth;
+  shouldAsk: boolean;
+  askQueue: LandingPlannerAsk[];
+  readyForVisualGeneration: boolean;
+  activeMessageId: string | null;
+  activeQuestionId: string | null;
+  stageSummary: string;
 };
 
 type LandingCreationHistoryMessage = {
+  id: string;
   role: "user" | "assistant";
+  kind?: "chat" | "planner";
+  plannerMessageId?: string;
+  isMutable?: boolean;
   content: string;
+  thinking?: string;
   createdAt: string;
 };
 
@@ -208,6 +273,8 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
 const OPENAI_TRANSCRIPTION_MODEL = process.env.OPENAI_TRANSCRIPTION_MODEL || "whisper-1";
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 const BOT_PERSONA = process.env.BOT_PERSONA || "";
 const AI_REPLY_DEBOUNCE_MS = Math.max(0, Number(process.env.AI_REPLY_DEBOUNCE_MS || ""));
 const HUMAN_DELAY_MIN_MS = Number(process.env.HUMAN_DELAY_MIN_MS || null);
@@ -215,8 +282,7 @@ const HUMAN_DELAY_MAX_MS = Number(process.env.HUMAN_DELAY_MAX_MS || null);
 const AI_CONFIG_KEY = "default";
 const LANDING_PROMPT_GLOBAL_SCOPE = "global";
 const LANDING_PROMPT_OFFER_SCOPE = "offer";
-
-const SESSION_SECRET = process.env.SESSION_SECRET || process.env.JWT_SECRET || "";
+const SESSION_SECRET = process.env.SESSION_SECRET || process.env.JWT_SECREwT || "";
 const LANDING_DELIVERY_SECRET = process.env.LANDING_DELIVERY_SECRET || SESSION_SECRET;
 const AUTH_COOKIE_NAME = process.env.AUTH_COOKIE_NAME || "";
 const SESSION_TTL_DAYS = Number(process.env.SESSION_TTL_DAYS || 7);
@@ -227,6 +293,9 @@ const DASHBOARD_USER = process.env.DASHBOARD_USER || "";
 const DASHBOARD_PASS = process.env.DASHBOARD_PASS || "";
 const WEBHOOK_WORKER_INTERVAL_MS = Number(process.env.WEBHOOK_WORKER_INTERVAL_MS || "2000");
 const WEBHOOK_MAX_RETRIES = Number(process.env.WEBHOOK_MAX_RETRIES || "5");
+const AI_CONFIG_CACHE_TTL_MS = Number(process.env.AI_CONFIG_CACHE_TTL_MS || "30000");
+const FAQ_CACHE_TTL_MS = Number(process.env.FAQ_CACHE_TTL_MS || "30000");
+const DEFAULT_STAGE_CACHE_TTL_MS = Number(process.env.DEFAULT_STAGE_CACHE_TTL_MS || "300000");
 const LOG_DELETE_REAUTH_WINDOW_MS = 150000;
 const LOG_SKIP_GET_PATH_PREFIXES = (process.env.LOG_SKIP_GET_PATH_PREFIXES || "/api/health,/api/system/readiness,/api/system/health-details,/api/logs,/api/crm/leads,/api/dashboard/summary")
   .split(",")
@@ -1922,16 +1991,25 @@ app.get("/api/landing-creation/sessions/:id", requireSession, async (req, res) =
 app.post("/api/landing-creation/sessions/:id/messages", requireSession, async (req, res) => {
   const sessionId = Number(req.params.id);
   const message = typeof req.body?.message === "string" ? req.body.message.trim() : "";
+  const absorbAskAnswer = typeof req.body?.absorbAskAnswer === "boolean" ? req.body.absorbAskAnswer : false;
+  const askAnswers =
+    typeof req.body?.askAnswers === "object" && req.body.askAnswers !== null
+      ? Object.fromEntries(
+          Object.entries(req.body.askAnswers as Record<string, unknown>)
+            .map(([key, value]) => [key, typeof value === "string" ? utf8Text(value).trim() : ""])
+            .filter(([, value]) => Boolean(value))
+        )
+      : null;
   if (!Number.isInteger(sessionId) || sessionId <= 0) {
     res.status(400).json({ message: "Sessao invalida." });
     return;
   }
-  if (!message) {
+  if (!message && (!askAnswers || Object.keys(askAnswers).length === 0)) {
     res.status(400).json({ message: "Mensagem obrigatoria." });
     return;
   }
   try {
-    const session = await runLandingCreationChatTurn(sessionId, message);
+    const session = await runLandingCreationChatTurn(sessionId, message, { absorbAskAnswer, askAnswers });
     broadcastEvent("landing_sessions_updated");
     res.json({ session: mapLandingCreationSession(session) });
   } catch (err) {
@@ -2864,12 +2942,67 @@ function shouldRetryStatus(status: number): boolean {
   return status === 429 || status >= 500;
 }
 
-async function fetchWithRetry(url: string, init: RequestInit, maxAttempts = 3): Promise<Response> {
+type FetchWithRetryOptions = {
+  maxAttempts?: number;
+  timeoutMs?: number;
+};
+
+function buildRequestSignal(initSignal: AbortSignal | null | undefined, timeoutMs?: number): {
+  signal: AbortSignal | undefined;
+  cleanup: () => void;
+} {
+  if (!timeoutMs || timeoutMs <= 0) {
+    return {
+      signal: initSignal || undefined,
+      cleanup: () => undefined
+    };
+  }
+
+  const controller = new AbortController();
+  const timeoutHandle = setTimeout(() => {
+    controller.abort(new Error(`Request timeout after ${timeoutMs}ms`));
+  }, timeoutMs);
+
+  const abortFromParent = () => {
+    const parentReason = "reason" in (initSignal as AbortSignal)
+      ? (initSignal as AbortSignal & { reason?: unknown }).reason
+      : undefined;
+    controller.abort(parentReason);
+  };
+
+  if (initSignal) {
+    if (initSignal.aborted) {
+      abortFromParent();
+    } else {
+      initSignal.addEventListener("abort", abortFromParent, { once: true });
+    }
+  }
+
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      clearTimeout(timeoutHandle);
+      if (initSignal) {
+        initSignal.removeEventListener("abort", abortFromParent);
+      }
+    }
+  };
+}
+
+async function fetchWithRetry(url: string, init: RequestInit, options: number | FetchWithRetryOptions = 3): Promise<Response> {
   let lastError: unknown = null;
+  const normalizedOptions = typeof options === "number" ? { maxAttempts: options } : options;
+  const maxAttempts = Math.max(1, normalizedOptions.maxAttempts || 3);
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const { signal, cleanup } = buildRequestSignal(init.signal, normalizedOptions.timeoutMs);
     try {
-      const response = await fetch(url, init);
+      const response = await fetch(url, {
+        ...init,
+        signal
+      });
+      cleanup();
+
       if (!shouldRetryStatus(response.status) || attempt === maxAttempts) {
         return response;
       }
@@ -2877,6 +3010,7 @@ async function fetchWithRetry(url: string, init: RequestInit, maxAttempts = 3): 
       const waitMs = Math.min(8000, 500 * 2 ** (attempt - 1));
       await delay(waitMs);
     } catch (err) {
+      cleanup();
       lastError = err;
       if (attempt >= maxAttempts) {
         throw err;
@@ -2964,6 +3098,70 @@ function normalizeLandingLeadContext(payload: unknown): {
   };
 }
 
+function buildDefaultLandingPlannerState(): LandingPlannerState {
+  return {
+    planSummary: "",
+    promptDepth: "shallow",
+    shouldAsk: false,
+    askQueue: [],
+    readyForVisualGeneration: false,
+    activeMessageId: null,
+    activeQuestionId: null,
+    stageSummary: ""
+  };
+}
+
+function normalizeLandingPlannerAskQueue(payload: unknown): LandingPlannerAsk[] {
+  if (!Array.isArray(payload)) return [];
+  const asks: LandingPlannerAsk[] = [];
+  for (const item of payload) {
+    const body = typeof item === "object" && item !== null ? item as Record<string, unknown> : {};
+    const id = typeof body.id === "string" ? utf8Text(body.id).trim() : "";
+    const label = typeof body.label === "string" ? utf8Text(body.label).trim() : "";
+    const question = typeof body.question === "string" ? utf8Text(body.question).trim() : "";
+    const placeholder = typeof body.placeholder === "string" ? utf8Text(body.placeholder).trim() : "";
+    const helperText = typeof body.helperText === "string" ? utf8Text(body.helperText).trim() : undefined;
+    const options = Array.isArray(body.options)
+      ? body.options.map((value) => typeof value === "string" ? utf8Text(value).trim() : "").filter(Boolean)
+      : [];
+    if (!id || !question) continue;
+    asks.push({
+      id,
+      label: label || "Pergunta da Lume",
+      question,
+      placeholder,
+      options,
+      ...(helperText ? { helperText } : {})
+    });
+  }
+  return asks;
+}
+
+function normalizeLandingPlannerState(payload: unknown, fallback?: LandingPlannerState): LandingPlannerState {
+  const body = typeof payload === "object" && payload !== null ? payload as Record<string, unknown> : {};
+  const base = fallback ? { ...fallback } : buildDefaultLandingPlannerState();
+  const promptDepth = typeof body.promptDepth === "string" && ["shallow", "medium", "deep"].includes(body.promptDepth)
+    ? body.promptDepth as LandingPlannerPromptDepth
+    : base.promptDepth;
+
+  return {
+    planSummary: typeof body.planSummary === "string" ? utf8Text(body.planSummary).trim() : base.planSummary,
+    promptDepth,
+    shouldAsk: typeof body.shouldAsk === "boolean" ? body.shouldAsk : base.shouldAsk,
+    askQueue: body.askQueue !== undefined ? normalizeLandingPlannerAskQueue(body.askQueue) : base.askQueue,
+    readyForVisualGeneration: typeof body.readyForVisualGeneration === "boolean"
+      ? body.readyForVisualGeneration
+      : base.readyForVisualGeneration,
+    activeMessageId: typeof body.activeMessageId === "string" && body.activeMessageId.trim()
+      ? utf8Text(body.activeMessageId).trim()
+      : base.activeMessageId,
+    activeQuestionId: typeof body.activeQuestionId === "string" && body.activeQuestionId.trim()
+      ? utf8Text(body.activeQuestionId).trim()
+      : base.activeQuestionId,
+    stageSummary: typeof body.stageSummary === "string" ? utf8Text(body.stageSummary).trim() : base.stageSummary
+  };
+}
+
 function buildDefaultLandingCreationDraft(): LandingCreationDraftValues {
   return {
     title: "",
@@ -2979,7 +3177,8 @@ function buildDefaultLandingCreationDraft(): LandingCreationDraftValues {
     colorPalette: "",
     typographyStyle: "",
     layoutStyle: "",
-    isActive: true
+    isActive: true,
+    planner: buildDefaultLandingPlannerState()
   };
 }
 
@@ -3001,6 +3200,7 @@ function normalizeLandingCreationDraft(payload: unknown, fallback?: LandingCreat
   if (typeof body.typographyStyle === "string") base.typographyStyle = utf8Text(body.typographyStyle).trim();
   if (typeof body.layoutStyle === "string") base.layoutStyle = utf8Text(body.layoutStyle).trim();
   if (typeof body.isActive === "boolean") base.isActive = body.isActive;
+  if (body.planner !== undefined) base.planner = normalizeLandingPlannerState(body.planner, base.planner);
 
   if (!base.slug && base.title) {
     base.slug = normalizeSlug(base.title);
@@ -3025,53 +3225,493 @@ function buildLandingDesignSummary(input: {
   return parts.join(" | ");
 }
 
-function buildLandingCreationFollowUpMessage(draft: LandingCreationDraftValues, fallbackMessage: string): string {
-  const missingLines: string[] = [];
+function isProcessOrMetaFact(value: string): boolean {
+  const normalized = value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
 
-  if (!draft.colorPalette.trim()) {
-    missingLines.push("Cores: ex. verde profissional, azul premium, laranja vibrante");
-  }
-  if (!draft.typographyStyle.trim()) {
-    missingLines.push("Tipografia: ex. elegante, tecnica, forte, editorial");
-  }
-  if (!draft.layoutStyle.trim()) {
-    missingLines.push("Layout: ex. hero + grid, editorial, cards, comparativo");
-  }
-  if (!draft.shortDescription.trim() && draft.approvedFacts.length === 0) {
-    missingLines.push("Pontos principais: 3 a 5 coisas que o aluno vai aprender ou receber");
-  }
-
-  if (!missingLines.length) {
-    return fallbackMessage;
-  }
-
-  const alreadyAsksDiscovery = ["Cores:", "Tipografia:", "Layout:", "Pontos principais:"].some((marker) =>
-    fallbackMessage.includes(marker)
-  );
-
-  if (alreadyAsksDiscovery) {
-    return fallbackMessage;
-  }
+  if (!normalized) return true;
 
   return [
-    fallbackMessage,
-    "",
-    `Para eu fugir do template e deixar a landing${draft.title ? ` de ${draft.title}` : ""} com mais personalidade, me responde assim:`,
-    ...missingLines,
-  ].join("\n");
+    "o operador pediu",
+    "publico-alvo confirmado",
+    "publico alvo confirmado",
+    "objetivo confirmado",
+    "paleta confirmada",
+    "tipografia confirmada",
+    "layout confirmado",
+    "direcao visual",
+    "direcao visual desejada",
+    "prompt do usuario",
+    "briefing",
+    "contexto capturado",
+    "resposta do usuario"
+  ].some((entry) => normalized.includes(entry));
+}
+
+function sanitizeApprovedFactsForLanding(facts: string[], fallbackText: string): string[] {
+  const seen = new Set<string>();
+  const sanitized = facts
+    .map((fact) => utf8Text(fact).trim())
+    .filter((fact) => fact.length > 0)
+    .filter((fact) => !isProcessOrMetaFact(fact))
+    .filter((fact) => {
+      const key = fact.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+  return sanitized.length ? sanitized : [fallbackText];
+}
+
+function resolveFallbackThemeTokens(input: {
+  colorPalette?: string | null;
+  visualTheme?: string | null;
+}): {
+  accent: string;
+  surface: string;
+  canvas: string;
+  text: string;
+  muted: string;
+} {
+  const basis = `${input.colorPalette || ""} ${input.visualTheme || ""}`
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+
+  if (basis.includes("verde")) {
+    return {
+      accent: "#34d399",
+      surface: "#052e2b",
+      canvas: "#021916",
+      text: "#ecfdf5",
+      muted: "#9fdcc8"
+    };
+  }
+
+  if (basis.includes("laranja") || basis.includes("dourado") || basis.includes("amarelo")) {
+    return {
+      accent: "#f59e0b",
+      surface: "#3b1900",
+      canvas: "#140b02",
+      text: "#fff7ed",
+      muted: "#fdba74"
+    };
+  }
+
+  if (basis.includes("vermelho")) {
+    return {
+      accent: "#f43f5e",
+      surface: "#3a0d18",
+      canvas: "#15060a",
+      text: "#fff1f2",
+      muted: "#fda4af"
+    };
+  }
+
+  if (basis.includes("claro") || basis.includes("branco")) {
+    return {
+      accent: "#2563eb",
+      surface: "#dbeafe",
+      canvas: "#eff6ff",
+      text: "#0f172a",
+      muted: "#475569"
+    };
+  }
+
+  return {
+    accent: "#22d3ee",
+    surface: "#0f172a",
+    canvas: "#020617",
+    text: "#f8fafc",
+    muted: "#94a3b8"
+  };
+}
+
+function inferLandingPromptDepth(draft: LandingCreationDraftValues): LandingPlannerPromptDepth {
+  const hasTopic = Boolean(draft.title.trim() || draft.slug.trim());
+  const hasContent = Boolean(draft.shortDescription.trim() || draft.approvedFacts.length > 0);
+  const hasRichContent = draft.approvedFacts.length >= 3 || draft.shortDescription.trim().length >= 80;
+  const hasVisualDirection = Boolean(
+    draft.visualTheme.trim() ||
+    draft.colorPalette.trim() ||
+    draft.typographyStyle.trim() ||
+    draft.layoutStyle.trim()
+  );
+
+  if (hasTopic && hasRichContent && hasVisualDirection) return "deep";
+  if (hasTopic && (hasContent || hasVisualDirection)) return "medium";
+  return "shallow";
+}
+
+function inferLandingTopicContext(draft: LandingCreationDraftValues) {
+  const source = `${draft.title} ${draft.shortDescription} ${draft.visualTheme} ${draft.colorPalette}`.toLowerCase();
+  const has = (pattern: RegExp) => pattern.test(source);
+
+  if (has(/powerpoint|ppt|slide|apresenta/)) {
+    return {
+      paletteQuestion: "A landing deve seguir o vermelho alaranjado do PowerPoint ou prefere outra direcao?",
+      palettePlaceholder: "Ex: vermelho alaranjado do PowerPoint com fundo grafite",
+      paletteOptions: [
+        "vermelho alaranjado do PowerPoint",
+        "coral com vinho escuro",
+        "laranja queimado com grafite",
+        "vermelho vivo com off-white"
+      ],
+      typographyOptions: ["editorial impactante", "corporativa forte", "apresentacao premium", "tecnologica limpa"],
+      layoutOptions: ["hero dramatica com blocos", "storytelling em faixas", "split screen", "landing longa fluida"],
+      contentOptions: ["aulas praticas com slides", "design de apresentacoes", "animacoes e recursos", "produtividade no escritorio"]
+    };
+  }
+
+  if (has(/excel|planilha|spreadsheet/)) {
+    return {
+      paletteQuestion: "A landing deve seguir o verde classico do Excel ou outra direcao visual?",
+      palettePlaceholder: "Ex: verde Excel com cinza grafite",
+      paletteOptions: [
+        "verde Excel com grafite",
+        "verde esmeralda com preto",
+        "verde profissional com branco gelo",
+        "verde vibrante com azul petroleo"
+      ],
+      typographyOptions: ["corporativa limpa", "editorial forte", "moderna objetiva", "tecnica elegante"],
+      layoutOptions: ["hero com dados em camadas", "storytelling de produtividade", "split screen", "landing longa fluida"],
+      contentOptions: ["formulas e funcoes", "graficos e dashboards", "produtividade no escritorio", "aulas praticas"]
+    };
+  }
+
+  if (has(/power bi|dashboard|dados|analytics|analista/)) {
+    return {
+      paletteQuestion: "Qual clima visual combina mais com essa landing de Power BI?",
+      palettePlaceholder: "Ex: amarelo Power BI com azul profundo",
+      paletteOptions: [
+        "amarelo Power BI com grafite",
+        "mostarda com azul profundo",
+        "dourado com preto tecnico",
+        "amarelo suave com chumbo"
+      ],
+      typographyOptions: ["tech futurista", "editorial forte", "corporativa premium", "dados com visual limpo"],
+      layoutOptions: ["painel imersivo", "hero com dashboards", "split screen", "narrativa em secoes"],
+      contentOptions: ["dashboards e indicadores", "modelagem de dados", "analise pratica", "projetos reais"]
+    };
+  }
+
+  if (has(/python|flask|react|javascript|node|codigo|programa|dev|desenvolv/)) {
+    return {
+      paletteQuestion: "Que atmosfera visual deve guiar essa landing tecnica?",
+      palettePlaceholder: "Ex: fundo escuro com ciano e verde codigo",
+      paletteOptions: [
+        "ciano com grafite",
+        "verde codigo com preto",
+        "azul noturno com neon suave",
+        "laranja terminal com chumbo"
+      ],
+      typographyOptions: ["tech futurista", "mono editorial", "moderna limpa", "experimental tecnica"],
+      layoutOptions: ["studio tecnico imersivo", "split screen", "hero com camadas", "narrativa de aprendizado"],
+      contentOptions: ["projetos do zero", "aplicacoes praticas", "codigo orientado a iniciantes", "fluxo real de desenvolvimento"]
+    };
+  }
+
+  if (has(/kids|crianca|infantil|juvenil|teen|jovem/)) {
+    return {
+      paletteQuestion: "Qual energia visual combina melhor com essa landing infantil?",
+      palettePlaceholder: "Ex: azul divertido com amarelo e coral",
+      paletteOptions: [
+        "azul divertido com amarelo",
+        "coral com azul ceu",
+        "verde lima com roxo suave",
+        "multicolorido vibrante"
+      ],
+      typographyOptions: ["divertida e amigavel", "ludica com impacto", "moderna arredondada", "energia criativa"],
+      layoutOptions: ["blocos ludicos", "hero ilustrativa", "cards dinamicos", "landing longa divertida"],
+      contentOptions: ["aprendizado divertido", "aulas praticas", "criatividade e logica", "projetos para criancas"]
+    };
+  }
+
+  return {
+    paletteQuestion: "Qual paleta deve guiar a landing?",
+    palettePlaceholder: "Ex: azul profundo com cinza grafite",
+    paletteOptions: [
+      "azul profundo com grafite",
+      "verde profissional com chumbo",
+      "preto com dourado discreto",
+      "coral com azul escuro"
+    ],
+    typographyOptions: ["editorial forte", "elegante", "corporativa limpa", "tech futurista"],
+    layoutOptions: ["hero com storytelling", "split screen", "landing longa fluida", "hero com camadas"],
+    contentOptions: ["aulas praticas", "beneficios reais", "para quem e o curso", "aplicacao no dia a dia"]
+  };
+}
+
+function buildLandingPlannerAskQueue(draft: LandingCreationDraftValues, depth: LandingPlannerPromptDepth): LandingPlannerAsk[] {
+  if (depth === "deep") return [];
+
+  const asks: LandingPlannerAsk[] = [];
+  const context = inferLandingTopicContext(draft);
+
+  if (!draft.colorPalette.trim()) {
+    asks.push({
+      id: "colorPalette",
+      label: "Direcao visual",
+      question: context.paletteQuestion,
+      placeholder: context.palettePlaceholder,
+      options: context.paletteOptions,
+      helperText: "Pode confirmar uma das sugestoes ou responder do seu jeito."
+    });
+  }
+
+  if (!draft.typographyStyle.trim()) {
+    asks.push({
+      id: "typographyStyle",
+      label: "Tipografia",
+      question: "Como a tipografia deve se comportar?",
+      placeholder: "Ex: editorial forte e elegante",
+      options: context.typographyOptions,
+      helperText: "Isso ajuda o Gemini a dar identidade para a pagina."
+    });
+  }
+
+  if (!draft.layoutStyle.trim()) {
+    asks.push({
+      id: "layoutStyle",
+      label: "Layout",
+      question: "Qual estrutura deve organizar a landing?",
+      placeholder: "Ex: hero cinematografico com storytelling em cards",
+      options: context.layoutOptions,
+      helperText: "Se preferir, responda do seu jeito."
+    });
+  }
+
+  if (!draft.shortDescription.trim() && draft.approvedFacts.length === 0) {
+    asks.push({
+      id: "contentNotes",
+      label: "Conteudo",
+      question: "Quais pontos principais precisam aparecer?",
+      placeholder: "Ex: certificado reconhecido, aulas praticas e suporte da equipe",
+      options: context.contentOptions,
+      helperText: "Pode mandar em uma frase ou em topicos."
+    });
+  }
+
+  return depth === "medium" ? asks.slice(0, 1) : asks;
+}
+
+function buildFallbackLandingPlannerState(draft: LandingCreationDraftValues, previous?: LandingPlannerState): LandingPlannerState {
+  const promptDepth = inferLandingPromptDepth(draft);
+  const askQueue = buildLandingPlannerAskQueue(draft, promptDepth);
+  const readyForVisualGeneration = promptDepth !== "shallow" || askQueue.length === 0;
+  const shouldAsk = promptDepth === "shallow" && askQueue.length > 0;
+  const planSummary = previous?.planSummary?.trim() || [
+    `Vou estruturar a landing${draft.title ? ` de ${draft.title}` : ""} em blocos de conversao,`,
+    readyForVisualGeneration
+      ? "passar essa direcao para a geracao visual e montar um preview inicial."
+      : "mas antes preciso de um pouco mais de contexto para guiar melhor o visual."
+  ].join(" ");
+
+  return {
+    planSummary,
+    promptDepth,
+    shouldAsk,
+    askQueue,
+    readyForVisualGeneration,
+    activeMessageId: previous?.activeMessageId || null,
+    activeQuestionId: askQueue[0]?.id || null,
+    stageSummary: previous?.stageSummary?.trim() || planSummary
+  };
+}
+
+function buildLandingPlannerStateFromAiResponse(parsed: Record<string, unknown>, draft: LandingCreationDraftValues): LandingPlannerState {
+  const plannerPayload = typeof parsed.planner === "object" && parsed.planner !== null
+    ? parsed.planner
+    : {
+      planSummary: parsed.planSummary,
+      promptDepth: parsed.promptDepth,
+      shouldAsk: parsed.shouldAsk,
+      askQueue: parsed.askQueue,
+      readyForVisualGeneration: parsed.readyForVisualGeneration
+    };
+
+  const normalized = normalizeLandingPlannerState(plannerPayload, buildFallbackLandingPlannerState(draft, draft.planner));
+  const fallback = buildFallbackLandingPlannerState(draft, {
+    ...normalized,
+    planSummary: normalized.planSummary
+  });
+
+  return {
+    planSummary: normalized.planSummary || fallback.planSummary,
+    promptDepth: normalized.promptDepth,
+    shouldAsk: normalized.promptDepth === "shallow" ? normalized.shouldAsk || fallback.shouldAsk : false,
+    askQueue: normalized.askQueue.length ? normalized.askQueue : fallback.askQueue,
+    readyForVisualGeneration: normalized.promptDepth === "shallow"
+      ? normalizeBoolean(normalized.readyForVisualGeneration, fallback.readyForVisualGeneration)
+      : true,
+    activeMessageId: normalized.activeMessageId || fallback.activeMessageId,
+    activeQuestionId: (normalized.askQueue.length ? normalized.askQueue[0]?.id : normalized.activeQuestionId) || fallback.activeQuestionId,
+    stageSummary: normalized.stageSummary || normalized.planSummary || fallback.stageSummary
+  };
+}
+
+function buildLandingPlannerAssistantMessage(planner: LandingPlannerState, fallbackMessage: string): {
+  content: string;
+  thinking: string;
+  stageSummary: string;
+} {
+  const compactSummary = planner.stageSummary.trim() || fallbackMessage.trim() || planner.planSummary.trim() || "Rascunho atualizado.";
+  const replyLines: string[] = [compactSummary];
+
+  if (planner.shouldAsk && planner.askQueue[0]) {
+    replyLines.push(planner.askQueue[0].question);
+  }
+
+  return {
+    content: replyLines.join("\n\n"),
+    thinking: "",
+    stageSummary: compactSummary
+  };
+}
+
+function toTitleCase(input: string): string {
+  return input
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function extractSimpleLandingTopic(message: string): string | null {
+  const normalized = utf8Text(message).trim();
+  if (!normalized || normalized.length > 120) return null;
+
+  const matchers = [
+    /landing\s+(?:de|do|da)?\s+(.+)$/i,
+    /pagina\s+(?:de|do|da)?\s+(.+)$/i,
+    /cria(?:r)?\s+uma?\s+landing\s+(?:de|do|da)?\s+(.+)$/i,
+    /quero\s+uma?\s+landing\s+(?:de|do|da)?\s+(.+)$/i
+  ];
+
+  for (const matcher of matchers) {
+    const match = normalized.match(matcher);
+    const topic = match?.[1]?.trim();
+    if (topic) {
+      return topic
+        .replace(/[.!?]+$/g, "")
+        .trim();
+    }
+  }
+
+  return null;
+}
+
+function buildFastLandingDraftFromTopic(topic: string, fallback: LandingCreationDraftValues): LandingCreationDraftValues {
+  const normalizedTopic = toTitleCase(topic.trim());
+  const courseLabel = /^curso\b/i.test(normalizedTopic) ? normalizedTopic : `Curso de ${normalizedTopic}`;
+  const nextDraft = normalizeLandingCreationDraft({
+    ...fallback,
+    title: courseLabel,
+    slug: normalizeSlug(courseLabel),
+    shortDescription: fallback.shortDescription.trim() || `Landing para atrair interessados no ${courseLabel}.`,
+    approvedFacts: fallback.approvedFacts.length > 0
+      ? fallback.approvedFacts
+      : [
+          `Oferta focada em ${normalizedTopic}.`,
+          "Pagina pensada para captar interesse e direcionar o lead para o proximo passo."
+        ]
+  }, fallback);
+
+  const topicContext = inferLandingTopicContext(nextDraft);
+  if (!nextDraft.colorPalette.trim()) nextDraft.colorPalette = topicContext.paletteOptions[0] || "";
+  if (!nextDraft.typographyStyle.trim()) nextDraft.typographyStyle = topicContext.typographyOptions[0] || "";
+  if (!nextDraft.layoutStyle.trim()) nextDraft.layoutStyle = topicContext.layoutOptions[0] || "";
+  if (!nextDraft.ctaLabel.trim()) nextDraft.ctaLabel = "Quero saber mais";
+
+  const planSummary = [
+    `Vou estruturar a landing de ${normalizedTopic} com hero principal, proposta do curso, beneficios praticos e CTA final.`,
+    `A direcao inicial fica em ${nextDraft.colorPalette}, com tipografia ${nextDraft.typographyStyle} e layout ${nextDraft.layoutStyle}.`
+  ].join(" ");
+
+  nextDraft.planner = {
+    planSummary,
+    promptDepth: "deep",
+    shouldAsk: false,
+    askQueue: [],
+    readyForVisualGeneration: false,
+    activeMessageId: null,
+    activeQuestionId: null,
+    stageSummary: planSummary
+  };
+
+  return nextDraft;
+}
+
+function applyAskAnswerToDraft(draft: LandingCreationDraftValues, questionId: string | null | undefined, answer: string): LandingCreationDraftValues {
+  const nextDraft = normalizeLandingCreationDraft(draft, draft);
+  const normalizedAnswer = utf8Text(answer).trim();
+  if (!questionId || !normalizedAnswer) return nextDraft;
+
+  switch (questionId) {
+    case "colorPalette":
+      nextDraft.colorPalette = normalizedAnswer;
+      break;
+    case "typographyStyle":
+      nextDraft.typographyStyle = normalizedAnswer;
+      break;
+    case "layoutStyle":
+      nextDraft.layoutStyle = normalizedAnswer;
+      break;
+    case "cta":
+      nextDraft.ctaLabel = normalizedAnswer;
+      break;
+    case "objective":
+      if (!nextDraft.shortDescription) {
+        nextDraft.shortDescription = normalizedAnswer;
+      } else if (!nextDraft.approvedFacts.includes(normalizedAnswer)) {
+        nextDraft.approvedFacts = [...nextDraft.approvedFacts, normalizedAnswer];
+      }
+      break;
+    default:
+      break;
+  }
+
+  return nextDraft;
+}
+
+function applyAskAnswersToDraft(draft: LandingCreationDraftValues, askAnswers?: Record<string, string> | null): LandingCreationDraftValues {
+  if (!askAnswers || Object.keys(askAnswers).length === 0) return normalizeLandingCreationDraft(draft, draft);
+  return Object.entries(askAnswers).reduce((nextDraft, [questionId, answer]) => {
+    return applyAskAnswerToDraft(nextDraft, questionId, answer);
+  }, normalizeLandingCreationDraft(draft, draft));
 }
 
 function normalizeLandingCreationHistory(payload: unknown): LandingCreationHistoryMessage[] {
   if (!Array.isArray(payload)) return [];
   return payload
-    .map((entry) => {
+    .map((entry): LandingCreationHistoryMessage | null => {
       if (!entry || typeof entry !== "object") return null;
       const item = entry as Record<string, unknown>;
       const role = item.role === "assistant" ? "assistant" : item.role === "user" ? "user" : null;
       const content = typeof item.content === "string" ? utf8Text(item.content).trim() : "";
       const createdAt = typeof item.createdAt === "string" && item.createdAt.trim() ? item.createdAt : new Date().toISOString();
+      const id = typeof item.id === "string" && item.id.trim() ? utf8Text(item.id).trim() : `${role || "message"}-${createdAt}`;
       if (!role || !content) return null;
-      return { role, content, createdAt };
+      const thinking = typeof item.thinking === "string" && item.thinking.trim() ? utf8Text(item.thinking).trim() : undefined;
+      const kind = item.kind === "planner" ? "planner" : "chat";
+      const plannerMessageId = typeof item.plannerMessageId === "string" && item.plannerMessageId.trim()
+        ? utf8Text(item.plannerMessageId).trim()
+        : undefined;
+      const isMutable = typeof item.isMutable === "boolean" ? item.isMutable : undefined;
+      return {
+        id,
+        role,
+        kind,
+        content,
+        createdAt,
+        ...(plannerMessageId ? { plannerMessageId } : {}),
+        ...(typeof isMutable === "boolean" ? { isMutable } : {}),
+        ...(thinking ? { thinking } : {})
+      };
     })
     .filter((entry): entry is LandingCreationHistoryMessage => Boolean(entry));
 }
@@ -3099,6 +3739,8 @@ function computeLandingDraftReadiness(draft: LandingCreationDraftValues) {
 
 function buildPreviewOfferFromDraft(draft: LandingCreationDraftValues) {
   const visualDirection = buildLandingDesignSummary(draft);
+  const fallbackText = draft.shortDescription || draft.title || "Oferta em criacao";
+  const approvedFacts = sanitizeApprovedFactsForLanding(draft.approvedFacts, fallbackText);
 
   return {
     title: draft.title || "Nova oferta",
@@ -3106,7 +3748,7 @@ function buildPreviewOfferFromDraft(draft: LandingCreationDraftValues) {
     shortDescription: draft.shortDescription || draft.title || "Oferta em criacao",
     durationLabel: draft.durationLabel || null,
     modality: draft.modality || null,
-    approvedFacts: draft.approvedFacts.length ? draft.approvedFacts : [draft.shortDescription || draft.title || "Oferta em criacao"],
+    approvedFacts,
     ctaLabel: draft.ctaLabel || "Quero saber mais",
     ctaUrl: draft.ctaUrl || "https://wa.me/",
     visualTheme: visualDirection || null,
@@ -3325,83 +3967,43 @@ function buildDefaultLandingCodeBundleFromOffer(params: {
   summary: string;
   source?: "ai" | "fallback";
 }): LandingCodeBundle {
-  const approvedFacts = params.offer.approvedFacts.length
-    ? params.offer.approvedFacts
-    : [params.offer.shortDescription || params.offer.title];
+  const themeTokens = resolveFallbackThemeTokens({
+    colorPalette: params.offer.colorPalette,
+    visualTheme: params.offer.visualTheme
+  });
   const payload = {
     title: params.offer.title,
-    description: params.offer.shortDescription || "Landing criada com IA para esta oferta.",
-    durationLabel: params.offer.durationLabel || "Consulte disponibilidade",
-    modality: params.offer.modality || "A combinar",
-    facts: approvedFacts.slice(0, 6),
+    description: params.offer.shortDescription || "A IA vai montar o preview visual completo a partir do briefing da landing.",
     ctaLabel: params.offer.ctaLabel,
-    visualTheme: params.offer.visualTheme || "direcao cinematica com foco em conversao"
+    visualTheme: params.offer.visualTheme || "",
+    colorPalette: params.offer.colorPalette || ""
   };
   const payloadLiteral = JSON.stringify(payload, null, 2);
   const code = [
     'import * as React from "react";',
     'import { Button } from "@/components/ui/button";',
-    'import { Badge } from "@/components/ui/badge";',
-    'import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";',
-    'import { ArrowRight, CheckCircle2, Sparkles } from "lucide-react";',
+    'import { ArrowRight } from "lucide-react";',
     "",
     `const content = ${payloadLiteral};`,
+    `const theme = ${JSON.stringify(themeTokens, null, 2)};`,
     "",
     "export default function LandingPage({ onPrimaryAction }: { onPrimaryAction?: () => void }) {",
     "  return (",
-    '    <main className="min-h-screen bg-[#020617] text-slate-50">', 
-    '      <section className="relative overflow-hidden border-b border-white/6 bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.18),_transparent_28%),radial-gradient(circle_at_82%_18%,_rgba(251,191,36,0.12),_transparent_24%),linear-gradient(150deg,_#020617,_#0f172a_46%,_#082f49)]">', 
-    '        <div className="mx-auto flex max-w-7xl flex-col gap-10 px-6 py-16 lg:grid lg:grid-cols-[minmax(0,1.08fr)_340px] lg:items-center lg:px-10">', 
-    '          <div className="flex flex-col gap-8">', 
-    '            <div className="flex flex-wrap items-center gap-3">', 
-    '              <Badge><Sparkles data-icon="inline-start" />Landing criada com IA</Badge>', 
-    '              <Badge variant="secondary">{content.visualTheme}</Badge>', 
-    "            </div>",
-    '            <div className="flex flex-col gap-5">', 
-    '              <h1 className="max-w-4xl text-5xl font-black tracking-tight text-white md:text-7xl">{content.title}</h1>', 
-    '              <p className="max-w-3xl text-lg leading-8 text-slate-200 md:text-xl">{content.description}</p>', 
-    "            </div>",
-    '            <div className="flex flex-wrap gap-3">', 
-    '              {content.facts.slice(0, 4).map((fact) => (<Badge key={fact} variant="secondary">{fact}</Badge>))}', 
-    "            </div>",
-    '            <div className="flex flex-wrap items-center gap-4">', 
-    '              <Button size="lg" onClick={onPrimaryAction}><ArrowRight data-icon="inline-end" />{content.ctaLabel}</Button>', 
-    '              <p className="text-sm font-medium text-slate-400">Pronto para receber refinamentos por chat e painel lateral.</p>', 
-    "            </div>",
-    "          </div>",
-    '          <Card className="bg-slate-950/72 backdrop-blur-xl">', 
-    "            <CardHeader>",
-    '              <Badge variant="secondary">Resumo rapido</Badge>',
-    '              <CardTitle>{content.title}</CardTitle>',
-    '              <CardDescription>{content.description}</CardDescription>',
-    "            </CardHeader>",
-    '            <CardContent className="flex flex-col gap-4">', 
-    '              <div className="grid gap-3 text-sm text-slate-200">', 
-    '                <div className="flex items-center justify-between gap-3 rounded-2xl border border-white/8 bg-white/5 px-4 py-3"><span className="text-xs font-bold uppercase tracking-[0.24em] text-slate-500">Duracao</span><span>{content.durationLabel}</span></div>', 
-    '                <div className="flex items-center justify-between gap-3 rounded-2xl border border-white/8 bg-white/5 px-4 py-3"><span className="text-xs font-bold uppercase tracking-[0.24em] text-slate-500">Modalidade</span><span>{content.modality}</span></div>', 
-    "              </div>",
-    '              <div className="flex flex-col gap-3 rounded-3xl border border-emerald-400/12 bg-emerald-500/10 p-5">', 
-    '                {content.facts.slice(0, 3).map((fact) => (<div key={fact} className="flex items-start gap-3 text-sm leading-7 text-emerald-50"><CheckCircle2 className="mt-1 size-4 shrink-0 text-emerald-300" /><span>{fact}</span></div>))}', 
-    "              </div>",
-    "            </CardContent>",
-    "          </Card>",
-    "        </div>",
-    "      </section>",
-    "",
-    '      <section className="mx-auto grid max-w-7xl gap-5 px-6 py-16 md:grid-cols-3 lg:px-10">', 
-    '        {content.facts.slice(0, 3).map((fact, index) => (', 
-    '          <Card key={fact} className="h-full">', 
-    "            <CardHeader>",
-    '              <Badge variant="secondary">Bloco {index + 1}</Badge>',
-    '              <CardTitle className="text-xl">{fact}</CardTitle>',
-    '              <CardDescription>Secao inicial criada com base nos fatos aprovados da oferta.</CardDescription>',
-    "            </CardHeader>",
-    "          </Card>",
-    "        ))}",
-    "      </section>",
-    "    </main>",
-    "  );",
-    "}"
+    '    <main className="min-h-screen overflow-hidden" style={{ color: theme.text, background: `radial-gradient(circle at 20% 18%, ${theme.accent}16, transparent 18%), linear-gradient(180deg, ${theme.canvas} 0%, ${theme.surface} 48%, ${theme.canvas} 100%)` }}>',
+    '      <section className="mx-auto flex min-h-screen max-w-5xl flex-col items-center justify-center gap-8 px-6 py-20 text-center">',
+    '        <div className="space-y-4">',
+    '          <p className="text-sm uppercase tracking-[0.28em]" style={{ color: theme.muted }}>{content.colorPalette || content.visualTheme || "aguardando geracao visual"}</p>',
+    '          <h1 className="text-4xl font-black text-white md:text-6xl">{content.title}</h1>',
+    '          <p className="mx-auto max-w-2xl text-lg leading-8" style={{ color: theme.text }}>{content.description}</p>',
+    '        </div>',
+    '        <div className="rounded-[32px] border px-6 py-6" style={{ borderColor: `${theme.accent}18`, backgroundColor: `${theme.canvas}b8` }}>',
+    '          <p className="max-w-xl text-base leading-7" style={{ color: theme.muted }}>Preview inicial montado para acelerar o fluxo. Agora e so refinar o design, a copy e os blocos principais da pagina.</p>',
+    '        </div>',
+    '        <Button size="lg" onClick={onPrimaryAction}><ArrowRight data-icon="inline-end" />{content.ctaLabel}</Button>',
+    '      </section>',
+    '    </main>',
+    '  );',
+    '}'
   ].join("\n");
 
   return {
@@ -3422,22 +4024,13 @@ function buildDefaultLandingCodeBundleFromOffer(params: {
       slug: params.offer.slug,
       description: params.offer.shortDescription || undefined,
       summary: params.summary,
-      generatedAt: new Date().toISOString(),
-      visualTheme: params.offer.visualTheme || undefined
+      generatedAt: new Date().toISOString()
     },
-    themeTokens: {
-      accent: "#22d3ee",
-      surface: "#0f172a",
-      canvas: "#020617",
-      text: "#f8fafc",
-      muted: "#94a3b8"
-    },
-    usedComponents: ["Button", "Badge", "Card", "CardHeader", "CardTitle", "CardDescription", "CardContent"],
+    themeTokens,
+    usedComponents: ["Button"],
     usedImports: [
       "react",
       "@/components/ui/button",
-      "@/components/ui/badge",
-      "@/components/ui/card",
       "lucide-react"
     ]
   };
@@ -3809,6 +4402,7 @@ function mapLandingCreationSession(session: {
   updatedAt: Date;
 }): Record<string, unknown> {
   const draft = normalizeLandingCreationDraft(session.offerDraftJson);
+  const planner = normalizeLandingPlannerState(draft.planner, buildFallbackLandingPlannerState(draft));
   const promptDraft = mergeLandingPromptPayload(buildDefaultLandingPromptValues(), session.promptDraftJson);
   const chatHistory = normalizeLandingCreationHistory(session.chatHistoryJson);
   const readiness = computeLandingDraftReadiness(draft);
@@ -3856,6 +4450,7 @@ function mapLandingCreationSession(session: {
     promptDraft,
     chatHistory,
     readiness,
+    planner,
     builderDraft,
     codeBundleDraft,
     preview: previewSections
@@ -4116,18 +4711,15 @@ async function generateLandingSectionsForOfferData(params: {
     offerId: params.eventMeta.offerId,
     slug: params.eventMeta.slug
   });
-  const aiConfig = await syncRuntimeAIConfigFromDatabase();
-  const resp = await fetchWithRetry(`${aiConfig.baseUrl}/responses`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${OPENAI_API_KEY}`
-    },
-    body: JSON.stringify({
-      model: aiConfig.model,
-      input: promptInput,
-      max_output_tokens: 900
-    })
+  const { response: resp, selectedModel, fallbackUsed } = await callOpenAIResponsesWithRouting({
+    taskType: "landing_generation",
+    input: promptInput,
+    maxOutputTokens: 900,
+    metadata: {
+      sessionId: params.eventMeta.sessionId ?? null,
+      offerId: params.eventMeta.offerId,
+      slug: params.eventMeta.slug
+    }
   });
 
   if (!resp.ok) {
@@ -4136,6 +4728,8 @@ async function generateLandingSectionsForOfferData(params: {
       sessionId: params.eventMeta.sessionId ?? null,
       offerId: params.eventMeta.offerId,
       slug: params.eventMeta.slug,
+      selectedModel,
+      fallbackUsed,
       statusCode: resp.status,
       message: detail
     });
@@ -4155,6 +4749,400 @@ async function generateLandingSectionsForOfferData(params: {
   }
 
   return sectionsJson;
+}
+
+function parseGeminiOutputText(payload: unknown): string {
+  const body = payload as {
+    candidates?: Array<{
+      content?: {
+        parts?: Array<{ text?: string }>;
+      };
+    }>;
+  };
+
+  const parts: string[] = [];
+  for (const candidate of body?.candidates || []) {
+    for (const part of candidate.content?.parts || []) {
+      if (typeof part.text === "string" && part.text.trim()) {
+        parts.push(part.text.trim());
+      }
+    }
+  }
+
+  return parts.join("\n").trim();
+}
+
+function buildLandingCodeBundlePromptText(params: {
+  offer: {
+    title: string;
+    slug: string;
+    shortDescription: string | null;
+    durationLabel: string | null;
+    modality: string | null;
+    approvedFacts: string[];
+    ctaLabel: string;
+    visualTheme?: string | null;
+    colorPalette?: string | null;
+    typographyStyle?: string | null;
+    layoutStyle?: string | null;
+  };
+  promptConfig: {
+    systemPrompt: string;
+    toneGuidelines: string;
+    requiredRules: string[];
+    ctaRules: string[];
+  };
+  leadContext?: {
+    interestedCourse?: string | null;
+    courseMode?: string | null;
+    objective?: string | null;
+    level?: string | null;
+    summary?: string | null;
+  };
+}) {
+  const approvedFacts = params.offer.approvedFacts.length
+    ? params.offer.approvedFacts
+    : [params.offer.shortDescription || params.offer.title];
+
+  return [
+    LANDING_CODE_GENERATION_SYSTEM_PROMPT,
+    params.promptConfig.systemPrompt,
+    "",
+    buildLandingCodeGenerationPrompt({
+      offerTitle: params.offer.title,
+      offerSlug: params.offer.slug,
+      shortDescription: params.offer.shortDescription,
+      durationLabel: params.offer.durationLabel,
+      modality: params.offer.modality,
+      visualTheme: params.offer.visualTheme,
+      colorPalette: params.offer.colorPalette,
+      typographyStyle: params.offer.typographyStyle,
+      layoutStyle: params.offer.layoutStyle,
+      approvedFacts,
+      prompt: params.promptConfig,
+      leadContext: params.leadContext
+    })
+  ].filter(Boolean).join("\n\n");
+}
+
+async function generateLandingCodeBundleWithGemini(params: {
+  offer: {
+    title: string;
+    slug: string;
+    shortDescription: string | null;
+    durationLabel: string | null;
+    modality: string | null;
+    approvedFacts: string[];
+    ctaLabel: string;
+    visualTheme?: string | null;
+    colorPalette?: string | null;
+    typographyStyle?: string | null;
+    layoutStyle?: string | null;
+  };
+  promptConfig: {
+    systemPrompt: string;
+    toneGuidelines: string;
+    requiredRules: string[];
+    ctaRules: string[];
+  };
+  leadContext?: {
+    interestedCourse?: string | null;
+    courseMode?: string | null;
+    objective?: string | null;
+    level?: string | null;
+    summary?: string | null;
+  };
+  eventMeta: {
+    eventPrefix: string;
+    offerId?: number | null;
+    slug: string;
+    sessionId?: number | null;
+  };
+}): Promise<LandingCodeBundle | null> {
+  if (!GEMINI_API_KEY || !GEMINI_MODEL) {
+    logEvent("warn", `${params.eventMeta.eventPrefix}.provider_skipped`, {
+      sessionId: params.eventMeta.sessionId ?? null,
+      offerId: params.eventMeta.offerId,
+      slug: params.eventMeta.slug,
+      mode: "react_bundle",
+      provider: "gemini",
+      message: "gemini_nao_configurado"
+    });
+    return null;
+  }
+
+  const promptText = buildLandingCodeBundlePromptText(params);
+
+  const visualModel = runtimeLandingVisualModel.trim() || GEMINI_MODEL;
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(visualModel)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
+  const resp = await fetchWithRetry(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      contents: [
+        {
+          role: "user",
+          parts: [{ text: promptText }]
+        }
+      ],
+      generationConfig: {
+        temperature: 0.9,
+        topP: 0.60,
+        maxOutputTokens: 10000,
+        responseMimeType: "application/json"
+      }
+    })
+  }).catch((err) => {
+    logEvent("error", `${params.eventMeta.eventPrefix}.failed`, {
+      sessionId: params.eventMeta.sessionId ?? null,
+      offerId: params.eventMeta.offerId,
+      slug: params.eventMeta.slug,
+      mode: "react_bundle",
+      provider: "gemini",
+      message: formatError(err)
+    });
+    return null;
+  });
+
+  if (!resp) return null;
+  if (!resp.ok) {
+    const detail = await resp.text().catch(() => "");
+    logEvent("error", `${params.eventMeta.eventPrefix}.failed`, {
+      sessionId: params.eventMeta.sessionId ?? null,
+      offerId: params.eventMeta.offerId,
+      slug: params.eventMeta.slug,
+      mode: "react_bundle",
+      provider: "gemini",
+      statusCode: resp.status,
+      message: detail,
+      fallbackProvider: "openai"
+    });
+    return null;
+  }
+
+  const payload = await resp.json();
+  const parsed = extractFirstJsonObject(parseGeminiOutputText(payload));
+  const normalizedBundle = normalizeLandingCodeBundle(parsed, {
+    title: params.offer.title,
+    slug: params.offer.slug,
+    shortDescription: params.offer.shortDescription,
+    visualTheme: params.offer.visualTheme
+  });
+
+  if (!normalizedBundle) {
+    logEvent("warn", `${params.eventMeta.eventPrefix}.provider_invalid`, {
+      sessionId: params.eventMeta.sessionId ?? null,
+      offerId: params.eventMeta.offerId,
+      slug: params.eventMeta.slug,
+      mode: "react_bundle",
+      provider: "gemini",
+      message: "bundle_invalido",
+      fallbackProvider: "openai"
+    });
+    return null;
+  }
+
+  const validationIssues = validateLandingCodeBundle(normalizedBundle);
+  if (validationIssues.length > 0) {
+    logEvent("warn", `${params.eventMeta.eventPrefix}.provider_invalid`, {
+      sessionId: params.eventMeta.sessionId ?? null,
+      offerId: params.eventMeta.offerId,
+      slug: params.eventMeta.slug,
+      mode: "react_bundle",
+      provider: "gemini",
+      issues: validationIssues,
+      fallbackProvider: "openai"
+    });
+    return null;
+  }
+
+  return {
+    ...normalizedBundle,
+    source: "ai",
+    metadata: {
+      ...normalizedBundle.metadata,
+      generatedAt: new Date().toISOString()
+    }
+  };
+}
+
+function stableSerialize(value: unknown): string {
+  if (value === null || value === undefined) return "null";
+  if (typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return `[${value.map((entry) => stableSerialize(entry)).join(",")}]`;
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${stableSerialize(entry)}`);
+    return `{${entries.join(",")}}`;
+  }
+  return JSON.stringify(String(value));
+}
+
+function buildLandingPreviewCacheKey(params: {
+  draft: LandingCreationDraftValues;
+  promptDraft: LandingPromptValues;
+  leadContext?: {
+    interestedCourse?: string | null;
+    courseMode?: string | null;
+    objective?: string | null;
+    level?: string | null;
+    summary?: string | null;
+  };
+}): string {
+  const normalizedLeadContext = params.leadContext && Object.values(params.leadContext).some((value) => Boolean(value))
+    ? params.leadContext
+    : null;
+  return stableSerialize({
+    draft: params.draft,
+    promptDraft: params.promptDraft,
+    leadContext: normalizedLeadContext
+  });
+}
+
+async function generateLandingCodeBundleWithOpenAI(params: {
+  offer: {
+    title: string;
+    slug: string;
+    shortDescription: string | null;
+    durationLabel: string | null;
+    modality: string | null;
+    approvedFacts: string[];
+    ctaLabel: string;
+    visualTheme?: string | null;
+    colorPalette?: string | null;
+    typographyStyle?: string | null;
+    layoutStyle?: string | null;
+  };
+  promptConfig: {
+    systemPrompt: string;
+    toneGuidelines: string;
+    requiredRules: string[];
+    ctaRules: string[];
+  };
+  leadContext?: {
+    interestedCourse?: string | null;
+    courseMode?: string | null;
+    objective?: string | null;
+    level?: string | null;
+    summary?: string | null;
+  };
+  eventMeta: {
+    eventPrefix: string;
+    offerId?: number | null;
+    slug: string;
+    sessionId?: number | null;
+  };
+}): Promise<LandingCodeBundle | null> {
+  if (!OPENAI_API_KEY) {
+    logEvent("warn", `${params.eventMeta.eventPrefix}.provider_skipped`, {
+      sessionId: params.eventMeta.sessionId ?? null,
+      offerId: params.eventMeta.offerId,
+      slug: params.eventMeta.slug,
+      mode: "react_bundle",
+      provider: "openai",
+      message: "openai_nao_configurado"
+    });
+    return null;
+  }
+
+  const promptText = buildLandingCodeBundlePromptText(params);
+  const responseResult = await callOpenAIResponsesWithRouting({
+    taskType: "landing_code_bundle",
+    input: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: promptText
+          }
+        ]
+      }
+    ],
+    maxOutputTokens: 6000,
+    metadata: {
+      sessionId: params.eventMeta.sessionId ?? null,
+      offerId: params.eventMeta.offerId,
+      slug: params.eventMeta.slug
+    }
+  }).catch((err) => {
+    logEvent("error", `${params.eventMeta.eventPrefix}.failed`, {
+      sessionId: params.eventMeta.sessionId ?? null,
+      offerId: params.eventMeta.offerId,
+      slug: params.eventMeta.slug,
+      mode: "react_bundle",
+      provider: "openai",
+      message: formatError(err)
+    });
+    return null;
+  });
+
+  if (!responseResult) return null;
+  const { response: resp, selectedModel, fallbackUsed } = responseResult;
+  if (!resp.ok) {
+    const detail = await resp.text().catch(() => "");
+    logEvent("error", `${params.eventMeta.eventPrefix}.failed`, {
+      sessionId: params.eventMeta.sessionId ?? null,
+      offerId: params.eventMeta.offerId,
+      slug: params.eventMeta.slug,
+      mode: "react_bundle",
+      provider: "openai",
+      selectedModel,
+      fallbackUsed,
+      statusCode: resp.status,
+      message: detail
+    });
+    return null;
+  }
+
+  const payload = await resp.json();
+  const parsed = extractFirstJsonObject(parseResponseOutputText(payload));
+  const normalizedBundle = normalizeLandingCodeBundle(parsed, {
+    title: params.offer.title,
+    slug: params.offer.slug,
+    shortDescription: params.offer.shortDescription,
+    visualTheme: params.offer.visualTheme
+  });
+
+  if (!normalizedBundle) {
+    logEvent("warn", `${params.eventMeta.eventPrefix}.provider_invalid`, {
+      sessionId: params.eventMeta.sessionId ?? null,
+      offerId: params.eventMeta.offerId,
+      slug: params.eventMeta.slug,
+      mode: "react_bundle",
+      provider: "openai",
+      message: "bundle_invalido",
+      rawPreview: parseResponseOutputText(payload).slice(0, 1200)
+    });
+    return null;
+  }
+
+  const validationIssues = validateLandingCodeBundle(normalizedBundle);
+  if (validationIssues.length > 0) {
+    logEvent("warn", `${params.eventMeta.eventPrefix}.provider_invalid`, {
+      sessionId: params.eventMeta.sessionId ?? null,
+      offerId: params.eventMeta.offerId,
+      slug: params.eventMeta.slug,
+      mode: "react_bundle",
+      provider: "openai",
+      issues: validationIssues
+    });
+    return null;
+  }
+
+  return {
+    ...normalizedBundle,
+    source: "ai",
+    metadata: {
+      ...normalizedBundle.metadata,
+      generatedAt: new Date().toISOString()
+    }
+  };
 }
 
 async function generateLandingCodeBundleForOfferData(params: {
@@ -4191,135 +5179,38 @@ async function generateLandingCodeBundleForOfferData(params: {
     sessionId?: number | null;
   };
 }): Promise<LandingCodeBundle> {
-  const approvedFacts = params.offer.approvedFacts.length
-    ? params.offer.approvedFacts
-    : [params.offer.shortDescription || params.offer.title];
-  const fallbackBundle = buildDefaultLandingCodeBundleFromOffer({
-    offer: {
-      ...params.offer,
-      approvedFacts
-    },
-    summary: "Bundle fallback gerado a partir dos dados estruturados da oferta.",
-    source: "fallback"
-  });
-
   logEvent("info", `${params.eventMeta.eventPrefix}.started`, {
     sessionId: params.eventMeta.sessionId ?? null,
     offerId: params.eventMeta.offerId,
     slug: params.eventMeta.slug,
-    mode: "react_bundle"
+    mode: "react_bundle",
+    providerOrder: ["openai"]
   });
 
-  const aiConfig = await syncRuntimeAIConfigFromDatabase();
-  const resp = await fetchWithRetry(`${aiConfig.baseUrl}/responses`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${OPENAI_API_KEY}`
-    },
-    body: JSON.stringify({
-      model: aiConfig.model,
-      input: buildLandingCodeGenerationPromptInput({
-        offerTitle: params.offer.title,
-        offerSlug: params.offer.slug,
-        shortDescription: params.offer.shortDescription,
-        durationLabel: params.offer.durationLabel,
-        modality: params.offer.modality,
-        visualTheme: params.offer.visualTheme,
-        colorPalette: params.offer.colorPalette,
-        typographyStyle: params.offer.typographyStyle,
-        layoutStyle: params.offer.layoutStyle,
-        approvedFacts,
-        prompt: {
-          systemPrompt: params.promptConfig.systemPrompt,
-          toneGuidelines: params.promptConfig.toneGuidelines,
-          requiredRules: params.promptConfig.requiredRules,
-          ctaRules: params.promptConfig.ctaRules
-        },
-        leadContext: params.leadContext
-      }),
-      max_output_tokens: 2200
-    })
-  }).catch((err) => {
-    logEvent("error", `${params.eventMeta.eventPrefix}.failed`, {
+  const openaiBundle = await generateLandingCodeBundleWithOpenAI(params);
+  if (openaiBundle) {
+    logEvent("info", `${params.eventMeta.eventPrefix}.succeeded`, {
       sessionId: params.eventMeta.sessionId ?? null,
       offerId: params.eventMeta.offerId,
       slug: params.eventMeta.slug,
       mode: "react_bundle",
-      message: formatError(err)
+      provider: "openai",
+      entryFile: openaiBundle.entryFile,
+      files: openaiBundle.files.map((file) => file.path),
+      usedComponents: openaiBundle.usedComponents
     });
-    return null;
-  });
-
-  if (!resp) {
-    return fallbackBundle;
+    return openaiBundle;
   }
 
-  if (!resp.ok) {
-    const detail = await resp.text().catch(() => "");
-    logEvent("error", `${params.eventMeta.eventPrefix}.failed`, {
-      sessionId: params.eventMeta.sessionId ?? null,
-      offerId: params.eventMeta.offerId,
-      slug: params.eventMeta.slug,
-      mode: "react_bundle",
-      statusCode: resp.status,
-      message: detail
-    });
-    return fallbackBundle;
-  }
-
-  const data = await resp.json();
-  const parsed = extractFirstJsonObject(parseResponseOutputText(data));
-  const normalizedBundle = normalizeLandingCodeBundle(parsed, {
-    title: params.offer.title,
-    slug: params.offer.slug,
-    shortDescription: params.offer.shortDescription,
-    visualTheme: params.offer.visualTheme
-  });
-
-  if (!normalizedBundle) {
-    logEvent("warn", `${params.eventMeta.eventPrefix}.fallback_used`, {
-      sessionId: params.eventMeta.sessionId ?? null,
-      offerId: params.eventMeta.offerId,
-      slug: params.eventMeta.slug,
-      mode: "react_bundle",
-      message: "bundle_invalido"
-    });
-    return fallbackBundle;
-  }
-
-  const validationIssues = validateLandingCodeBundle(normalizedBundle);
-  if (validationIssues.length > 0) {
-    logEvent("warn", `${params.eventMeta.eventPrefix}.fallback_used`, {
-      sessionId: params.eventMeta.sessionId ?? null,
-      offerId: params.eventMeta.offerId,
-      slug: params.eventMeta.slug,
-      mode: "react_bundle",
-      issues: validationIssues
-    });
-    return fallbackBundle;
-  }
-
-  const nextBundle: LandingCodeBundle = {
-    ...normalizedBundle,
-    source: "ai",
-    metadata: {
-      ...normalizedBundle.metadata,
-      generatedAt: new Date().toISOString()
-    }
-  };
-
-  logEvent("info", `${params.eventMeta.eventPrefix}.succeeded`, {
+  logEvent("error", `${params.eventMeta.eventPrefix}.failed`, {
     sessionId: params.eventMeta.sessionId ?? null,
     offerId: params.eventMeta.offerId,
     slug: params.eventMeta.slug,
     mode: "react_bundle",
-    entryFile: nextBundle.entryFile,
-    files: nextBundle.files.map((file) => file.path),
-    usedComponents: nextBundle.usedComponents
+    provider: "none",
+    message: "Nenhum provider conseguiu gerar um bundle visual valido."
   });
-
-  return nextBundle;
+  throw new Error("Nenhum provider de IA conseguiu gerar o preview visual agora.");
 }
 
 async function createLandingCreationSession() {
@@ -4361,46 +5252,118 @@ async function getLandingCreationSessionOrThrow(sessionId: number): Promise<Land
   return session;
 }
 
-async function runLandingCreationChatTurn(sessionId: number, userMessage: string) {
+async function runLandingCreationChatTurn(sessionId: number, userMessage: string, options?: { absorbAskAnswer?: boolean; askAnswers?: Record<string, string> | null }) {
   const session = await getLandingCreationSessionOrThrow(sessionId);
   const draft = normalizeLandingCreationDraft(session.offerDraftJson);
   const history = normalizeLandingCreationHistory(session.chatHistoryJson);
+  const currentPlanner = normalizeLandingPlannerState(draft.planner, buildFallbackLandingPlannerState(draft));
+  const askAnswerSummary =
+    options?.askAnswers && Object.keys(options.askAnswers).length > 0
+      ? Object.entries(options.askAnswers).map(([key, value]) => `${key}: ${value}`).join("\n")
+      : "";
+  const requestDraft = options?.absorbAskAnswer
+    ? applyAskAnswersToDraft(
+        applyAskAnswerToDraft(draft, currentPlanner.activeQuestionId, userMessage),
+        options?.askAnswers || null
+      )
+    : draft;
+  const userEntry: LandingCreationHistoryMessage = {
+    id: `user-${crypto.randomUUID()}`,
+    role: "user" as const,
+    kind: "chat" as const,
+    content: utf8Text(userMessage || askAnswerSummary).trim(),
+    createdAt: new Date().toISOString()
+  };
   const nextHistory = [
     ...history,
-    {
-      role: "user" as const,
-      content: utf8Text(userMessage).trim(),
-      createdAt: new Date().toISOString()
-    }
+    userEntry
   ];
+  const simpleTopic = !options?.absorbAskAnswer && history.length <= 2 ? extractSimpleLandingTopic(userMessage) : null;
+  if (simpleTopic) {
+    const nextDraft = buildFastLandingDraftFromTopic(simpleTopic, requestDraft);
+    const assistantContent = [
+      `Planejamento inicial da landing de ${toTitleCase(simpleTopic)}:`,
+      "1. Hero direto com promessa clara do curso.",
+      "2. Blocos com beneficios e aplicacoes praticas.",
+      `3. Direcao visual base: ${nextDraft.colorPalette}.`,
+      `4. Tipografia: ${nextDraft.typographyStyle}.`,
+      `5. Estrutura: ${nextDraft.layoutStyle}.`,
+      "Se essa base estiver certa, eu sigo para o preview."
+    ].join("\n");
+    const nextCreatedAt = new Date().toISOString();
+    const updatedHistory = [
+      ...nextHistory,
+      {
+        id: `assistant-${crypto.randomUUID()}`,
+        role: "assistant" as const,
+        kind: "planner" as const,
+        content: assistantContent,
+        thinking: nextDraft.planner?.planSummary || undefined,
+        createdAt: nextCreatedAt
+      }
+    ];
+    const previewOffer = buildPreviewOfferFromDraft(nextDraft);
+    const updated = await prisma.landingCreationSession.update({
+      where: { id: sessionId },
+      data: {
+        title: nextDraft.title || session.title || "Nova landing",
+        status: "draft",
+        offerDraftJson: nextDraft,
+        builderDraftJson: buildLandingBuilderDraftFromDraft(nextDraft) as unknown as object,
+        codeBundleDraftJson: buildDefaultLandingCodeBundleFromOffer({
+          offer: {
+            ...previewOffer,
+            approvedFacts: previewOffer.approvedFacts,
+            ctaLabel: previewOffer.ctaLabel,
+            visualTheme: previewOffer.visualTheme,
+            colorPalette: nextDraft.colorPalette,
+            typographyStyle: nextDraft.typographyStyle,
+            layoutStyle: nextDraft.layoutStyle
+          },
+          summary: `Bundle base criado instantaneamente para ${previewOffer.title}.`,
+          source: "fallback"
+        }) as unknown as object,
+        previewSectionsJson: null,
+        chatHistoryJson: updatedHistory
+      } as any
+    });
+    logEvent("info", "landing.creation.chat.fast_path", {
+      sessionId,
+      topic: simpleTopic,
+      title: nextDraft.title
+    });
+    return updated;
+  }
+  const plannerHistory = nextHistory
+    .slice(-LANDING_PLANNER_HISTORY_LIMIT)
+    .map((message) => ({
+      role: message.role,
+      content: message.content
+    }));
 
   logEvent("info", "landing.creation.chat.started", {
     sessionId,
     messageLength: userMessage.length
   });
-  const aiConfig = await syncRuntimeAIConfigFromDatabase();
-  const resp = await fetchWithRetry(`${aiConfig.baseUrl}/responses`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${OPENAI_API_KEY}`
-    },
-    body: JSON.stringify({
-      model: aiConfig.model,
-      input: buildLandingCreationPromptInput({
-        currentDraft: draft,
-        history: nextHistory.map((message) => ({
-          role: message.role,
-          content: message.content
-        }))
-      }),
-      max_output_tokens: 700
-    })
+  const { response: resp, selectedModel, fallbackUsed } = await callOpenAIResponsesWithRouting({
+    taskType: "landing_planner",
+    input: buildLandingCreationPromptInput({
+      currentDraft: requestDraft,
+      history: plannerHistory
+    }),
+    maxOutputTokens: 1200,
+    metadata: { sessionId }
   });
 
   if (!resp.ok) {
     const detail = await resp.text().catch(() => "");
-    logEvent("error", "landing.creation.chat.failed", { sessionId, statusCode: resp.status, message: detail });
+    logEvent("error", "landing.creation.chat.failed", {
+      sessionId,
+      selectedModel,
+      fallbackUsed,
+      statusCode: resp.status,
+      message: detail
+    });
     throw new Error(`Falha ao conversar com a IA (${resp.status}).`);
   }
 
@@ -4415,16 +5378,55 @@ async function runLandingCreationChatTurn(sessionId: number, userMessage: string
     typeof parsed.assistantMessage === "string" && parsed.assistantMessage.trim()
       ? utf8Text(parsed.assistantMessage).trim()
       : "Rascunho atualizado. Pode seguir com mais detalhes ou gerar o preview.";
-  const nextDraft = normalizeLandingCreationDraft(parsed.draft, draft);
-  const nextAssistantMessage = buildLandingCreationFollowUpMessage(nextDraft, assistantMessage);
-  const updatedHistory = [
-    ...nextHistory,
-    {
-      role: "assistant" as const,
-      content: nextAssistantMessage,
-      createdAt: new Date().toISOString()
-    }
-  ];
+  const nextDraft = normalizeLandingCreationDraft(parsed.draft, requestDraft);
+  const planner = buildLandingPlannerStateFromAiResponse(parsed, nextDraft);
+  nextDraft.planner = planner;
+  const {
+    content: nextAssistantContent,
+    thinking: nextAssistantThinking,
+    stageSummary
+  } = buildLandingPlannerAssistantMessage(planner, assistantMessage);
+  const persistedHistory = options?.absorbAskAnswer ? history : nextHistory;
+  const plannerTurn = planner.shouldAsk || Boolean(options?.absorbAskAnswer);
+  const plannerMessageId = plannerTurn
+    ? planner.activeMessageId || currentPlanner.activeMessageId || `planner-${crypto.randomUUID()}`
+    : null;
+  const nextCreatedAt = new Date().toISOString();
+
+  planner.activeMessageId = plannerTurn ? plannerMessageId : null;
+  planner.activeQuestionId = planner.askQueue[0]?.id || null;
+  planner.stageSummary = stageSummary;
+  nextDraft.planner = planner;
+
+  const updatedHistory = plannerTurn && plannerMessageId
+    ? (() => {
+        const nextPlannerMessage: LandingCreationHistoryMessage = {
+          id: plannerMessageId,
+          role: "assistant",
+          kind: "planner",
+          plannerMessageId,
+          isMutable: true,
+          content: nextAssistantContent,
+          ...(nextAssistantThinking ? { thinking: nextAssistantThinking } : {}),
+          createdAt: nextCreatedAt
+        };
+        const existingIndex = persistedHistory.findIndex((entry) => entry.id === plannerMessageId || entry.plannerMessageId === plannerMessageId);
+        if (existingIndex >= 0) {
+          return persistedHistory.map((entry, index) => (index === existingIndex ? nextPlannerMessage : entry));
+        }
+        return [...persistedHistory, nextPlannerMessage];
+      })()
+    : [
+        ...persistedHistory,
+        {
+          id: `assistant-${crypto.randomUUID()}`,
+          role: "assistant" as const,
+          kind: "chat" as const,
+          content: nextAssistantContent,
+          ...(nextAssistantThinking ? { thinking: nextAssistantThinking } : {}),
+          createdAt: nextCreatedAt
+        }
+      ];
 
   const updated = await prisma.landingCreationSession.update({
     where: { id: sessionId },
@@ -4455,17 +5457,33 @@ async function runLandingCreationChatTurn(sessionId: number, userMessage: string
 
 async function generateLandingPreviewForSession(sessionId: number, payload: unknown) {
   const session = await getLandingCreationSessionOrThrow(sessionId);
+  const currentDraft = normalizeLandingCreationDraft(session.offerDraftJson);
+  const currentPromptDraft = mergeLandingPromptPayload(buildDefaultLandingPromptValues(), session.promptDraftJson);
   const mergedDraft = normalizeLandingCreationDraft(
     typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>).offerDraft : undefined,
-    normalizeLandingCreationDraft(session.offerDraftJson)
+    currentDraft
   );
   const promptDraft = mergeLandingPromptPayload(
-    mergeLandingPromptPayload(buildDefaultLandingPromptValues(), session.promptDraftJson),
+    currentPromptDraft,
     typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>).promptDraft : undefined
   );
   const leadContext = normalizeLandingLeadContext(
     typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>).leadContext : undefined
   );
+  const hasStoredPreview = Boolean(session.previewSectionsJson && typeof session.previewSectionsJson === "object");
+  const hasStoredBundle = Boolean(session.codeBundleDraftJson && typeof session.codeBundleDraftJson === "object");
+  const nextPreviewKey = buildLandingPreviewCacheKey({ draft: mergedDraft, promptDraft, leadContext });
+  const currentPreviewKey = buildLandingPreviewCacheKey({
+    draft: currentDraft,
+    promptDraft: currentPromptDraft,
+    leadContext: undefined
+  });
+
+  if (hasStoredPreview && hasStoredBundle && nextPreviewKey === currentPreviewKey) {
+    logEvent("info", "landing.creation.preview.reused", { sessionId });
+    return session;
+  }
+
   const previewOffer = buildPreviewOfferFromDraft(mergedDraft);
   const landingCodeBundle = await generateLandingCodeBundleForOfferData({
     offer: {
@@ -5172,10 +6190,11 @@ async function buildHistoryForAutoReply(contactId: number): Promise<{
   pendingInput: string;
   pendingCount: number;
 }> {
+  const historyTake = Math.max(24, runtimeHistoryLimit + 8);
   const rows = await prisma.message.findMany({
     where: { contactId },
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-    take: 120
+    take: historyTake
   });
 
   if (rows.length === 0) {
@@ -5257,13 +6276,17 @@ async function runAutoReplyForContact(contactId: number): Promise<void> {
       });
     }
 
+    broadcastEvent("bot_thinking", { contactId: contact.id, waId: contact.waId, step: "Pensando..." });
     const faqContext = await getFaqContextForInput(pendingInput);
+    broadcastEvent("bot_thinking", { contactId: contact.id, waId: contact.waId, step: "Consultando base de conhecimento..." });
     await sendWhatsAppTypingIndicator(context.waMessageId);
     const personaOverride = typeof contact.customBotPersona === "string" && contact.customBotPersona.trim()
       ? contact.customBotPersona.trim()
       : undefined;
+    broadcastEvent("bot_thinking", { contactId: contact.id, waId: contact.waId, step: "Gerando resposta..." });
     const reply = await generateReplyWithTyping(history, faqContext, personaOverride, context.waMessageId).catch((err) => {
       console.error("OpenAI error:", err);
+      broadcastEvent("bot_thinking_done", { contactId: contact.id, waId: contact.waId });
       return "Desculpe, tive um problema aqui. Pode repetir?";
     });
 
@@ -5279,6 +6302,7 @@ async function runAutoReplyForContact(contactId: number): Promise<void> {
       }
     });
 
+    broadcastEvent("bot_thinking_done", { contactId: contact.id, waId: contact.waId });
     broadcastMessage(contact.waId, contact.id, {
       id: outMsg.id,
       direction: "out",
@@ -5301,7 +6325,8 @@ async function runAutoReplyForContact(contactId: number): Promise<void> {
 
 async function processLeadLandingAutomation(contactId: number): Promise<void> {
   const contact = await prisma.contact.findUnique({
-    where: { id: contactId }
+    where: { id: contactId },
+    include: { _count: { select: { messages: true } } }
   });
 
   if (!contact || contact.handoffNeeded) {
@@ -5312,6 +6337,19 @@ async function processLeadLandingAutomation(contactId: number): Promise<void> {
         message: "handoff_ativo"
       });
     }
+    return;
+  }
+
+  // Only auto-send landing page after meaningful engagement (5+ messages)
+  // to avoid sending a second message right after the first AI reply
+  const messageCount = (contact as any)._count?.messages ?? 0;
+  if (messageCount < 5) {
+    logEvent("info", "landing.send.skipped", {
+      contactId: contact.id,
+      waId: contact.waId,
+      message: "conversa_curta",
+      messageCount
+    });
     return;
   }
 
@@ -5424,26 +6462,21 @@ async function generateReply(
     return "ConfiguraÃ§Ã£o incompleta da IA.";
   }
 
-  const aiConfig = await syncRuntimeAIConfigFromDatabase();
   const resolvedPersona = typeof persona === "string" && persona.trim()
     ? persona.trim()
-    : aiConfig.persona;
+    : (await syncRuntimeAIConfigFromDatabase()).persona;
 
-  const resp = await fetchWithRetry(`${aiConfig.baseUrl}/responses`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${OPENAI_API_KEY}`
-    },
-    body: JSON.stringify({
-      model: aiConfig.model,
-      input: buildReplyPromptInput({
-        history,
-        faqContext,
-        persona: resolvedPersona
-      }),
-      max_output_tokens: 220
-    })
+  const { response: resp } = await callOpenAIResponsesWithRouting({
+    taskType: "chat_reply",
+    input: buildReplyPromptInput({
+      history,
+      faqContext,
+      persona: resolvedPersona
+    }),
+    maxOutputTokens: 180,
+    metadata: {
+      message: "resposta_whatsapp"
+    }
   });
 
   if (!resp.ok) {
@@ -5492,20 +6525,14 @@ async function enrichLeadWithAI(contactId: number): Promise<void> {
   const history = contact.messages.slice().reverse().map(m =>
     `${m.direction === "in" ? "Cliente" : "Atendente"}: ${m.body}`
   ).join("\n");
-  const aiConfig = await syncRuntimeAIConfigFromDatabase();
-
   try {
-    const resp = await fetchWithRetry(`${aiConfig.baseUrl}/responses`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${OPENAI_API_KEY}`
-      },
-      body: JSON.stringify({
-        model: aiConfig.model,
-        input: buildLeadEnrichmentPromptInput(history),
-        max_output_tokens: 300
-      })
+    const { response: resp } = await callOpenAIResponsesWithRouting({
+      taskType: "lead_enrichment",
+      input: buildLeadEnrichmentPromptInput(history),
+      maxOutputTokens: 300,
+      metadata: {
+        contactId
+      }
     });
 
     if (!resp.ok) return;
@@ -5583,15 +6610,26 @@ async function transcribeAudio(mediaId: string): Promise<string> {
   }
 }
 
-async function getFaqContextForInput(input: string): Promise<string> {
-  const text = input.trim();
-  if (!text) return "";
+async function getActiveFaqsCached(): Promise<Array<{ question: string; answer: string }>> {
+  if (cachedActiveFaqsLoadedAt > 0 && (Date.now() - cachedActiveFaqsLoadedAt) < FAQ_CACHE_TTL_MS) {
+    return cachedActiveFaqs;
+  }
 
   const activeFaqs = await prisma.faq.findMany({
     where: { isActive: true },
     select: { question: true, answer: true }
   });
 
+  cachedActiveFaqs = activeFaqs;
+  cachedActiveFaqsLoadedAt = Date.now();
+  return activeFaqs;
+}
+
+async function getFaqContextForInput(input: string): Promise<string> {
+  const text = input.trim();
+  if (!text) return "";
+
+  const activeFaqs = await getActiveFaqsCached();
   if (activeFaqs.length === 0) return "";
 
   const normalizedInput = normalizeText(text);
@@ -5791,13 +6829,19 @@ async function ensureDefaultStages(): Promise<void> {
 }
 
 async function getDefaultStageId(): Promise<number | null> {
+  if (cachedDefaultStageLoadedAt > 0 && (Date.now() - cachedDefaultStageLoadedAt) < DEFAULT_STAGE_CACHE_TTL_MS) {
+    return cachedDefaultStageId;
+  }
+
   await ensureDefaultStages();
   const firstStage = await prisma.pipelineStage.findFirst({
     where: { isActive: true },
     orderBy: { position: "asc" },
     select: { id: true }
   });
-  return firstStage?.id || null;
+  cachedDefaultStageId = firstStage?.id || null;
+  cachedDefaultStageLoadedAt = Date.now();
+  return cachedDefaultStageId;
 }
 
 function normalizeWaId(input: string): string {
@@ -6209,12 +7253,33 @@ app.get("/api/chat/history/:waId", requireSession, chatController.history);
 
 let runtimeBotPersona = BOT_PERSONA;
 let runtimeOpenAIModel = OPENAI_MODEL;
+let runtimeStrongModel = "gpt-5";
+let runtimeCheapModel = OPENAI_MODEL;
+let runtimeRoutingMode: AIModelRoutingMode = "automatic";
+let runtimeTaskOverrides: AIModelTaskOverrides = {
+  chatReplyModel: "",
+  leadEnrichmentModel: "",
+  leadClassificationModel: "",
+  landingPlannerModel: "",
+  landingGenerationModel: "",
+  landingCodeBundleModel: "",
+  landingRefineModel: "",
+  landingVisualFallbackModel: ""
+};
+let runtimeLandingPlannerModel = OPENAI_MODEL;
+let runtimeLandingVisualModel = GEMINI_MODEL;
 let runtimeOpenAIBaseUrl = OPENAI_BASE_URL;
 let runtimeOpenAITranscriptionModel = OPENAI_TRANSCRIPTION_MODEL;
 let runtimeHistoryLimit = HISTORY_LIMIT;
 let runtimeAIReplyDebounceMs = AI_REPLY_DEBOUNCE_MS;
 let runtimeHumanDelayMin = HUMAN_DELAY_MIN_MS;
 let runtimeHumanDelayMax = HUMAN_DELAY_MAX_MS;
+let runtimeAIConfigLastLoadedAt = 0;
+let cachedActiveFaqs: Array<{ question: string; answer: string }> = [];
+let cachedActiveFaqsLoadedAt = 0;
+let cachedDefaultStageId: number | null = null;
+let cachedDefaultStageLoadedAt = 0;
+const LANDING_PLANNER_HISTORY_LIMIT = 8;
 
 function normalizePositiveInt(value: number, fallback: number): number {
   return Number.isFinite(value) && value > 0 ? Math.round(value) : fallback;
@@ -6224,9 +7289,55 @@ function normalizeNonNegativeInt(value: number, fallback: number): number {
   return Number.isFinite(value) && value >= 0 ? Math.round(value) : fallback;
 }
 
+function normalizeRoutingMode(value: unknown): AIModelRoutingMode {
+  return value === "manual" ? "manual" : "automatic";
+}
+
+function buildDefaultTaskOverrides(): AIModelTaskOverrides {
+  return {
+    chatReplyModel: "",
+    leadEnrichmentModel: "",
+    leadClassificationModel: "",
+    landingPlannerModel: "",
+    landingGenerationModel: "",
+    landingCodeBundleModel: "",
+    landingRefineModel: "",
+    landingVisualFallbackModel: ""
+  };
+}
+
+function normalizeTaskOverrides(value: unknown): AIModelTaskOverrides {
+  const base = buildDefaultTaskOverrides();
+  if (!value || typeof value !== "object") return base;
+
+  const record = value as Record<string, unknown>;
+  for (const key of Object.keys(base) as Array<keyof AIModelTaskOverrides>) {
+    const raw = record[key];
+    base[key] = typeof raw === "string" ? raw.trim() : "";
+  }
+
+  return base;
+}
+
+function buildRoutingDefaults() {
+  return {
+    strongModel: "gpt-5",
+    cheapModel: "gpt-5-mini",
+    routingMode: "automatic" as AIModelRoutingMode,
+    taskOverrides: buildDefaultTaskOverrides()
+  };
+}
+
 function buildDefaultAIConfig(): AIConfigValues {
+  const routingDefaults = buildRoutingDefaults();
   const defaults = {
-    model: OPENAI_MODEL.trim() || "gpt-4o-mini",
+    model: OPENAI_MODEL.trim() || routingDefaults.cheapModel,
+    strongModel: routingDefaults.strongModel,
+    cheapModel: routingDefaults.cheapModel,
+    routingMode: routingDefaults.routingMode,
+    taskOverrides: routingDefaults.taskOverrides,
+    landingPlannerModel: routingDefaults.strongModel,
+    landingVisualModel: GEMINI_MODEL.trim() || "gemini-2.5-flash",
     baseUrl: OPENAI_BASE_URL.replace(/\/+$/, "") || "https://api.openai.com/v1",
     transcriptionModel: OPENAI_TRANSCRIPTION_MODEL.trim() || "whisper-1",
     persona: BOT_PERSONA,
@@ -6244,6 +7355,12 @@ function buildDefaultAIConfig(): AIConfigValues {
 
 function mapAIConfigRecord(record: {
   model: string;
+  strongModel?: string | null;
+  cheapModel?: string | null;
+  routingMode?: string | null;
+  taskOverrides?: unknown;
+  landingPlannerModel?: string | null;
+  landingVisualModel?: string | null;
   baseUrl: string;
   transcriptionModel: string;
   persona: string;
@@ -6255,9 +7372,25 @@ function mapAIConfigRecord(record: {
   const defaults = buildDefaultAIConfig();
   const humanDelayMinMs = normalizeNonNegativeInt(record.humanDelayMinMs, defaults.humanDelayMinMs);
   const humanDelayMaxMs = Math.max(humanDelayMinMs, normalizeNonNegativeInt(record.humanDelayMaxMs, defaults.humanDelayMaxMs));
+  const taskOverrides = normalizeTaskOverrides(record.taskOverrides);
+  const cheapModel = record.cheapModel?.trim() || record.model.trim() || defaults.cheapModel;
+  const strongModel =
+    record.strongModel?.trim() ||
+    record.landingPlannerModel?.trim() ||
+    defaults.strongModel;
+  const landingPlannerModel =
+    record.landingPlannerModel?.trim() ||
+    taskOverrides.landingPlannerModel ||
+    strongModel;
 
   return {
-    model: record.model.trim() || defaults.model,
+    model: record.model.trim() || cheapModel,
+    strongModel,
+    cheapModel,
+    routingMode: normalizeRoutingMode(record.routingMode),
+    taskOverrides,
+    landingPlannerModel,
+    landingVisualModel: record.landingVisualModel?.trim() || defaults.landingVisualModel,
     baseUrl: record.baseUrl.trim().replace(/\/+$/, "") || defaults.baseUrl,
     transcriptionModel: record.transcriptionModel.trim() || defaults.transcriptionModel,
     persona: record.persona,
@@ -6271,6 +7404,12 @@ function mapAIConfigRecord(record: {
 function applyAIConfigToRuntime(config: AIConfigValues): void {
   runtimeBotPersona = config.persona;
   runtimeOpenAIModel = config.model;
+  runtimeStrongModel = config.strongModel;
+  runtimeCheapModel = config.cheapModel;
+  runtimeRoutingMode = config.routingMode;
+  runtimeTaskOverrides = config.taskOverrides;
+  runtimeLandingPlannerModel = config.landingPlannerModel;
+  runtimeLandingVisualModel = config.landingVisualModel;
   runtimeOpenAIBaseUrl = config.baseUrl;
   runtimeOpenAITranscriptionModel = config.transcriptionModel;
   runtimeHistoryLimit = config.historyLimit;
@@ -6282,6 +7421,12 @@ function applyAIConfigToRuntime(config: AIConfigValues): void {
 function getRuntimeAIConfig(): AIConfigValues {
   return {
     model: runtimeOpenAIModel,
+    strongModel: runtimeStrongModel,
+    cheapModel: runtimeCheapModel,
+    routingMode: runtimeRoutingMode,
+    taskOverrides: runtimeTaskOverrides,
+    landingPlannerModel: runtimeLandingPlannerModel,
+    landingVisualModel: runtimeLandingVisualModel,
     baseUrl: runtimeOpenAIBaseUrl,
     transcriptionModel: runtimeOpenAITranscriptionModel,
     persona: runtimeBotPersona,
@@ -6297,32 +7442,230 @@ function buildAISettingsResponse() {
   return {
     ...config,
     hasApiKey: !!OPENAI_API_KEY,
+    hasVisualApiKey: !!GEMINI_API_KEY,
     language: "pt-BR",
     provider: config.baseUrl.includes("openai.com") ? "OpenAI" : "Custom"
   };
 }
 
+function resolveBaseModelForTask(config: AIConfigValues, taskType: AIModelTaskType): string {
+  switch (taskType) {
+    case "landing_planner":
+    case "landing_generation":
+    case "landing_code_bundle":
+    case "landing_refine":
+    case "landing_visual":
+      return config.strongModel || config.cheapModel;
+    case "chat_reply":
+    case "lead_enrichment":
+    case "lead_classification":
+    default:
+      return config.cheapModel || config.strongModel;
+  }
+}
+
+function resolveOverrideModelForTask(config: AIConfigValues, taskType: AIModelTaskType): string {
+  switch (taskType) {
+    case "chat_reply":
+      return config.taskOverrides.chatReplyModel;
+    case "lead_enrichment":
+      return config.taskOverrides.leadEnrichmentModel;
+    case "lead_classification":
+      return config.taskOverrides.leadClassificationModel;
+    case "landing_planner":
+      return config.taskOverrides.landingPlannerModel || config.landingPlannerModel;
+    case "landing_generation":
+      return config.taskOverrides.landingGenerationModel;
+    case "landing_code_bundle":
+      return config.taskOverrides.landingCodeBundleModel;
+    case "landing_refine":
+      return config.taskOverrides.landingRefineModel;
+    case "landing_visual":
+      return config.taskOverrides.landingVisualFallbackModel;
+    default:
+      return "";
+  }
+}
+
+function resolveModelForTask(config: AIConfigValues, taskType: AIModelTaskType): AIModelResolution {
+  const baseModel = resolveBaseModelForTask(config, taskType).trim();
+  const overrideModel = resolveOverrideModelForTask(config, taskType).trim();
+  const selectedModel = overrideModel || baseModel || config.cheapModel || config.strongModel || config.model;
+  const fallbackModel =
+    selectedModel === config.cheapModel && config.strongModel && config.strongModel !== selectedModel
+      ? config.strongModel
+      : null;
+
+  return {
+    taskType,
+    selectedModel,
+    fallbackModel,
+    routingReason: overrideModel
+      ? `override:${taskType}`
+      : `${config.routingMode}:${selectedModel === config.strongModel ? "strong" : "cheap"}`
+  };
+}
+
+function resolveTaskRequestTimeoutMs(taskType: AIModelTaskType): number {
+  switch (taskType) {
+    case "chat_reply":
+      return 15000;
+    case "lead_enrichment":
+    case "lead_classification":
+      return 18000;
+    case "landing_planner":
+      return 25000;
+    case "landing_generation":
+    case "landing_refine":
+      return 30000;
+    case "landing_code_bundle":
+    case "landing_visual":
+      return 35000;
+    default:
+      return 20000;
+  }
+}
+
+function resolveTaskMaxAttempts(taskType: AIModelTaskType): number {
+  switch (taskType) {
+    case "chat_reply":
+    case "lead_enrichment":
+    case "lead_classification":
+      return 2;
+    case "landing_planner":
+    case "landing_generation":
+    case "landing_code_bundle":
+    case "landing_refine":
+    case "landing_visual":
+      return 2;
+    default:
+      return 3;
+  }
+}
+
+function canRetryWithFallback(resp: Response): boolean {
+  return resp.status === 408 || resp.status === 409 || resp.status === 429 || resp.status >= 500;
+}
+
+async function callOpenAIResponsesWithRouting(params: {
+  taskType: AIModelTaskType;
+  input: unknown;
+  maxOutputTokens: number;
+  metadata?: Record<string, unknown>;
+}) {
+  if (!OPENAI_API_KEY) {
+    throw new Error("OpenAI API key ausente.");
+  }
+
+  const aiConfig = await syncRuntimeAIConfigFromDatabase();
+  const resolution = resolveModelForTask(aiConfig, params.taskType);
+  const baseLog = {
+    provider: "openai",
+    taskType: params.taskType,
+    routingReason: resolution.routingReason,
+    maxOutputTokens: params.maxOutputTokens,
+    ...params.metadata
+  };
+
+  const requestWithModel = (model: string) =>
+    fetchWithRetry(`${aiConfig.baseUrl}/responses`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${OPENAI_API_KEY}`
+      },
+      body: JSON.stringify({
+        model,
+        input: params.input,
+        max_output_tokens: params.maxOutputTokens
+      })
+    }, {
+      maxAttempts: resolveTaskMaxAttempts(params.taskType),
+      timeoutMs: resolveTaskRequestTimeoutMs(params.taskType)
+    });
+
+  logEvent("info", "ai.routing.selected", {
+    ...baseLog,
+    selectedModel: resolution.selectedModel,
+    fallbackModel: resolution.fallbackModel,
+    fallbackUsed: false
+  });
+
+  try {
+    const response = await requestWithModel(resolution.selectedModel);
+    if (
+      response.ok ||
+      !resolution.fallbackModel ||
+      resolution.fallbackModel === resolution.selectedModel ||
+      !canRetryWithFallback(response)
+    ) {
+      return {
+        response,
+        selectedModel: resolution.selectedModel,
+        fallbackUsed: false
+      };
+    }
+
+    const failedStatus = response.status;
+    const failedBody = await response.text().catch(() => "");
+    logEvent("warn", "ai.routing.fallback", {
+      ...baseLog,
+      selectedModel: resolution.selectedModel,
+      fallbackModel: resolution.fallbackModel,
+      fallbackUsed: true,
+      statusCode: failedStatus,
+      message: failedBody || "fallback_por_status"
+    });
+
+    const fallbackResponse = await requestWithModel(resolution.fallbackModel);
+    return {
+      response: fallbackResponse,
+      selectedModel: resolution.fallbackModel,
+      fallbackUsed: true
+    };
+  } catch (err) {
+    if (!resolution.fallbackModel || resolution.fallbackModel === resolution.selectedModel) {
+      throw err;
+    }
+
+    logEvent("warn", "ai.routing.fallback", {
+      ...baseLog,
+      selectedModel: resolution.selectedModel,
+      fallbackModel: resolution.fallbackModel,
+      fallbackUsed: true,
+      message: formatError(err)
+    });
+
+    const fallbackResponse = await requestWithModel(resolution.fallbackModel);
+    return {
+      response: fallbackResponse,
+      selectedModel: resolution.fallbackModel,
+      fallbackUsed: true
+    };
+  }
+}
+
 function buildDefaultLandingPromptValues(): LandingPromptValues {
   return {
     systemPrompt: [
-      "Monte uma landing page publica com foco em conversao para a Santos Tech.",
-      "A copy deve ser objetiva, premium, clara e orientada a acao.",
+      "Monte uma landing page publica para atrair interessados em cursos da Santos Tech.",
+      "A copy deve ser objetiva, premium, clara e orientada a interesse.",
       "Nunca invente informacoes que nao estejam nos fatos aprovados da oferta."
     ].join("\n"),
     toneGuidelines: [
       "Tom confiante, humano e direto.",
       "Evite jargao tecnico desnecessario.",
-      "Use frases escaneaveis e CTA forte."
+      "Use frases escaneaveis e convite claro para saber mais."
     ].join("\n"),
     requiredRules: [
       "Nao inventar preco, carga horaria, datas, certificado ou promessas.",
       "Usar somente fatos aprovados da oferta.",
       "Headline curta e clara.",
-      "CTA final alinhado ao objetivo comercial."
+      "CTA final alinhado a captacao de interesse no curso."
     ],
     ctaRules: [
-      "O CTA deve convidar o lead a falar com a equipe ou continuar a matricula.",
-      "O texto auxiliar deve reduzir friccao e reforcar proximo passo."
+      "O CTA deve convidar o lead a conhecer melhor o curso, falar com a equipe ou demonstrar interesse.",
+      "O texto auxiliar deve reduzir friccao e reforcar descoberta, interesse ou orientacao do proximo passo."
     ],
     autoGenerateEnabled: true,
     autoSendEnabled: true,
@@ -6517,10 +7860,15 @@ async function ensureAIConfigRecord() {
   });
 }
 
-async function syncRuntimeAIConfigFromDatabase(): Promise<AIConfigValues> {
+async function syncRuntimeAIConfigFromDatabase(forceRefresh = false): Promise<AIConfigValues> {
+  if (!forceRefresh && runtimeAIConfigLastLoadedAt > 0 && (Date.now() - runtimeAIConfigLastLoadedAt) < AI_CONFIG_CACHE_TTL_MS) {
+    return getRuntimeAIConfig();
+  }
+
   const record = await ensureAIConfigRecord();
   const config = mapAIConfigRecord(record);
   applyAIConfigToRuntime(config);
+  runtimeAIConfigLastLoadedAt = Date.now();
   return config;
 }
 
@@ -6529,6 +7877,12 @@ function mergeAIConfigWithPayload(current: AIConfigValues, payload: unknown): AI
   const body = typeof payload === "object" && payload !== null ? payload as Record<string, unknown> : {};
 
   if (typeof body.model === "string" && body.model.trim()) next.model = body.model.trim();
+  if (typeof body.strongModel === "string" && body.strongModel.trim()) next.strongModel = body.strongModel.trim();
+  if (typeof body.cheapModel === "string" && body.cheapModel.trim()) next.cheapModel = body.cheapModel.trim();
+  if (body.routingMode !== undefined) next.routingMode = normalizeRoutingMode(body.routingMode);
+  if (body.taskOverrides !== undefined) next.taskOverrides = normalizeTaskOverrides(body.taskOverrides);
+  if (typeof body.landingPlannerModel === "string" && body.landingPlannerModel.trim()) next.landingPlannerModel = body.landingPlannerModel.trim();
+  if (typeof body.landingVisualModel === "string" && body.landingVisualModel.trim()) next.landingVisualModel = body.landingVisualModel.trim();
   if (typeof body.baseUrl === "string" && body.baseUrl.trim()) next.baseUrl = body.baseUrl.trim().replace(/\/+$/, "");
   if (typeof body.transcriptionModel === "string" && body.transcriptionModel.trim()) next.transcriptionModel = body.transcriptionModel.trim();
   if (typeof body.persona === "string") next.persona = body.persona;
@@ -6541,6 +7895,14 @@ function mergeAIConfigWithPayload(current: AIConfigValues, payload: unknown): AI
     next.humanDelayMaxMs = next.humanDelayMinMs;
   }
 
+  next.strongModel = next.strongModel.trim() || current.strongModel || buildDefaultAIConfig().strongModel;
+  next.cheapModel = next.cheapModel.trim() || next.model.trim() || current.cheapModel || buildDefaultAIConfig().cheapModel;
+  next.model = next.model.trim() || next.cheapModel;
+  next.landingPlannerModel =
+    next.landingPlannerModel.trim() ||
+    next.taskOverrides.landingPlannerModel ||
+    next.strongModel;
+
   return next;
 }
 
@@ -6550,15 +7912,28 @@ async function persistAIConfigFromPayload(payload: unknown): Promise<AIConfigVal
 
   const record = await prisma.aiConfig.upsert({
     where: { key: AI_CONFIG_KEY },
-    update: next,
+    update: {
+      ...next,
+      model: next.cheapModel,
+      strongModel: next.strongModel,
+      cheapModel: next.cheapModel,
+      routingMode: next.routingMode,
+      taskOverrides: next.taskOverrides
+    },
     create: {
       key: AI_CONFIG_KEY,
-      ...next
+      ...next,
+      model: next.cheapModel,
+      strongModel: next.strongModel,
+      cheapModel: next.cheapModel,
+      routingMode: next.routingMode,
+      taskOverrides: next.taskOverrides
     }
   });
 
   const config = mapAIConfigRecord(record);
   applyAIConfigToRuntime(config);
+  runtimeAIConfigLastLoadedAt = Date.now();
   return config;
 }
 

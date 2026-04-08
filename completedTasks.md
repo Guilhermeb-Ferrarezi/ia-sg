@@ -1,4 +1,33 @@
 # Completed Tasks
+## Atualizacao extra - 2026-04-08 (Redesign do Ask card estilo Claude Code)
+- [x] Ask do planner redesenhado como card flutuante acima do composer, separado visualmente.
+- [x] Opcoes numeradas em rows full-width com badge numerado e highlight violet ao selecionar.
+- [x] Header com label uppercase + contador "1 de N" com setas de navegacao.
+- [x] Input customizado como ultima opcao numerada integrada no card.
+- [x] Footer com "Dispensar ESC" e botao "Continuar" com icone CornerDownLeft.
+- [x] Atalho ESC global para dispensar o ask ativo.
+- [x] Composer fica oculto enquanto ask esta ativo, aparece normalmente apos responder.
+
+## Atualizacao extra - 2026-04-08 (Separacao pensamento vs resposta)
+- [x] Mensagens da IA no chat de criacao de landing agora separam o "raciocinio" (planSummary) da resposta conversacional.
+- [x] O raciocinio aparece como bloco colapsavel com icone Brain acima da resposta real, evitando mensagem gigante misturando tudo.
+- [x] Campo `thinking` adicionado ao tipo `LandingCreationMessage` (frontend) e `LandingCreationHistoryMessage` (backend).
+- [x] Retrocompativel com sessoes existentes que nao possuem o campo thinking.
+
+## Atualizacao extra - 2026-04-08 (Topo do chat simplificado)
+- [x] Card superior de status da Lume foi removido do workspace de criacao para deixar apenas o titulo da landing e a conversa util logo abaixo.
+
+## Atualizacao extra - 2026-04-08 (Briefing em modo ask)
+- [x] Painel grande de briefing foi trocado por um fluxo de `ask` com uma pergunta por vez, aguardando a resposta do usuario antes de avancar para a proxima.
+- [x] Respostas do briefing passaram a ser capturadas pelo proprio composer do chat, e a IA so recebe o resumo consolidado quando todas as perguntas forem respondidas.
+
+## Atualizacao extra - 2026-04-08 (Input do chat com altura maxima)
+- [x] Campo de mensagem do chat da IA passou a respeitar altura maxima com scroll interno, evitando travar o scroll da tela quando o texto fica muito grande.
+
+## Atualizacao extra - 2026-04-08 (Container web sem conflito de porta)
+- [x] Stack Docker foi consolidado para subir o frontend em `WEB_PORT=8087`, evitando conflito com outro container local que ocupava `8085`.
+- [x] Configuracao local passou a expor `http://localhost:8087` tambem em `ALLOWED_ORIGINS`, mantendo o dashboard funcional quando executado via container.
+
 ## Atualizacao extra - 2026-04-08 (Landing React do zero)
 - [x] Fluxo de geracao de landing passou a salvar um `landingCodeBundleJson` como origem principal da pagina, com bundle React/TSX orientado a `shadcn + Radix + Tailwind`.
 - [x] Sessoes de criacao agora mantem `codeBundleDraftJson`, permitindo que o chat, o preview e o publish compartilhem a mesma versao do bundle gerado pela IA.
@@ -311,3 +340,103 @@ Atualizado em: 2026-03-20
 - [x] Colapso do chat no modo compacto foi ajustado para recolher na propria coluna, evitando que o preview desça para baixo durante a transicao.
 
 - [x] Coluna do chat ganhou controle manual de largura por alca de resize, com limite maximo fixo de 600px.
+
+## Atualizacao extra - 2026-04-08 (Planner OpenAI + geracao visual Gemini)
+
+- [x] Fluxo de criacao da landing foi dividido em duas camadas: OpenAI/ChatGPT ficou responsavel pelo chat e pelo planejamento, enquanto o Gemini passou a ser o gerador principal do bundle visual React/TSX usado no preview e no publish.
+- [x] Backend de criacao agora retorna e persiste metadados de planejamento por sessao, incluindo `planSummary`, `promptDepth`, `shouldAsk`, `askQueue` e `readyForVisualGeneration`.
+- [x] A logica de perguntas deixou de ser fixa por campos locais e passou a ser guiada pela profundidade do prompt, com asks opcionais em fila apenas quando o contexto estiver raso ou parcialmente incompleto.
+- [x] Frontend do workspace passou a consumir a `askQueue` vinda do backend, mostrando uma pergunta por vez no chat e usando o composer como resposta direta dessa pergunta quando houver ask ativo.
+- [x] Preview automatico deixou de regenerar de forma agressiva enquanto a sessao ainda nao estiver pronta para geracao visual, respeitando o sinal `readyForVisualGeneration` enviado pelo planner.
+- [x] Fallback visual foi mantido: se o Gemini estiver indisponivel ou retornar bundle invalido, o backend continua entregando o bundle padrao sem quebrar preview ou publish.
+- [x] Card de status temporario do preview React (`Sandbox ativo` / `Bundle fallback`) foi removido do canvas para nao poluir a experiencia enquanto o iframe recompila.
+- [x] Ask ativo da IA saiu da area superior do chat e foi embutido diretamente no composer, com pergunta e opcoes rapidas no lugar do bloco separado acima das mensagens.
+- [x] Geracao automatica de preview ganhou reutilizacao por assinatura do draft/prompt, evitando novas chamadas ao provider visual quando a sessao ja possui preview valido e o contexto visual nao mudou.
+- [x] Pipeline de geracao visual agora tenta Gemini primeiro e, em caso de limite, indisponibilidade ou bundle invalido, faz fallback para OpenAI antes de cair no bundle padrao.
+- [x] Composer do chat agora bloqueia reenvio simultaneo da mesma resposta e esconde a ask imediatamente ao enviar, evitando duplicacao de respostas enquanto a API ainda esta processando.
+- [x] Prompt de geracao visual do preview foi flexibilizado para dar mais liberdade criativa a IA, reduzindo a tendencia a layouts engessados e repetitivos sem perder as restricoes tecnicas de seguranca e compatibilidade.
+- [x] Chat de criacao ganhou indicador visual local de `Pensando` enquanto a IA processa a resposta, sem adicionar mensagem fake ao historico e sem depender de status vindo da API.
+- [x] Painel de `Configuracoes` ganhou campos persistidos para definir o modelo da Lume no workspace de landings e o modelo visual usado na geracao do preview.
+- [x] Campos de modelo da Lume e do preview visual foram convertidos para selects com listas prontas de modelos OpenAI e Gemini, incluindo suporte a valor customizado ja salvo.
+- [x] Workspace e fallback visual foram limpos para reduzir o efeito de template: removidos resumos de tema/plano no topo da criacao e neutralizados badges/textos fixos que empurravam o preview para um molde repetitivo.
+- [x] Respostas de asks do workspace passaram a ser absorvidas como contexto interno da IA, sem aparecer como mensagem enviada no historico do chat.
+- [x] Geracao visual passou a filtrar fatos de processo antes do preview, evitando textos literais de briefing como `o operador pediu` e `publico-alvo confirmado` na landing final.
+- [x] Prompt do bundle visual foi reforcado para exigir atmosfera visual real no background e impedir que o processo de planejamento apareca como copy renderizada.
+- [x] Bundle fallback ganhou theming dinamico por paleta/direcao visual, com backgrounds, glow e contraste mais visiveis quando o provider principal nao entregar um layout melhor.
+- [x] Fluxo de ask do planner passou a manter uma unica mensagem viva da IA no historico, atualizada em lugar a cada resposta absorvida, sem empilhar varias bolhas de planejamento.
+- [x] Mensagens do planner agora usam `id` estavel e metadados de tipo (`chat` ou `planner`) para reconciliacao correta no frontend e reidratacao da sessao.
+- [x] Composer do ask foi simplificado para `pergunta + opcoes`, sem contador chamativo, enquanto a mensagem viva da Lume resume o estado atual do planejamento.
+- [x] Prompt visual foi solto ainda mais para deixar `duracao`, `modalidade`, badges, cards e estruturas repetidas como elementos opcionais, nao como esqueleto obrigatorio da landing.
+- [x] Bundle fallback foi redesenhado para uma composicao mais editorial e atmosferica, sem painel fixo de `duracao/modalidade` nem grade mecanica padrao em toda geracao.
+- [x] Gerador visual passou a receber como referencia a linguagem recente das landings publicas da Santos Tech, buscando hero forte, ritmo de secoes e atmosfera premium sem copiar layout ou texto literalmente.
+- [x] Opcoes rapidas do ask no composer passaram a aparecer como botoes numerados (`1`, `2`, `3`) em vez de repetir o texto completo dentro dos chips.
+- [x] Respostas absorvidas do ask agora atualizam o draft base antes da proxima rodada do planner, reduzindo a repeticao da mesma pergunta quando a IA ja recebeu a resposta.
+- [x] Gerador e prompt padrao de landing foram reposicionados para captar interesse em cursos, em vez de empurrar linguagem de venda direta, checkout ou matricula agressiva.
+- [x] Gerador visual entrou em modo `lovable editorial imersivo`, com regras mais fortes contra facts em grade, hero com card lateral e metacopy generica no preview.
+- [x] Fallback local foi reescrito para uma composicao mais autoral e atmosferica, usando so `Button` como apoio shadcn e evitando badges/cards como esqueleto do layout.
+
+## Atualizacao extra - 2026-04-08 (Politica de modelos fortes e economicos)
+
+- [x] Backend ganhou politica automatica de roteamento de modelos com papeis explicitos para `strongModel` e `cheapModel`, mantendo compatibilidade com os campos legados de configuracao.
+- [x] `AiConfig` passou a persistir `strongModel`, `cheapModel`, `routingMode` e `taskOverrides`, com migracao Prisma dedicada para a nova politica.
+- [x] Chamadas OpenAI via `/responses` foram centralizadas em um helper com resolucao por `taskType`, fallback automatico do modelo economico para o forte e logs de auditoria do roteamento.
+- [x] Respostas do WhatsApp e enriquecimento de lead passaram a usar o modelo economico por padrao, enquanto planner, geracao/refino de landing e code bundle usam o modelo forte.
+- [x] Painel de configuracoes foi reorganizado para expor modelo forte, modelo economico, politica de roteamento e overrides por area/tarefa sem remover os controles de landing visual e transcricao.
+
+## Atualizacao extra - 2026-04-08 (Preview visual sem template local)
+
+- [x] Pipeline de preview visual deixou de usar landing fallback local como resultado final; agora tenta apenas `Gemini -> OpenAI` e falha explicitamente quando nenhum provider entrega um bundle valido.
+- [x] `buildDefaultLandingCodeBundleFromOffer` foi reduzido a um canvas tecnico neutro de inicializacao da sessao, sem estrutura pronta de landing, sem variantes e sem template visual reutilizado como preview final.
+
+## Atualizacao extra - 2026-04-08 (Preview visual OpenAI only)
+
+- [x] Pipeline de geracao visual do preview e publish foi temporariamente simplificado para usar apenas OpenAI, removendo a etapa inicial do Gemini para cortar a latencia acumulada do fallback sequencial.
+
+## Atualizacao extra - 2026-04-08 (Ask no composer)
+
+- [x] Composer do ask foi compactado para manter pergunta e opcoes numeradas na frente do input, dentro da mesma faixa visual do composer.
+- [x] Opcoes visiveis do ask no composer passaram a mostrar ate `4` botoes numerados por pergunta.
+
+## Atualizacao extra - 2026-04-08 (Planner contextual)
+
+- [x] Planner de landing passou a inferir perguntas e opcoes contextuais pelo tema do curso, em vez de repetir menus genericos fixos para todos os briefs.
+- [x] Heuristicas iniciais foram adicionadas para temas como PowerPoint, Excel, Power BI, cursos tecnicos e cursos infantis, incluindo sugestoes de paleta, tipografia, layout e conteudo alinhadas ao assunto.
+- [x] Prompt do planner foi reforcado para proibir asks genericos repetitivos e limitar as opcoes contextuais a no maximo `4` por pergunta.
+
+## Atualizacao extra - 2026-04-08 (Alternativas visiveis)
+
+- [x] Botoes do ask no composer passaram a mostrar numero e texto real de cada alternativa, em vez de exibir apenas o indice numerico.
+
+## Atualizacao extra - 2026-04-08 (Ask em lote)
+
+- [x] Fluxo de ask do planner passou a aceitar varias respostas em uma unica rodada, enviando um mapa de respostas para o backend em vez de tratar apenas a primeira pergunta da fila.
+- [x] Composer do workspace agora renderiza ate `4` perguntas juntas com opcoes selecionaveis e botao `Continuar`, evitando o fluxo de uma pergunta separada por vez.
+
+## Atualizacao extra - 2026-04-08 (Ask sequencial com texto livre)
+
+- [x] Fluxo do ask no composer voltou para ordem sequencial, exibindo uma pergunta por vez e liberando a seguinte apenas depois da resposta atual.
+- [x] Cada ask passou a mostrar `4` opcoes prontas e uma `5a` opcao para resposta livre digitada pelo operador.
+- [x] A quinta opcao do ask agora e um campo de texto real embutido no proprio painel da pergunta, mantendo o mesmo espaco de digitacao como resposta livre.
+- [x] Clique em `Continuar` no ask agora consome a pergunta atual de forma otimista no frontend, fazendo a proxima ocupar o mesmo lugar imediatamente.
+
+## Atualizacao extra - 2026-04-08 (Preview visual OpenAI)
+
+- [x] Geracao de bundle visual via OpenAI ganhou margem maior de saida (`6000` tokens) para reduzir respostas truncadas e JSON invalido quando o Gemini estiver indisponivel por quota.
+- [x] Logs de falha do provider visual OpenAI passaram a registrar um trecho da resposta bruta quando o bundle vier invalido, facilitando diagnostico do pipeline.
+
+## Atualizacao extra - 2026-04-08 (Performance de resposta e preview)
+
+- [x] Backend ganhou cache em memoria com TTL curto para configuracao da IA, FAQ ativo e stage padrao, reduzindo leituras repetidas no banco durante webhook, auto reply e preview.
+- [x] Historico carregado para resposta automatica foi reduzido para uma janela dinamica menor, cortando custo de consulta sem perder contexto util da conversa.
+- [x] Chamadas da OpenAI passaram a usar timeout por tipo de tarefa e retry mais controlado, evitando que respostas lentas segurem preview e automacoes por tempo demais.
+- [x] Geracao de bundle visual via OpenAI voltou ao teto de `6000` tokens, reduzindo latencia e risco de `504` no preview quando houver fallback do Gemini.
+- [x] Resposta automatica do WhatsApp teve o teto de saida reduzido para respostas mais curtas e rapidas, alinhadas ao atendimento por chat.
+- [x] Planner da landing teve o historico limitado para as ultimas `8` mensagens e o teto de saida reduzido para `1200` tokens, cortando o tempo do plano sem remover a logica de ask e draft.
+- [x] Pedidos curtos e diretos como `landing de Word` agora passam por um fast path local no backend, montando o draft instantaneamente sem depender do planner da IA nessa primeira rodada.
+- [x] Fast path de briefs simples agora tambem devolve um preview base persistido na sessao, e o frontend deixou de disparar auto-preview quando a resposta ja volta com preview preenchido.
+- [x] Fast path foi reajustado para priorizar planejamento no chat antes do preview: briefs curtos agora retornam um plano local estruturado e nao abrem automaticamente o fallback visual na primeira resposta.
+
+## Atualizacao extra - 2026-04-08 (Parar geracao no composer)
+
+- [x] Botao de envio do composer passou a virar um controle de parar geracao durante o processamento, usando o icone quadrado solicitado em vez de manter o chat apenas bloqueado.
+- [x] Clique em parar agora aborta a requisicao ativa do chat e o auto preview encadeado, restaurando o rascunho anterior quando a interrupcao acontece antes da resposta da sessao voltar.

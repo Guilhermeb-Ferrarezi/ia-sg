@@ -135,6 +135,12 @@ model ContactTag {
 model AiConfig {
   key                  String   @id @default("default")
   model                String
+  strongModel          String   @default("")
+  cheapModel           String   @default("")
+  routingMode          String   @default("automatic")
+  taskOverrides        Json?
+  landingPlannerModel  String   @default("")
+  landingVisualModel   String   @default("")
   baseUrl              String
   transcriptionModel   String
   persona              String   @default("")

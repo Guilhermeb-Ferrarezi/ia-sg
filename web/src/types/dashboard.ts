@@ -278,6 +278,21 @@ export type LogsResponse = {
 
 export type AISettings = {
   model: string;
+  strongModel: string;
+  cheapModel: string;
+  routingMode: "automatic" | "manual";
+  taskOverrides: {
+    chatReplyModel: string;
+    leadEnrichmentModel: string;
+    leadClassificationModel: string;
+    landingPlannerModel: string;
+    landingGenerationModel: string;
+    landingCodeBundleModel: string;
+    landingRefineModel: string;
+    landingVisualFallbackModel: string;
+  };
+  landingPlannerModel: string;
+  landingVisualModel: string;
   baseUrl: string;
   transcriptionModel: string;
   persona: string;
@@ -286,6 +301,7 @@ export type AISettings = {
   humanDelayMinMs: number;
   humanDelayMaxMs: number;
   hasApiKey: boolean;
+  hasVisualApiKey?: boolean;
   language: string;
   provider: string;
 };
@@ -495,8 +511,13 @@ export type LandingPreviewResponse = {
 };
 
 export type LandingCreationMessage = {
+  id: string;
   role: "user" | "assistant";
+  kind?: "chat" | "planner";
+  plannerMessageId?: string;
+  isMutable?: boolean;
   content: string;
+  thinking?: string;
   createdAt: string;
 };
 
@@ -517,6 +538,28 @@ export type LandingCreationDraft = {
   isActive: boolean;
 };
 
+export type LandingPlannerPromptDepth = "shallow" | "medium" | "deep";
+
+export type LandingPlannerAsk = {
+  id: string;
+  label: string;
+  question: string;
+  placeholder: string;
+  options: string[];
+  helperText?: string;
+};
+
+export type LandingCreationPlannerState = {
+  planSummary: string;
+  promptDepth: LandingPlannerPromptDepth;
+  shouldAsk: boolean;
+  askQueue: LandingPlannerAsk[];
+  readyForVisualGeneration: boolean;
+  activeMessageId: string | null;
+  activeQuestionId: string | null;
+  stageSummary: string;
+};
+
 export type LandingCreationReadiness = {
   canPreview: boolean;
   canPublish: boolean;
@@ -532,6 +575,7 @@ export type LandingCreationSession = {
   promptDraft: LandingPromptConfig;
   chatHistory: LandingCreationMessage[];
   readiness: LandingCreationReadiness;
+  planner: LandingCreationPlannerState;
   builderDraft?: LandingBuilderDocument | null;
   codeBundleDraft?: LandingCodeBundle | null;
   preview: LandingPreviewResponse | null;

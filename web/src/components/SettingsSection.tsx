@@ -34,6 +34,20 @@ import {
 
 type SettingsTab = "ai" | "whatsapp" | "landing";
 type ToastType = "success" | "error" | "info" | "loading";
+type OpenAIFieldKey =
+  | "strongModel"
+  | "cheapModel"
+  | "landingPlannerModel"
+  | "transcriptionModel"
+  | "chatReplyModel"
+  | "leadEnrichmentModel"
+  | "leadClassificationModel"
+  | "landingGenerationModel"
+  | "landingCodeBundleModel"
+  | "landingRefineModel"
+  | "landingVisualFallbackModel";
+
+type GeminiFieldKey = "landingVisualModel";
 
 const VERTICALS = [
   "UNDEFINED",
@@ -108,7 +122,72 @@ const OPENAI_MODEL_GROUPS = [
   },
 ] as const;
 
+const GEMINI_MODEL_GROUPS = [
+  {
+    label: "Gemini 2.5",
+    options: [
+      { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
+      { value: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+    ],
+  },
+  {
+    label: "Gemini 2.0",
+    options: [
+      { value: "gemini-2.0-flash", label: "Gemini 2.0 Flash" },
+      { value: "gemini-2.0-flash-lite", label: "Gemini 2.0 Flash Lite" },
+    ],
+  },
+  {
+    label: "Gemini 1.5",
+    options: [
+      { value: "gemini-1.5-flash", label: "Gemini 1.5 Flash" },
+      { value: "gemini-1.5-pro", label: "Gemini 1.5 Pro" },
+    ],
+  },
+] as const;
+
 const CUSTOM_MODEL_VALUE = "__custom__";
+const ROUTING_MODE_OPTIONS = [
+  { value: "automatic", label: "Automatico" },
+  { value: "manual", label: "Manual com overrides" },
+] as const;
+
+const EMPTY_AI_OVERRIDES: AISettings["taskOverrides"] = {
+  chatReplyModel: "",
+  leadEnrichmentModel: "",
+  leadClassificationModel: "",
+  landingPlannerModel: "",
+  landingGenerationModel: "",
+  landingCodeBundleModel: "",
+  landingRefineModel: "",
+  landingVisualFallbackModel: "",
+};
+
+function getOpenAiModelGroups(currentValue: string) {
+  const knownIds = OPENAI_MODEL_GROUPS.flatMap((group) => group.options.map((option) => option.value)) as string[];
+  if (!currentValue || knownIds.includes(currentValue)) return OPENAI_MODEL_GROUPS;
+
+  return [
+    {
+      label: "Modelo Atual",
+      options: [{ value: currentValue, label: `${currentValue} (customizado)` }],
+    },
+    ...OPENAI_MODEL_GROUPS,
+  ] as const;
+}
+
+function getGeminiModelGroups(currentValue: string) {
+  const knownIds = GEMINI_MODEL_GROUPS.flatMap((group) => group.options.map((option) => option.value)) as string[];
+  if (!currentValue || knownIds.includes(currentValue)) return GEMINI_MODEL_GROUPS;
+
+  return [
+    {
+      label: "Modelo Atual",
+      options: [{ value: currentValue, label: `${currentValue} (customizado)` }],
+    },
+    ...GEMINI_MODEL_GROUPS,
+  ] as const;
+}
 
 export default function SettingsSection({
   active,
@@ -127,7 +206,8 @@ export default function SettingsSection({
   const [aiSaving, setAiSaving] = useState(false);
   const [aiError, setAiError] = useState("");
   const [aiDraft, setAiDraft] = useState<Partial<AISettings>>({});
-  const [customModelMode, setCustomModelMode] = useState(false);
+  const [customOpenAIFields, setCustomOpenAIFields] = useState<Partial<Record<OpenAIFieldKey, boolean>>>({});
+  const [customGeminiFields, setCustomGeminiFields] = useState<Partial<Record<GeminiFieldKey, boolean>>>({});
   const [landing, setLanding] = useState<LandingPromptConfig | null>(null);
   const [landingLoading, setLandingLoading] = useState(false);
   const [landingSaving, setLandingSaving] = useState(false);
@@ -205,6 +285,25 @@ export default function SettingsSection({
     void loadWP();
     void loadLanding();
   }, [active, loadAI, loadWP, loadLanding]);
+
+  const updateAiField = useCallback(<K extends keyof AISettings>(field: K, value: AISettings[K]) => {
+    setAiDraft((draft) => ({
+      ...draft,
+      [field]: value,
+    }));
+  }, []);
+
+  const updateTaskOverride = useCallback((field: keyof AISettings["taskOverrides"], value: string) => {
+    setAiDraft((draft) => ({
+      ...draft,
+      taskOverrides: {
+        ...EMPTY_AI_OVERRIDES,
+        ...aiRef.current?.taskOverrides,
+        ...draft.taskOverrides,
+        [field]: value,
+      },
+    }));
+  }, []);
 
   const saveAI = async () => {
     setAiSaving(true);
@@ -308,6 +407,12 @@ export default function SettingsSection({
 
   const mergedAi: AISettings = {
     model: "",
+    strongModel: "gpt-5",
+    cheapModel: "gpt-5-mini",
+    routingMode: "automatic",
+    taskOverrides: EMPTY_AI_OVERRIDES,
+    landingPlannerModel: "",
+    landingVisualModel: "",
     baseUrl: "",
     transcriptionModel: "",
     persona: "",
@@ -316,6 +421,7 @@ export default function SettingsSection({
     humanDelayMinMs: 1200,
     humanDelayMaxMs: 6500,
     hasApiKey: false,
+    hasVisualApiKey: false,
     language: "pt-BR",
     provider: "OpenAI",
     ...ai,
@@ -342,29 +448,26 @@ export default function SettingsSection({
   const aiHasChanges = Object.keys(aiDraft).length > 0;
   const wpHasChanges = Object.keys(wpDraft).length > 0;
   const settingsBootLoading = aiLoading && wpLoading && landingLoading && !ai && !wp && !landing;
-  const knownOpenAiModelIds: string[] = OPENAI_MODEL_GROUPS.flatMap((group) =>
-    group.options.map((option) => option.value)
-  );
-  const hasCustomModel = !!mergedAi.model && !knownOpenAiModelIds.includes(mergedAi.model);
-  const showCustomModelInput = customModelMode || hasCustomModel;
-  const modelGroups =
-    hasCustomModel
-      ? [
-          {
-            label: "Modelo Atual",
-            options: [
-              {
-                value: mergedAi.model,
-                label: `${mergedAi.model} (customizado)`,
-              },
-            ],
-          },
-          ...OPENAI_MODEL_GROUPS,
-        ]
-      : OPENAI_MODEL_GROUPS;
-  const selectedModelValue = showCustomModelInput
-    ? CUSTOM_MODEL_VALUE
-    : mergedAi.model;
+  const mergedOverrides = {
+    ...EMPTY_AI_OVERRIDES,
+    ...mergedAi.taskOverrides,
+  };
+  const openAiGroupsByField: Record<OpenAIFieldKey, readonly { label: string; options: readonly { value: string; label: string }[] }[]> = {
+    strongModel: getOpenAiModelGroups(mergedAi.strongModel),
+    cheapModel: getOpenAiModelGroups(mergedAi.cheapModel),
+    landingPlannerModel: getOpenAiModelGroups(mergedAi.landingPlannerModel),
+    transcriptionModel: getOpenAiModelGroups(mergedAi.transcriptionModel),
+    chatReplyModel: getOpenAiModelGroups(mergedOverrides.chatReplyModel),
+    leadEnrichmentModel: getOpenAiModelGroups(mergedOverrides.leadEnrichmentModel),
+    leadClassificationModel: getOpenAiModelGroups(mergedOverrides.leadClassificationModel),
+    landingGenerationModel: getOpenAiModelGroups(mergedOverrides.landingGenerationModel),
+    landingCodeBundleModel: getOpenAiModelGroups(mergedOverrides.landingCodeBundleModel),
+    landingRefineModel: getOpenAiModelGroups(mergedOverrides.landingRefineModel),
+    landingVisualFallbackModel: getOpenAiModelGroups(mergedOverrides.landingVisualFallbackModel),
+  };
+  const geminiGroupsByField: Record<GeminiFieldKey, readonly { label: string; options: readonly { value: string; label: string }[] }[]> = {
+    landingVisualModel: getGeminiModelGroups(mergedAi.landingVisualModel),
+  };
 
   if (!active) return null;
 
@@ -508,7 +611,7 @@ export default function SettingsSection({
           ) : (
             <>
               {/* Status Cards Row */}
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3 fade-in-up stagger-1">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4 fade-in-up stagger-1">
                 <StatusCard
                   icon={Cloud}
                   label="Provider"
@@ -528,102 +631,218 @@ export default function SettingsSection({
                   value={mergedAi.language}
                   color="violet"
                 />
+                <StatusCard
+                  icon={Sparkles}
+                  label="Politica ativa"
+                  value={`Operacional: ${mergedAi.cheapModel} | Planejamento: ${mergedAi.strongModel}`}
+                  color="amber"
+                />
               </div>
 
               {/* Model & Provider */}
               <SettingsCard
-                title="Modelo e Provedor"
+                title="Politica de Modelos"
                 icon={Sparkles}
                 color="cyan"
                 stagger={2}
               >
-                <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
-                  <div className="space-y-2">
-                    <label className="flex items-center gap-2 text-sm font-medium text-slate-300">
-                      <Bot className="h-3.5 w-3.5 text-slate-500" />
-                      Modelo
-                    </label>
-                    <div className="relative">
-                      <select
-                        className="w-full appearance-none rounded-xl border border-slate-700 bg-slate-950/80 px-4 py-3 pr-10 text-sm text-slate-200 transition-all duration-300 focus:border-cyan-500/50 focus:ring-2 focus:ring-cyan-500/20 focus:outline-none hover:border-slate-600"
-                        value={selectedModelValue}
-                        onChange={(e) => {
-                          const nextValue = e.target.value;
-
-                          if (nextValue === CUSTOM_MODEL_VALUE) {
-                            setCustomModelMode(true);
-                            if (!hasCustomModel) {
-                              setAiDraft((d) => ({
-                                ...d,
-                                model: "",
-                              }));
-                            }
-                            return;
-                          }
-
-                          setCustomModelMode(false);
-                          setAiDraft((d) => ({
-                            ...d,
-                            model: nextValue,
-                          }));
-                        }}
-                      >
-                        <option value="">Selecione um modelo...</option>
-                        <option value={CUSTOM_MODEL_VALUE}>
-                          Modelo customizado
-                        </option>
-                        {modelGroups.map((group) => (
-                          <optgroup key={group.label} label={group.label}>
-                            {group.options.map((option) => (
-                              <option key={option.value} value={option.value}>
-                                {option.label}
-                              </option>
-                            ))}
-                          </optgroup>
-                        ))}
-                      </select>
-                      <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
-                    </div>
-                    <p className="text-xs text-slate-500">
-                      Lista oficial da OpenAI para modelos de texto e raciocinio a partir do GPT-4o mini.
-                    </p>
-                    {showCustomModelInput && (
-                      <InputField
-                        label="Modelo customizado"
-                        icon={Pencil}
-                        value={mergedAi.model}
-                        placeholder="gpt-4o-search-preview"
-                        onChange={(v) =>
-                          setAiDraft((d) => ({ ...d, model: v }))
-                        }
-                      />
-                    )}
+                <div className="flex flex-col gap-5">
+                  <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                    <StatusCard icon={Zap} label="Execucao economica" value={mergedAi.cheapModel} color="emerald" />
+                    <StatusCard icon={Brain} label="Planejamento forte" value={mergedAi.strongModel} color="violet" />
+                    <StatusCard
+                      icon={Shield}
+                      label="Roteamento"
+                      value={mergedAi.routingMode === "automatic" ? "Automatico + override" : "Manual com overrides"}
+                      color="cyan"
+                    />
                   </div>
-                  <InputField
-                    label="Modelo de Transcricao"
-                    icon={MessageSquare}
-                    value={mergedAi.transcriptionModel}
-                    placeholder="whisper-1"
-                    onChange={(v) =>
-                      setAiDraft((d) => ({
-                        ...d,
-                        transcriptionModel: v,
-                      }))
-                    }
-                  />
-                  <InputField
-                    label="Limite de Historico"
-                    icon={Clock}
-                    value={String(mergedAi.historyLimit)}
-                    placeholder="20"
-                    type="number"
-                    onChange={(v) =>
-                      setAiDraft((d) => ({
-                        ...d,
-                        historyLimit: Math.max(1, Number(v) || 20),
-                      }))
-                    }
-                  />
+
+                  <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+                    <ModelSelectField
+                      label="Modelo economico"
+                      icon={Zap}
+                      value={mergedAi.cheapModel}
+                      groups={openAiGroupsByField.cheapModel}
+                      onChange={(value) => {
+                        updateAiField("cheapModel", value);
+                        updateAiField("model", value);
+                      }}
+                      hint="Padrao para respostas do WhatsApp, enriquecimento e classificacao."
+                      customEnabled={customOpenAIFields.cheapModel}
+                      onCustomToggle={(enabled) => setCustomOpenAIFields((state) => ({ ...state, cheapModel: enabled }))}
+                      customPlaceholder="gpt-5-mini"
+                    />
+                    <ModelSelectField
+                      label="Modelo forte"
+                      icon={Brain}
+                      value={mergedAi.strongModel}
+                      groups={openAiGroupsByField.strongModel}
+                      onChange={(value) => updateAiField("strongModel", value)}
+                      hint="Reservado para planejamento, geracao estruturada e refino pesado."
+                      customEnabled={customOpenAIFields.strongModel}
+                      onCustomToggle={(enabled) => setCustomOpenAIFields((state) => ({ ...state, strongModel: enabled }))}
+                      customPlaceholder="gpt-5"
+                    />
+                    <div className="space-y-2">
+                      <label className="flex items-center gap-2 text-sm font-medium text-slate-300">
+                        <Cloud className="h-3.5 w-3.5 text-slate-500" />
+                        Politica de roteamento
+                      </label>
+                      <div className="relative">
+                        <select
+                          className="w-full appearance-none rounded-xl border border-slate-700 bg-slate-950/80 px-4 py-3 pr-10 text-sm text-slate-200 transition-all duration-300 focus:border-cyan-500/50 focus:ring-2 focus:ring-cyan-500/20 focus:outline-none hover:border-slate-600"
+                          value={mergedAi.routingMode}
+                          onChange={(e) => updateAiField("routingMode", e.target.value as AISettings["routingMode"])}
+                        >
+                          {ROUTING_MODE_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                        <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+                      </div>
+                      <p className="text-xs text-slate-500">
+                        Automatico escolhe por tipo de tarefa; manual privilegia os overrides definidos abaixo.
+                      </p>
+                    </div>
+                    <InputField
+                      label="Base URL do provider"
+                      icon={Globe}
+                      value={mergedAi.baseUrl}
+                      placeholder="https://api.openai.com/v1"
+                      onChange={(value) => updateAiField("baseUrl", value)}
+                      hint="Mantido para OpenAI oficial ou endpoint compativel."
+                    />
+                  </div>
+
+                  <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.3em] text-cyan-300/80">
+                      Overrides por area
+                    </p>
+                    <div className="mt-4 grid grid-cols-1 gap-5 md:grid-cols-2">
+                      <ModelSelectField
+                        label="WhatsApp"
+                        icon={MessageSquare}
+                        value={mergedOverrides.chatReplyModel}
+                        groups={openAiGroupsByField.chatReplyModel}
+                        onChange={(value) => updateTaskOverride("chatReplyModel", value)}
+                        hint="Se vazio, usa o modelo economico."
+                        customEnabled={customOpenAIFields.chatReplyModel}
+                        onCustomToggle={(enabled) => setCustomOpenAIFields((state) => ({ ...state, chatReplyModel: enabled }))}
+                      />
+                      <ModelSelectField
+                        label="Landing planner"
+                        icon={Presentation}
+                        value={mergedAi.landingPlannerModel}
+                        groups={openAiGroupsByField.landingPlannerModel}
+                        onChange={(value) => {
+                          updateAiField("landingPlannerModel", value);
+                          updateTaskOverride("landingPlannerModel", value);
+                        }}
+                        hint="Planner e conversa do workspace de landing."
+                        customEnabled={customOpenAIFields.landingPlannerModel}
+                        onCustomToggle={(enabled) => setCustomOpenAIFields((state) => ({ ...state, landingPlannerModel: enabled }))}
+                      />
+                      <ModelSelectField
+                        label="Preview visual"
+                        icon={Camera}
+                        value={mergedAi.landingVisualModel}
+                        groups={geminiGroupsByField.landingVisualModel}
+                        onChange={(value) => updateAiField("landingVisualModel", value)}
+                        hint={mergedAi.hasVisualApiKey ? "Fluxo visual principal em Gemini." : "Sem GEMINI_API_KEY; pode cair para OpenAI/fallback."}
+                        customEnabled={customGeminiFields.landingVisualModel}
+                        onCustomToggle={(enabled) => setCustomGeminiFields((state) => ({ ...state, landingVisualModel: enabled }))}
+                        customPlaceholder="gemini-2.5-flash"
+                      />
+                      <ModelSelectField
+                        label="Fallback visual OpenAI"
+                        icon={Sparkles}
+                        value={mergedOverrides.landingVisualFallbackModel}
+                        groups={openAiGroupsByField.landingVisualFallbackModel}
+                        onChange={(value) => updateTaskOverride("landingVisualFallbackModel", value)}
+                        hint="Se vazio, o fluxo visual usa o modelo forte ao cair para OpenAI."
+                        customEnabled={customOpenAIFields.landingVisualFallbackModel}
+                        onCustomToggle={(enabled) => setCustomOpenAIFields((state) => ({ ...state, landingVisualFallbackModel: enabled }))}
+                      />
+                      <InputField
+                        label="Transcricao"
+                        icon={Phone}
+                        value={mergedAi.transcriptionModel}
+                        placeholder="whisper-1"
+                        onChange={(value) => updateAiField("transcriptionModel", value)}
+                        hint="Mantido fora do roteamento principal de texto."
+                      />
+                      <InputField
+                        label="Limite de Historico"
+                        icon={Clock}
+                        value={String(mergedAi.historyLimit)}
+                        placeholder="20"
+                        type="number"
+                        onChange={(v) => updateAiField("historyLimit", Math.max(1, Number(v) || 20))}
+                        hint="Quantidade de mensagens mantidas no contexto."
+                      />
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-950/40 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-400">
+                      Overrides avancados por tarefa
+                    </p>
+                    <div className="mt-4 grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
+                      <ModelSelectField
+                        label="Enriquecimento"
+                        icon={Mail}
+                        value={mergedOverrides.leadEnrichmentModel}
+                        groups={openAiGroupsByField.leadEnrichmentModel}
+                        onChange={(value) => updateTaskOverride("leadEnrichmentModel", value)}
+                        hint="Se vazio, usa o economico."
+                        customEnabled={customOpenAIFields.leadEnrichmentModel}
+                        onCustomToggle={(enabled) => setCustomOpenAIFields((state) => ({ ...state, leadEnrichmentModel: enabled }))}
+                      />
+                      <ModelSelectField
+                        label="Classificacao"
+                        icon={Check}
+                        value={mergedOverrides.leadClassificationModel}
+                        groups={openAiGroupsByField.leadClassificationModel}
+                        onChange={(value) => updateTaskOverride("leadClassificationModel", value)}
+                        hint="Preparado para score e qualificacao."
+                        customEnabled={customOpenAIFields.leadClassificationModel}
+                        onCustomToggle={(enabled) => setCustomOpenAIFields((state) => ({ ...state, leadClassificationModel: enabled }))}
+                      />
+                      <ModelSelectField
+                        label="Geracao da landing"
+                        icon={Presentation}
+                        value={mergedOverrides.landingGenerationModel}
+                        groups={openAiGroupsByField.landingGenerationModel}
+                        onChange={(value) => updateTaskOverride("landingGenerationModel", value)}
+                        hint="Se vazio, usa o forte."
+                        customEnabled={customOpenAIFields.landingGenerationModel}
+                        onCustomToggle={(enabled) => setCustomOpenAIFields((state) => ({ ...state, landingGenerationModel: enabled }))}
+                      />
+                      <ModelSelectField
+                        label="Code bundle"
+                        icon={Bot}
+                        value={mergedOverrides.landingCodeBundleModel}
+                        groups={openAiGroupsByField.landingCodeBundleModel}
+                        onChange={(value) => updateTaskOverride("landingCodeBundleModel", value)}
+                        hint="Gera o bundle React/TSX da landing."
+                        customEnabled={customOpenAIFields.landingCodeBundleModel}
+                        onCustomToggle={(enabled) => setCustomOpenAIFields((state) => ({ ...state, landingCodeBundleModel: enabled }))}
+                      />
+                      <ModelSelectField
+                        label="Refino da landing"
+                        icon={RefreshCw}
+                        value={mergedOverrides.landingRefineModel}
+                        groups={openAiGroupsByField.landingRefineModel}
+                        onChange={(value) => updateTaskOverride("landingRefineModel", value)}
+                        hint="Iteracoes e refinamentos do workspace."
+                        customEnabled={customOpenAIFields.landingRefineModel}
+                        onCustomToggle={(enabled) => setCustomOpenAIFields((state) => ({ ...state, landingRefineModel: enabled }))}
+                      />
+                    </div>
+                  </div>
                 </div>
               </SettingsCard>
 
@@ -1368,6 +1587,83 @@ function SettingsCard({
         {title}
       </h3>
       {children}
+    </div>
+  );
+}
+
+function ModelSelectField({
+  label,
+  icon: Icon,
+  value,
+  groups,
+  onChange,
+  hint,
+  customEnabled,
+  onCustomToggle,
+  customPlaceholder,
+}: {
+  label: string;
+  icon: typeof Bot;
+  value: string;
+  groups: readonly { label: string; options: readonly { value: string; label: string }[] }[];
+  onChange: (value: string) => void;
+  hint: string;
+  customEnabled?: boolean;
+  onCustomToggle?: (enabled: boolean) => void;
+  customPlaceholder?: string;
+}) {
+  const knownValues = groups.flatMap((group) => group.options.map((option) => option.value));
+  const showCustomInput = Boolean(customEnabled || (value && !knownValues.includes(value)));
+  const selectedValue = showCustomInput ? CUSTOM_MODEL_VALUE : value;
+
+  return (
+    <div className="space-y-2">
+      <label className="flex items-center gap-2 text-sm font-medium text-slate-300">
+        <Icon className="h-3.5 w-3.5 text-slate-500" />
+        {label}
+      </label>
+      <div className="relative">
+        <select
+          className="w-full appearance-none rounded-xl border border-slate-700 bg-slate-950/80 px-4 py-3 pr-10 text-sm text-slate-200 transition-all duration-300 focus:border-cyan-500/50 focus:ring-2 focus:ring-cyan-500/20 focus:outline-none hover:border-slate-600"
+          value={selectedValue}
+          onChange={(e) => {
+            const nextValue = e.target.value;
+            if (nextValue === CUSTOM_MODEL_VALUE) {
+              onCustomToggle?.(true);
+              if (knownValues.includes(value)) onChange("");
+              return;
+            }
+
+            onCustomToggle?.(false);
+            onChange(nextValue);
+          }}
+        >
+          <option value="" disabled>
+            Selecione um modelo...
+          </option>
+          {onCustomToggle && <option value={CUSTOM_MODEL_VALUE}>Modelo customizado</option>}
+          {groups.map((group) => (
+            <optgroup key={group.label} label={group.label}>
+              {group.options.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+        <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+      </div>
+      <p className="text-xs text-slate-500">{hint}</p>
+      {showCustomInput && (
+        <InputField
+          label="Modelo customizado"
+          icon={Pencil}
+          value={value}
+          placeholder={customPlaceholder || "gpt-5-custom"}
+          onChange={onChange}
+        />
+      )}
     </div>
   );
 }

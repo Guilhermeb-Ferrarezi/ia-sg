@@ -1,15 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ChartNoAxesColumn, CodeXml, Ellipsis, FileText, Globe, History, LayoutDashboard, Menu, MessageSquare, MonitorPlay, PanelLeftClose, PanelsTopLeft, Plus, RefreshCw, Send, Sparkles, Trash2, X } from "lucide-react";
+import { ArrowLeft, Brain, ChartNoAxesColumn, ChevronDown, ChevronLeft, ChevronRight, CodeXml, CornerDownLeft, Ellipsis, FileText, Globe, History, LayoutDashboard, Menu, MessageSquare, MonitorPlay, PanelLeftClose, PanelsTopLeft, Plus, RefreshCw, Send, Sparkles, Trash2, X } from "lucide-react";
 import { apiFetch } from "../lib/apiFetch";
-import type { AppLog, LandingCreationMessage, LandingCreationSession, LandingPageSummary, LandingPreviewLeadContext, LogsResponse, Offer } from "../types/dashboard";
+import type { LandingCreationSession, LandingPageSummary, LandingPreviewLeadContext, Offer } from "../types/dashboard";
 import LandingPreviewCanvas from "./LandingPreviewCanvas";
-import LandingAiActivityPanel from "./LandingAiActivityPanel";
 import LandingCodeIdePane from "./LandingCodeIdePane";
-import LandingDiscoveryQuestionnaire, {
-  buildLandingDiscoveryAnswersFromDraft,
-  getLandingDiscoveryMissingQuestionIds,
-  type LandingDiscoveryAnswers,
-} from "./LandingDiscoveryQuestionnaire";
 import { motion, AnimatePresence } from "framer-motion";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "./ui/dropdown-menu";
@@ -19,6 +13,7 @@ type ToastType = "success" | "error" | "info" | "loading";
 const CHAT_PANE_MIN_WIDTH = 320;
 const CHAT_PANE_MAX_WIDTH = 600;
 const CHAT_PANE_DEFAULT_WIDTH = 380;
+const CHAT_COMPOSER_MAX_HEIGHT = 224;
 
 const emptyPreviewLeadContext: LandingPreviewLeadContext = {
   interestedCourse: "",
@@ -52,78 +47,58 @@ function formatSessionTimeLabel(value: string): string {
   return sessionTimeFormatter.format(new Date(value));
 }
 
-function getLogSessionId(log: AppLog): number | null {
-  if (typeof log.data !== "object" || log.data === null) return null;
-  const rawSessionId = (log.data as Record<string, unknown>).sessionId;
-  if (typeof rawSessionId === "number" && Number.isFinite(rawSessionId)) return rawSessionId;
-  if (typeof rawSessionId === "string") {
-    const parsed = Number(rawSessionId);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
-}
-
 function clampChatPaneWidth(value: number): number {
   return Math.min(CHAT_PANE_MAX_WIDTH, Math.max(CHAT_PANE_MIN_WIDTH, value));
 }
 
-function formatLandingDraftThemeLabel(draft: LandingCreationSession["offerDraft"] | null | undefined): string {
-  if (!draft) return "";
-
-  const parts = [
-    draft.visualTheme?.trim() || "",
-    draft.colorPalette?.trim() ? `Cores: ${draft.colorPalette.trim()}` : "",
-    draft.typographyStyle?.trim() ? `Tipografia: ${draft.typographyStyle.trim()}` : "",
-    draft.layoutStyle?.trim() ? `Layout: ${draft.layoutStyle.trim()}` : "",
-  ].filter(Boolean);
-
-  return parts.join(" | ");
+function isAbortError(error: unknown): boolean {
+  return (error instanceof DOMException && error.name === "AbortError")
+    || (error instanceof Error && error.name === "AbortError");
 }
 
-function parseLandingDiscoveryContentNotes(value: string): string[] {
-  return value
-    .split(/\n|;|,/g)
-    .map((item) => item.replace(/^[\-\u2022]\s*/, "").trim())
-    .filter(Boolean);
+function buildSessionAutoPreviewKey(session: Pick<LandingCreationSession, "offerDraft" | "promptDraft">): string {
+  return JSON.stringify({
+    offerDraft: session.offerDraft,
+    promptDraft: session.promptDraft
+  });
 }
 
-function applyLandingDiscoveryAnswersToDraft(
-  draft: LandingCreationSession["offerDraft"],
-  answers: LandingDiscoveryAnswers
-): LandingCreationSession["offerDraft"] {
-  const normalizedNotes = answers.contentNotes.trim();
-  const approvedFacts = parseLandingDiscoveryContentNotes(normalizedNotes);
-  const firstContentLine = normalizedNotes
-    .split("\n")
-    .map((line) => line.trim())
-    .find(Boolean) || "";
-
-  return {
-    ...draft,
-    colorPalette: answers.colorPalette.trim(),
-    typographyStyle: answers.typographyStyle.trim(),
-    layoutStyle: answers.layoutStyle.trim(),
-    shortDescription: draft.shortDescription.trim() || firstContentLine || normalizedNotes,
-    approvedFacts: approvedFacts.length ? approvedFacts : draft.approvedFacts,
-  };
-}
-
-function buildLandingDiscoveryChatMessage(answers: LandingDiscoveryAnswers): string {
-  const approvedFacts = parseLandingDiscoveryContentNotes(answers.contentNotes);
-
-  return [
-    "Respostas do briefing da landing:",
-    answers.colorPalette.trim() ? `Cores: ${answers.colorPalette.trim()}` : "",
-    answers.typographyStyle.trim() ? `Tipografia: ${answers.typographyStyle.trim()}` : "",
-    answers.layoutStyle.trim() ? `Layout: ${answers.layoutStyle.trim()}` : "",
-    approvedFacts.length
-      ? `Pontos principais:\n- ${approvedFacts.join("\n- ")}`
-      : answers.contentNotes.trim()
-        ? `Pontos principais: ${answers.contentNotes.trim()}`
-        : "",
-  ]
-    .filter(Boolean)
-    .join("\n");
+function ThinkingBlock({ thinking, label = "Raciocinio" }: { thinking: string; label?: string }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="relative z-10 mb-2.5">
+      <button
+        type="button"
+        onClick={() => setExpanded((prev) => !prev)}
+        className="flex w-full items-center gap-2 rounded-xl border border-slate-700/30 bg-slate-900/40 px-3 py-2 text-left transition-colors hover:bg-slate-800/50"
+      >
+        <Brain className="h-3.5 w-3.5 shrink-0 text-violet-400/70" />
+        <span className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">{label}</span>
+        <motion.span
+          animate={{ rotate: expanded ? 180 : 0 }}
+          transition={{ duration: 0.2 }}
+          className="ml-auto"
+        >
+          <ChevronDown className="h-3.5 w-3.5 text-slate-500" />
+        </motion.span>
+      </button>
+      <AnimatePresence initial={false}>
+        {expanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.25, ease: "easeInOut" }}
+            className="overflow-hidden"
+          >
+            <p className="whitespace-pre-wrap rounded-b-xl border border-t-0 border-slate-700/30 bg-slate-900/30 px-3 py-2.5 text-[13px] leading-relaxed text-slate-400/80">
+              {thinking}
+            </p>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
 }
 
 export default function OffersSection({
@@ -160,8 +135,10 @@ export default function OffersSection({
   const [logoHovered, setLogoHovered] = useState(false);
   const [error, setError] = useState("");
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const [discoveryAnswers, setDiscoveryAnswers] = useState<LandingDiscoveryAnswers | null>(null);
-  const [submittingDiscovery, setSubmittingDiscovery] = useState(false);
+  const [plannerCustomMode, setPlannerCustomMode] = useState(false);
+  const [plannerSelectedOption, setPlannerSelectedOption] = useState<string | null>(null);
+  const [plannerAskIndex, setPlannerAskIndex] = useState(0);
+  const [plannerAnswers, setPlannerAnswers] = useState<Record<string, string>>({});
 
   const sortedSessions = useMemo(() => sortSessionsByRecent(sessions), [sessions]);
   const latestSession = useMemo(() => sortedSessions[0] ?? null, [sortedSessions]);
@@ -173,34 +150,26 @@ export default function OffersSection({
     if (!selectedSession) return null;
     return selectedSession.preview?.landing?.landingCodeBundleJson || selectedSession.codeBundleDraft || null;
   }, [selectedSession]);
-  const selectedSessionDiscoveryMissing = useMemo(() => {
-    if (!selectedSession) return [];
-    return getLandingDiscoveryMissingQuestionIds(buildLandingDiscoveryAnswersFromDraft(selectedSession.offerDraft));
-  }, [selectedSession]);
+  const askQueue = useMemo(
+    () => (sendingChat || !selectedSession?.planner.shouldAsk ? [] : selectedSession.planner.askQueue),
+    [sendingChat, selectedSession]
+  );
+  const activePlannerAsk = askQueue[plannerAskIndex] ?? null;
+  const hasPlannerAsk = askQueue.length > 0;
 
   const [localOfferDraft, setLocalOfferDraft] = useState<LandingCreationSession["offerDraft"] | null>(null);
   const [savingDraft, setSavingDraft] = useState(false);
   const [sessionToDeleteId, setSessionToDeleteId] = useState<number | null>(null);
-  const [aiActivityLogs, setAiActivityLogs] = useState<AppLog[]>([]);
-  const [aiActivityLoading, setAiActivityLoading] = useState(false);
-  const [aiActivityError, setAiActivityError] = useState("");
   const draftDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chatResizeStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const sendingChatRef = useRef(false);
+  const chatAbortControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     if (showDraftPanel && selectedSession) {
       setLocalOfferDraft(selectedSession.offerDraft);
     }
   }, [showDraftPanel, selectedSessionId]);
-
-  useEffect(() => {
-    if (!selectedSession) {
-      setDiscoveryAnswers(null);
-      return;
-    }
-
-    setDiscoveryAnswers(buildLandingDiscoveryAnswersFromDraft(selectedSession.offerDraft));
-  }, [selectedSessionId]);
 
   useEffect(() => {
     setPreviewPaneMode("preview");
@@ -238,6 +207,24 @@ export default function OffersSection({
       window.removeEventListener("blur", handlePointerUp);
     };
   }, []);
+
+  // Reset ask index when session or queue changes
+  useEffect(() => {
+    setPlannerAskIndex(0);
+    setPlannerAnswers({});
+    setPlannerSelectedOption(null);
+    setPlannerCustomMode(false);
+  }, [selectedSessionId, askQueue.length]);
+
+  useEffect(() => {
+    function handleEsc(event: KeyboardEvent) {
+      if (event.key === "Escape" && hasPlannerAsk && !sendingChat) {
+        dismissAllAsks();
+      }
+    }
+    window.addEventListener("keydown", handleEsc);
+    return () => window.removeEventListener("keydown", handleEsc);
+  }, [hasPlannerAsk, sendingChat]);
 
   const recentSessions = useMemo(() => {
     if (!selectedSession || selectedSession.id === 0) {
@@ -299,34 +286,6 @@ export default function OffersSection({
     setSelectedSessionId((current) => (current && nextSessions.some((session) => session.id === current) ? current : null));
   }, []);
 
-  const loadAiActivity = useCallback(async (sessionId: number | null | undefined, options?: { silent?: boolean }) => {
-    if (!sessionId || sessionId <= 0) {
-      setAiActivityLogs([]);
-      setAiActivityError("");
-      setAiActivityLoading(false);
-      return;
-    }
-
-    if (!options?.silent) {
-      setAiActivityLoading(true);
-    }
-    setAiActivityError("");
-
-    try {
-      const response = await apiFetch<LogsResponse>(`/logs?search=${encodeURIComponent("landing.creation")}&limit=80`);
-      const filteredLogs = response.logs
-        .filter((log) => getLogSessionId(log) === sessionId)
-        .sort((left, right) => new Date(right.ts).getTime() - new Date(left.ts).getTime());
-      setAiActivityLogs(filteredLogs);
-    } catch (err) {
-      setAiActivityError(err instanceof Error ? err.message : "Falha ao carregar a atividade da IA.");
-    } finally {
-      if (!options?.silent) {
-        setAiActivityLoading(false);
-      }
-    }
-  }, []);
-
   const replaceSession = useCallback((session: LandingCreationSession) => {
     setSessions((current) => {
       const next = current.some((item) => item.id === session.id)
@@ -360,31 +319,21 @@ export default function OffersSection({
   }, [selectedSessionId]);
 
   useEffect(() => {
+    setPlannerSelectedOption(null);
+    setPlannerCustomMode(false);
+  }, [activePlannerAsk?.id]);
+
+  useEffect(() => {
     onWorkspaceModeChange?.(active && Boolean(selectedSession));
   }, [active, onWorkspaceModeChange, selectedSession]);
-
-  useEffect(() => {
-    if (!active) return;
-    void loadAiActivity(selectedSession?.id ?? null);
-  }, [active, loadAiActivity, selectedSession?.id]);
-
-  useEffect(() => {
-    if (!active || !selectedSession || selectedSession.id <= 0) return;
-    if (!(sendingChat || previewing || publishingSession)) return;
-
-    void loadAiActivity(selectedSession.id, { silent: true });
-    const intervalId = window.setInterval(() => {
-      void loadAiActivity(selectedSession.id, { silent: true });
-    }, 1800);
-
-    return () => window.clearInterval(intervalId);
-  }, [active, loadAiActivity, previewing, publishingSession, selectedSession, sendingChat]);
 
   useEffect(() => {
     const textarea = composerTextareaRef.current;
     if (!textarea) return;
     textarea.style.height = "0px";
-    textarea.style.height = `${textarea.scrollHeight}px`;
+    const nextHeight = Math.min(textarea.scrollHeight, CHAT_COMPOSER_MAX_HEIGHT);
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY = textarea.scrollHeight > CHAT_COMPOSER_MAX_HEIGHT ? "auto" : "hidden";
   }, [sessionChatMessage, selectedSessionId]);
 
   const createSession = () => {
@@ -425,6 +374,16 @@ export default function OffersSection({
         missingPreviewFields: [],
         missingPublishFields: [],
       },
+      planner: {
+        planSummary: "",
+        promptDepth: "shallow",
+        shouldAsk: false,
+        askQueue: [],
+        readyForVisualGeneration: false,
+        activeMessageId: null,
+        activeQuestionId: null,
+        stageSummary: "",
+      },
       builderDraft: null,
       codeBundleDraft: null,
       preview: null,
@@ -436,11 +395,71 @@ export default function OffersSection({
     setSelectedSessionId(0);
   };
 
-  const sendChatMessage = async () => {
-    if (!selectedSession || !sessionChatMessage.trim()) return;
-    setSendingChat(true);
-    const message = sessionChatMessage.trim();
+  // Advance to next ask locally, or send consolidated answers when done
+  const advancePlannerAsk = () => {
+    const currentAsk = askQueue[plannerAskIndex];
+    if (!currentAsk) return;
+
+    const answer = plannerCustomMode
+      ? sessionChatMessage.trim()
+      : (plannerSelectedOption || "").trim();
+    if (!answer) return;
+
+    const updatedAnswers = { ...plannerAnswers, [currentAsk.id || `ask-${plannerAskIndex}`]: answer };
+    setPlannerAnswers(updatedAnswers);
+    setPlannerSelectedOption(null);
+    setPlannerCustomMode(false);
     setSessionChatMessage("");
+
+    const nextIndex = plannerAskIndex + 1;
+    if (nextIndex < askQueue.length) {
+      // More asks to show
+      setPlannerAskIndex(nextIndex);
+    } else {
+      // All asks answered — send consolidated message
+      const consolidated = askQueue.map((ask, i) => {
+        const key = ask.id || `ask-${i}`;
+        return `${ask.label}: ${updatedAnswers[key] || "pular"}`;
+      }).join("\n");
+      setPlannerAskIndex(0);
+      setPlannerAnswers({});
+      void sendChatMessage(consolidated);
+    }
+  };
+
+  const dismissAllAsks = () => {
+    const consolidated = askQueue.map((ask) => `${ask.label}: pular`).join("\n");
+    setPlannerAskIndex(0);
+    setPlannerAnswers({});
+    setPlannerSelectedOption(null);
+    setPlannerCustomMode(false);
+    setSessionChatMessage("");
+    void sendChatMessage(consolidated);
+  };
+
+  const stopChatGeneration = useCallback(() => {
+    const controller = chatAbortControllerRef.current;
+    if (!controller) return;
+    controller.abort();
+    chatAbortControllerRef.current = null;
+    sendingChatRef.current = false;
+    setSendingChat(false);
+    setPreviewing(false);
+    addToast("Geracao interrompida.", "info");
+  }, [addToast]);
+
+  const sendChatMessage = async (messageOverride?: string) => {
+    if (!selectedSession) return;
+    if (sendingChatRef.current) return;
+    const resolvedMessage = (messageOverride ?? sessionChatMessage).trim();
+    if (!resolvedMessage) return;
+
+    sendingChatRef.current = true;
+    setSendingChat(true);
+    const message = resolvedMessage;
+    setSessionChatMessage("");
+    setPlannerSelectedOption(null);
+    setPlannerCustomMode(false);
 
     // If session is pending (not yet saved), create it in DB first
     let session = selectedSession;
@@ -450,140 +469,114 @@ export default function OffersSection({
       } catch (err) {
         addToast(err instanceof Error ? err.message : "Falha ao criar workspace.", "error");
         setSessionChatMessage(message);
+        sendingChatRef.current = false;
         setSendingChat(false);
         return;
       }
     }
 
     // Optimistic: show user message immediately
-    const optimisticMessage: LandingCreationMessage = {
-      role: "user",
-      content: message,
-      createdAt: new Date().toISOString()
-    };
+    const absorbAskAnswer = Boolean(hasPlannerAsk);
+    const optimisticPlanner = absorbAskAnswer
+      ? {
+          ...session.planner,
+          askQueue: [],
+          activeQuestionId: null,
+          shouldAsk: false
+        }
+      : session.planner;
     const optimisticSession: LandingCreationSession = {
       ...session,
-      chatHistory: [...session.chatHistory, optimisticMessage],
+      planner: optimisticPlanner,
+      chatHistory: absorbAskAnswer
+        ? session.chatHistory
+        : [
+            ...session.chatHistory,
+            {
+              id: `user-${Date.now()}`,
+              role: "user",
+              kind: "chat",
+              content: message,
+              createdAt: new Date().toISOString()
+            }
+          ],
       updatedAt: new Date().toISOString()
     };
     replaceSession(optimisticSession);
 
+    const abortController = new AbortController();
+    chatAbortControllerRef.current = abortController;
+    let requestPhase: "message" | "preview" = "message";
+
     try {
       const response = await apiFetch<{ session: LandingCreationSession }>(
         `/landing-creation/sessions/${session.id}/messages`,
         {
           method: "POST",
-          body: JSON.stringify({ message })
+          body: JSON.stringify({ message, absorbAskAnswer }),
+          signal: abortController.signal
         }
       );
       replaceSession(response.session);
-      setPreviewing(true);
-      try {
-        const previewResponse = await apiFetch<{ session: LandingCreationSession }>(
-          `/landing-creation/sessions/${session.id}/preview`,
-          {
-            method: "POST",
-            body: JSON.stringify({
-              offerDraft: response.session.offerDraft,
-              promptDraft: response.session.promptDraft,
-              leadContext: emptyPreviewLeadContext
-            })
-          }
+      setPlannerAskIndex(0);
+      setPlannerAnswers({});
+
+      const shouldAutoPreview = !response.session.preview
+        && response.session.planner.readyForVisualGeneration
+        && (
+          !session.preview
+          || buildSessionAutoPreviewKey(session) !== buildSessionAutoPreviewKey(response.session)
         );
-        replaceSession(previewResponse.session);
-      } catch (previewErr) {
-        addToast(previewErr instanceof Error ? previewErr.message : "Falha ao gerar preview automatico.", "error");
-      } finally {
-        setPreviewing(false);
+
+      if (shouldAutoPreview) {
+        requestPhase = "preview";
+        setPreviewing(true);
+        try {
+          const previewResponse = await apiFetch<{ session: LandingCreationSession }>(
+            `/landing-creation/sessions/${session.id}/preview`,
+            {
+              method: "POST",
+              body: JSON.stringify({
+                offerDraft: response.session.offerDraft,
+                promptDraft: response.session.promptDraft,
+                leadContext: emptyPreviewLeadContext
+              }),
+              signal: abortController.signal
+            }
+          );
+          replaceSession(previewResponse.session);
+        } catch (previewErr) {
+          if (isAbortError(previewErr)) {
+            return;
+          }
+          addToast(previewErr instanceof Error ? previewErr.message : "Falha ao gerar preview automatico.", "error");
+        } finally {
+          setPreviewing(false);
+        }
       }
     } catch (err) {
+      if (isAbortError(err)) {
+        if (requestPhase === "message") {
+          replaceSession(session);
+          setSessionChatMessage(message);
+        }
+        return;
+      }
       addToast(err instanceof Error ? err.message : "Falha ao enviar mensagem.", "error");
       replaceSession(session);
       setSessionChatMessage(message);
+      // no-op: planner answers already reset
     } finally {
-      setSendingChat(false);
-      void loadAiActivity(session.id);
-    }
-  };
-
-  const submitDiscoveryQuestionnaire = async () => {
-    if (!selectedSession || !discoveryAnswers) return;
-
-    const discoveryMessage = buildLandingDiscoveryChatMessage(discoveryAnswers);
-    if (!discoveryMessage.trim()) return;
-
-    setSubmittingDiscovery(true);
-    setSendingChat(true);
-
-    let session = selectedSession;
-
-    try {
-      session = await ensureCreationSessionPersisted(session);
-
-      if (draftDebounceRef.current) clearTimeout(draftDebounceRef.current);
-      const updatedDraft = applyLandingDiscoveryAnswersToDraft(session.offerDraft, discoveryAnswers);
-      const patchResponse = await apiFetch<{ session: LandingCreationSession }>(
-        `/landing-creation/sessions/${session.id}`,
-        {
-          method: "PATCH",
-          body: JSON.stringify({ offerDraft: updatedDraft }),
-        }
-      );
-      session = patchResponse.session;
-      replaceSession(session);
-
-      const optimisticMessage: LandingCreationMessage = {
-        role: "user",
-        content: discoveryMessage,
-        createdAt: new Date().toISOString(),
-      };
-      const optimisticSession: LandingCreationSession = {
-        ...session,
-        chatHistory: [...session.chatHistory, optimisticMessage],
-        updatedAt: new Date().toISOString(),
-      };
-      replaceSession(optimisticSession);
-
-      const response = await apiFetch<{ session: LandingCreationSession }>(
-        `/landing-creation/sessions/${session.id}/messages`,
-        {
-          method: "POST",
-          body: JSON.stringify({ message: discoveryMessage }),
-        }
-      );
-      replaceSession(response.session);
-      setPreviewing(true);
-
-      try {
-        const previewResponse = await apiFetch<{ session: LandingCreationSession }>(
-          `/landing-creation/sessions/${session.id}/preview`,
-          {
-            method: "POST",
-            body: JSON.stringify({
-              offerDraft: response.session.offerDraft,
-              promptDraft: response.session.promptDraft,
-              leadContext: emptyPreviewLeadContext,
-            })
-          }
-        );
-        replaceSession(previewResponse.session);
-      } catch (previewErr) {
-        addToast(previewErr instanceof Error ? previewErr.message : "Falha ao gerar preview automatico.", "error");
-      } finally {
-        setPreviewing(false);
+      if (chatAbortControllerRef.current === abortController) {
+        chatAbortControllerRef.current = null;
       }
-    } catch (err) {
-      addToast(err instanceof Error ? err.message : "Falha ao enviar respostas do briefing.", "error");
-    } finally {
+      sendingChatRef.current = false;
       setSendingChat(false);
-      setSubmittingDiscovery(false);
-      void loadAiActivity(session.id);
     }
   };
 
   const generateSessionPreview = async () => {
     if (!selectedSession) return;
-    const sessionId = selectedSession.id;
     setPreviewing(true);
     const toastId = addToast("Gerando preview do chatbot...", "loading");
     try {
@@ -604,13 +597,11 @@ export default function OffersSection({
       updateToast(toastId, err instanceof Error ? err.message : "Falha ao gerar preview.", "error");
     } finally {
       setPreviewing(false);
-      void loadAiActivity(sessionId, { silent: true });
     }
   };
 
   const publishSession = async () => {
     if (!selectedSession) return;
-    const sessionId = selectedSession.id;
     setPublishingSession(true);
     const toastId = addToast("Publicando oferta do chatbot...", "loading");
     try {
@@ -643,7 +634,6 @@ export default function OffersSection({
       updateToast(toastId, err instanceof Error ? err.message : "Falha ao publicar oferta.", "error");
     } finally {
       setPublishingSession(false);
-      void loadAiActivity(sessionId, { silent: true });
     }
   };
 
@@ -721,51 +711,10 @@ export default function OffersSection({
   const hasPreview = selectedSession?.preview != null;
 
   if (selectedSession) {
-    const aiBusyState = sendingChat
-      ? {
-          busy: true,
-          type: "chat" as const,
-          label: "Lume esta lendo sua mensagem",
-          description: "A IA esta comparando o que voce pediu com o draft atual e preparando a proxima resposta."
-        }
-      : previewing
-        ? {
-            busy: true,
-            type: "preview" as const,
-            label: "Lume esta gerando o preview",
-            description: "A IA esta montando a estrutura da landing e enviando o resultado para o canvas."
-          }
-        : publishingSession
-          ? {
-              busy: true,
-              type: "publish" as const,
-              label: "Lume esta publicando a landing",
-              description: "A IA e o backend estao consolidando a versao final e persistindo os artefatos publicados."
-            }
-          : savingDraft
-            ? {
-                busy: true,
-                type: "save" as const,
-                label: "Lume esta salvando os dados da landing",
-                description: "Os ajustes manuais desta sessao estao sendo sincronizados antes da proxima interacao."
-              }
-          : {
-              busy: false,
-              type: "idle" as const,
-              label: "",
-              description: ""
-            };
     const activeSessionTitle = selectedSession.title || "Nova landing";
-    const activeSessionTheme = formatLandingDraftThemeLabel(selectedSession.offerDraft);
-    const activeSessionMeta = activeSessionTheme
-      ? `Tema: ${activeSessionTheme}`
-      : `Atualizado ${formatSessionTimeLabel(selectedSession.updatedAt)}`;
+    const activeSessionMeta = `Atualizado ${formatSessionTimeLabel(selectedSession.updatedAt)}`;
     const useCompactHistoryDropdown = selectedSession.chatHistory.length > 0 && !forceHistorySidebar;
     const showHistorySidebar = forceHistorySidebar || !useCompactHistoryDropdown;
-    const shouldShowDiscoveryQuestionnaire =
-      Boolean(discoveryAnswers) &&
-      selectedSession.chatHistory.length > 0 &&
-      selectedSessionDiscoveryMissing.length > 0;
     const workspaceGridColumns = showHistorySidebar
       ? (hasPreview ? `280px ${chatPaneWidth}px minmax(0,1fr)` : "280px minmax(0,1fr)")
       : chatCollapsed && hasPreview
@@ -846,7 +795,6 @@ export default function OffersSection({
                       {recentSessions.length ? (
                         <DropdownMenuGroup className="flex flex-col gap-0.5">
                           {recentSessions.map((session) => {
-                            const sessionTheme = formatLandingDraftThemeLabel(session.offerDraft);
                             return (
                               <DropdownMenuItem
                                 key={session.id}
@@ -860,7 +808,7 @@ export default function OffersSection({
                                 <div className="flex min-w-0 flex-1 flex-col">
                                   <span className="truncate text-sm font-semibold text-slate-200">{session.title || "Nova landing"}</span>
                                   <span className="truncate text-[11px] text-slate-500">
-                                    {sessionTheme ? `Tema: ${sessionTheme}` : formatSessionTimeLabel(session.updatedAt)}
+                                    {formatSessionTimeLabel(session.updatedAt)}
                                   </span>
                                 </div>
                               </DropdownMenuItem>
@@ -1073,10 +1021,7 @@ export default function OffersSection({
                     {sidebarSessions.map((session, index) => {
                       const isPending = session.id === 0;
                       const isActive = selectedSession.id === session.id;
-                      const sessionTheme = formatLandingDraftThemeLabel(session.offerDraft);
-                      const sessionMeta = sessionTheme
-                        ? `Tema: ${sessionTheme}`
-                        : `Atualizado ${formatSessionTimeLabel(session.updatedAt)}`;
+                      const sessionMeta = `Atualizado ${formatSessionTimeLabel(session.updatedAt)}`;
 
                       return (
                         <motion.div
@@ -1180,20 +1125,10 @@ export default function OffersSection({
                     <span className="mx-auto block h-full w-px bg-slate-800/70 transition-colors hover:bg-violet-400/50" />
                   </button>
                 ) : null}
-                <div className="z-10 space-y-3 px-3.5 py-2.5">
+                <div className="z-10 px-3.5 py-2.5">
                   <h2 className="text-2xl font-black tracking-tight text-white drop-shadow-md">
                     {selectedSession.title || "Nova landing"}
                   </h2>
-                  <LandingAiActivityPanel
-                    activityType={aiBusyState.type}
-                    busy={aiBusyState.busy}
-                    busyLabel={aiBusyState.label}
-                    busyDescription={aiBusyState.description}
-                    logs={aiActivityLogs}
-                    loading={aiActivityLoading}
-                    error={aiActivityError}
-                    onRefresh={() => void loadAiActivity(selectedSession.id)}
-                  />
                 </div>
 
                 <div className="flex min-h-0 flex-1 flex-col z-10">
@@ -1201,30 +1136,32 @@ export default function OffersSection({
                     <div className="supabase-scroll h-full overflow-y-auto pr-1">
                       {selectedSession.chatHistory.length ? (
                         <div className="space-y-3.5">
-                          {shouldShowDiscoveryQuestionnaire && discoveryAnswers ? (
-                            <LandingDiscoveryQuestionnaire
-                              value={discoveryAnswers}
-                              onChange={setDiscoveryAnswers}
-                              onSubmit={() => void submitDiscoveryQuestionnaire()}
-                              submitting={submittingDiscovery}
-                            />
-                          ) : null}
-
-                          {selectedSession.chatHistory.map((message, index) => (
+                          {selectedSession.chatHistory.map((message) => (
                             <div
-                              key={`${message.createdAt}-${index}`}
+                              key={message.id}
                               className={message.role === "assistant" ? "max-w-[88%]" : "ml-auto max-w-[84%]"}
                             >
                               <motion.article
                                 whileHover={{ scale: 1.01 }}
                                 className={`rounded-[20px] px-3.5 py-3 shadow-xl ${message.role === "assistant"
-                                  ? "bg-[linear-gradient(135deg,rgba(30,41,59,0.82),rgba(15,23,42,0.74))] backdrop-blur-md text-slate-100 border border-slate-800/40"
+                                  ? message.kind === "planner"
+                                    ? "bg-[linear-gradient(135deg,rgba(17,24,39,0.94),rgba(15,23,42,0.9))] backdrop-blur-md text-slate-100 border border-cyan-400/10"
+                                    : "bg-[linear-gradient(135deg,rgba(30,41,59,0.82),rgba(15,23,42,0.74))] backdrop-blur-md text-slate-100 border border-slate-800/40"
                                   : "border border-violet-400/25 bg-[linear-gradient(135deg,rgba(109,40,217,0.82),rgba(76,29,149,0.88))] text-violet-50 relative overflow-hidden"
                                   }`}
                               >
                                 {message.role !== "assistant" && (
                                   <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full blur-[30px] pointer-events-none" />
                                 )}
+                                {message.role === "assistant" && message.thinking && message.kind !== "planner" ? (
+                                  <ThinkingBlock thinking={message.thinking} />
+                                ) : null}
+                                {message.role === "assistant" && message.kind === "planner" ? (
+                                  <div className="mb-2 flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.18em] text-cyan-200/80">
+                                    <Sparkles className="h-3.5 w-3.5 text-cyan-300/80" />
+                                    <span>Lume</span>
+                                  </div>
+                                ) : null}
                                 <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-inherit relative z-10">{message.content}</p>
                                 <div className={`mt-3 text-[11px] font-medium relative z-10 ${message.role === "assistant" ? "text-slate-500" : "text-violet-200"}`}>
                                   {formatChatTimeLabel(message.createdAt)}
@@ -1232,6 +1169,36 @@ export default function OffersSection({
                               </motion.article>
                             </div>
                           ))}
+
+                          {sendingChat ? (
+                            <div className="max-w-[72%]">
+                              <motion.article
+                                initial={{ opacity: 0, y: 8 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0, y: -8 }}
+                                className="rounded-[20px] border border-slate-800/40 bg-[linear-gradient(135deg,rgba(30,41,59,0.82),rgba(15,23,42,0.74))] px-4 py-3 shadow-xl backdrop-blur-md"
+                              >
+                                <div className="flex items-center gap-3">
+                                  <span className="text-[15px] leading-relaxed text-slate-100">Pensando</span>
+                                  <div className="flex items-center gap-1.5">
+                                    {[0, 1, 2].map((dot) => (
+                                      <motion.span
+                                        key={dot}
+                                        className="block h-1.5 w-1.5 rounded-full bg-violet-300/80"
+                                        animate={{ opacity: [0.25, 1, 0.25], y: [0, -2, 0] }}
+                                        transition={{
+                                          duration: 1,
+                                          repeat: Number.POSITIVE_INFINITY,
+                                          delay: dot * 0.14,
+                                          ease: "easeInOut"
+                                        }}
+                                      />
+                                    ))}
+                                  </div>
+                                </div>
+                              </motion.article>
+                            </div>
+                          ) : null}
                         </div>
                       ) : (
                         <div className="max-w-[88%] rounded-[20px] border border-slate-800/40 bg-[linear-gradient(135deg,rgba(30,41,59,0.58),rgba(15,23,42,0.5))] px-4 py-3.5 text-[15px] leading-8 text-slate-300 shadow-xl backdrop-blur-md">
@@ -1243,42 +1210,226 @@ export default function OffersSection({
                         </div>
                       )}
                     </div>
-                  </div>
+                </div>
 
-                  <div className="border-t border-slate-800/40 p-3">
-                    <div className="flex items-center gap-3">
+                  <AnimatePresence mode="wait">
+                    {hasPlannerAsk && activePlannerAsk && selectedSession && (
                       <motion.div
-                        whileFocus={{ scale: 1.01, boxShadow: "0 0 0 2px rgba(139,92,246,0.3)" }}
-                        className="group relative min-w-0 flex-1 overflow-hidden rounded-[18px] border border-slate-700/45 bg-[linear-gradient(135deg,rgba(15,23,42,0.94),rgba(30,41,59,0.78))] p-2 shadow-xl transition-all ring-1 ring-white/8 backdrop-blur-xl focus-within:border-violet-500/45 focus-within:ring-violet-500/15"
+                        key={`ask-${plannerAskIndex}-${activePlannerAsk.id || plannerAskIndex}`}
+                        initial={{ opacity: 0, y: 16 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -8 }}
+                        transition={{ duration: 0.22, ease: "easeOut" }}
+                        className="border-t border-slate-700/30 bg-[linear-gradient(180deg,rgba(15,23,42,0.96),rgba(8,14,30,0.98))] px-4 py-3.5"
                       >
-                        <textarea
-                          ref={composerTextareaRef}
-                          rows={1}
-                          placeholder="Peça à Lume sobre o design ou conteúdo..."
-                          className="relative z-10 w-full resize-none overflow-hidden bg-transparent px-2.5 py-1.5 text-[15px] leading-7 text-white outline-none placeholder:text-slate-500"
-                          value={sessionChatMessage}
-                          onChange={(event) => setSessionChatMessage(event.target.value)}
-                          onKeyDown={(event) => {
-                            if (event.key === "Enter" && !event.shiftKey) {
-                              event.preventDefault();
-                              void sendChatMessage();
-                            }
-                          }}
-                        />
-                      </motion.div>
+                        {/* Header: label + counter with navigation */}
+                        <div className="mb-2.5 flex items-center justify-between">
+                          <span className="text-[10px] font-black uppercase tracking-[0.2em] text-violet-300/80">{activePlannerAsk.label}</span>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              disabled={plannerAskIndex === 0}
+                              className="inline-flex h-5 w-5 items-center justify-center rounded text-slate-500 transition-colors hover:text-slate-300 disabled:opacity-20 disabled:hover:text-slate-500"
+                              onClick={() => {
+                                setPlannerSelectedOption(null);
+                                setPlannerCustomMode(false);
+                                setSessionChatMessage("");
+                                setPlannerAskIndex((i) => Math.max(0, i - 1));
+                              }}
+                            >
+                              <ChevronLeft className="h-3.5 w-3.5" />
+                            </button>
+                            <span className="text-[10px] font-bold tracking-wider text-slate-500">
+                              {plannerAskIndex + 1} de {askQueue.length}
+                            </span>
+                            <button
+                              type="button"
+                              disabled={!plannerAnswers[activePlannerAsk.id || `ask-${plannerAskIndex}`]}
+                              className="inline-flex h-5 w-5 items-center justify-center rounded text-slate-500 transition-colors hover:text-slate-300 disabled:opacity-20 disabled:hover:text-slate-500"
+                              onClick={() => {
+                                setPlannerSelectedOption(null);
+                                setPlannerCustomMode(false);
+                                setSessionChatMessage("");
+                                setPlannerAskIndex((i) => Math.min(askQueue.length - 1, i + 1));
+                              }}
+                            >
+                              <ChevronRight className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        </div>
 
-                      <motion.button
-                        whileHover={{ scale: 1.1, rotate: -10 }}
-                        whileTap={{ scale: 0.9 }}
-                        type="button"
-                        disabled={sendingChat || !sessionChatMessage.trim()}
-                        className="inline-flex h-[50px] w-[50px] shrink-0 items-center justify-center rounded-[18px] bg-[linear-gradient(135deg,rgba(139,92,246,1),rgba(109,40,217,1))] text-white shadow-[0_8px_20px_rgba(109,40,217,0.36)] transition-all hover:brightness-125 disabled:opacity-50 disabled:hover:scale-100 disabled:hover:rotate-0"
-                        onClick={sendChatMessage}
-                      >
-                        {sendingChat ? <RefreshCw className="h-6 w-6 animate-spin" /> : <Send className="h-6 w-6 ml-1" />}
-                      </motion.button>
+                        {/* Question */}
+                        <p className="mb-3 text-[14px] leading-6 text-slate-100">{activePlannerAsk.question}</p>
+
+                        {/* Options */}
+                        <div className="space-y-1.5">
+                          {activePlannerAsk.options.slice(0, 4).map((option, optionIndex) => {
+                            const selected = !plannerCustomMode && plannerSelectedOption === option;
+                            return (
+                              <button
+                                key={option}
+                                type="button"
+                                disabled={sendingChat}
+                                className={`group/opt flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-all duration-150 ${
+                                  selected
+                                    ? "border-violet-400/40 bg-violet-500/12 text-white shadow-[0_0_12px_rgba(139,92,246,0.1)]"
+                                    : "border-slate-700/40 bg-slate-800/30 text-slate-300 hover:border-slate-600/50 hover:bg-slate-700/30 hover:text-slate-100"
+                                }`}
+                                onClick={() => {
+                                  setPlannerCustomMode(false);
+                                  setPlannerSelectedOption(option);
+                                }}
+                              >
+                                <span className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[11px] font-bold transition-colors ${
+                                  selected
+                                    ? "bg-violet-500/25 text-violet-200 border border-violet-400/30"
+                                    : "bg-slate-700/50 text-slate-400 border border-slate-600/30 group-hover/opt:text-slate-200"
+                                }`}>
+                                  {optionIndex + 1}
+                                </span>
+                                <span className="text-[13px] leading-5">{option}</span>
+                              </button>
+                            );
+                          })}
+
+                          {/* Custom input row */}
+                          <div
+                            className={`flex items-center gap-3 rounded-lg border px-3 py-2.5 transition-all duration-150 ${
+                              plannerCustomMode
+                                ? "border-violet-400/40 bg-violet-500/12 text-white shadow-[0_0_12px_rgba(139,92,246,0.1)]"
+                                : "border-slate-700/40 bg-slate-800/30 text-slate-300"
+                            }`}
+                          >
+                            <span className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[11px] font-bold transition-colors ${
+                              plannerCustomMode
+                                ? "bg-violet-500/25 text-violet-200 border border-violet-400/30"
+                                : "bg-slate-700/50 text-slate-400 border border-slate-600/30"
+                            }`}>
+                              {(activePlannerAsk.options.length > 4 ? 5 : activePlannerAsk.options.length + 1)}
+                            </span>
+                            <input
+                              type="text"
+                              value={plannerCustomMode ? sessionChatMessage : ""}
+                              disabled={sendingChat}
+                              placeholder={activePlannerAsk.placeholder || "Escreva sua resposta"}
+                              className="w-full bg-transparent text-[13px] leading-5 text-white outline-none placeholder:text-slate-500"
+                              onFocus={() => {
+                                setPlannerCustomMode(true);
+                                setPlannerSelectedOption(null);
+                              }}
+                              onChange={(event) => {
+                                setPlannerCustomMode(true);
+                                setPlannerSelectedOption(null);
+                                setSessionChatMessage(event.target.value);
+                              }}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter") {
+                                  event.preventDefault();
+                                  advancePlannerAsk();
+                                }
+                              }}
+                            />
+                          </div>
+                        </div>
+
+                        {/* Progress dots */}
+                        {askQueue.length > 1 && (
+                          <div className="mt-3 flex items-center justify-center gap-1.5">
+                            {askQueue.map((_, i) => (
+                              <motion.span
+                                key={i}
+                                className={`block h-1.5 rounded-full transition-all ${
+                                  i < plannerAskIndex
+                                    ? "w-1.5 bg-violet-400/60"
+                                    : i === plannerAskIndex
+                                    ? "w-4 bg-violet-400"
+                                    : "w-1.5 bg-slate-700"
+                                }`}
+                                layout
+                                transition={{ duration: 0.2 }}
+                              />
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Footer: dismiss + continue */}
+                        <div className="mt-3 flex items-center justify-between">
+                          <button
+                            type="button"
+                            className="flex items-center gap-1.5 text-[11px] text-slate-500 transition-colors hover:text-slate-300"
+                            onClick={() => { dismissAllAsks(); }}
+                          >
+                            Dispensar
+                            <kbd className="rounded border border-slate-700/60 bg-slate-800/60 px-1.5 py-0.5 text-[9px] font-bold text-slate-500">ESC</kbd>
+                          </button>
+                          <motion.button
+                            whileHover={{ scale: 1.04 }}
+                            whileTap={{ scale: 0.96 }}
+                            type="button"
+                            disabled={sendingChat || (plannerCustomMode ? !sessionChatMessage.trim() : !plannerSelectedOption?.trim())}
+                            className="inline-flex items-center gap-2 rounded-lg bg-violet-600 px-4 py-2 text-[12px] font-bold text-white shadow-lg shadow-violet-600/20 transition-all hover:bg-violet-500 disabled:opacity-40 disabled:hover:bg-violet-600"
+                            onClick={() => { advancePlannerAsk(); }}
+                          >
+                            {plannerAskIndex < askQueue.length - 1 ? "Continuar" : "Finalizar"}
+                            <CornerDownLeft className="h-3.5 w-3.5 opacity-60" />
+                          </motion.button>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+
+                  {/* Composer - hidden when ask is active */}
+                  {!hasPlannerAsk && (
+                    <div className="border-t border-slate-800/40 p-3">
+                      <div className="flex items-center gap-3">
+                        <motion.div
+                          whileFocus={{ scale: 1.01, boxShadow: "0 0 0 2px rgba(139,92,246,0.3)" }}
+                          className="group relative min-w-0 flex-1 overflow-hidden rounded-[18px] border border-slate-700/45 bg-[linear-gradient(135deg,rgba(15,23,42,0.94),rgba(30,41,59,0.78))] p-2 shadow-xl transition-all ring-1 ring-white/8 backdrop-blur-xl focus-within:border-violet-500/45 focus-within:ring-violet-500/15"
+                        >
+                          <textarea
+                            ref={composerTextareaRef}
+                            rows={1}
+                            placeholder={"Peça à Lume sobre o design ou conteúdo..."}
+                            className="relative z-10 max-h-56 w-full resize-none overflow-y-auto bg-transparent px-2.5 py-1.5 text-[15px] leading-7 text-white outline-none placeholder:text-slate-500"
+                            value={sessionChatMessage}
+                            disabled={sendingChat}
+                            onChange={(event) => setSessionChatMessage(event.target.value)}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter" && !event.shiftKey) {
+                                event.preventDefault();
+                                void sendChatMessage();
+                              }
+                            }}
+                          />
+                        </motion.div>
+
+                        <motion.button
+                          whileHover={sendingChat ? { scale: 1.06 } : { scale: 1.1, rotate: -10 }}
+                          whileTap={{ scale: 0.92 }}
+                          type="button"
+                          disabled={!sendingChat && !sessionChatMessage.trim()}
+                          className={`inline-flex h-[50px] w-[50px] shrink-0 items-center justify-center rounded-[18px] text-white transition-all disabled:opacity-50 ${
+                            sendingChat
+                              ? "bg-slate-800 shadow-[0_8px_20px_rgba(15,23,42,0.4)] hover:bg-slate-700"
+                              : "bg-[linear-gradient(135deg,rgba(139,92,246,1),rgba(109,40,217,1))] shadow-[0_8px_20px_rgba(109,40,217,0.36)] hover:brightness-125 disabled:hover:brightness-100"
+                          }`}
+                          onClick={() => {
+                            if (sendingChat) {
+                              stopChatGeneration();
+                              return;
+                            }
+                            void sendChatMessage();
+                          }}
+                        >
+                          {sendingChat ? (
+                            <span className="h-3.5 w-3.5 rounded-[2px] bg-white" />
+                          ) : (
+                            <Send className="h-6 w-6 ml-1" />
+                          )}
+                        </motion.button>
+                      </div>
                     </div>
-                  </div>
+                  )}
                 </div>
               </motion.aside>
             </AnimatePresence>

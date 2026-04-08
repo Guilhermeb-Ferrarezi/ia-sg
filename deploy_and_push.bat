@@ -4,7 +4,7 @@ setlocal EnableExtensions DisableDelayedExpansion
 REM ================== CONFIG ==================
 set "BRANCH=master"
 set "COMPOSE_FILE=docker-compose.yml"
-set "WEB_PORT=8085"
+set "WEB_PORT=8087"
 set "API_PORT=3005"
 REM ============================================
 

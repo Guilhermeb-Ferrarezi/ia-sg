@@ -10,6 +10,20 @@ type ChatMessage = {
   createdAt: string;
 };
 
+function ThinkingBubble({ step }: { step: string }) {
+  const isFetching = step.toLowerCase().includes("consultando") || step.toLowerCase().includes("buscando");
+  return (
+    <div className="flex justify-start px-1 animate-in fade-in duration-200">
+      <span
+        key={step}
+        className={`text-sm font-mono animate-in fade-in duration-300 ${isFetching ? "text-cyan-400" : "text-slate-400"}`}
+      >
+        {step}
+      </span>
+    </div>
+  );
+}
+
 function normalizeWaId(input: string): string {
   return input.replace(/[^\d]/g, "");
 }
@@ -28,6 +42,7 @@ export default function ChatSection({ initialSelectedWaId }: ChatSectionProps) {
   const [leadsLoading, setLeadsLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [togglingBot, setTogglingBot] = useState(false);
+  const [thinkingStep, setThinkingStep] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const wsReconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -97,6 +112,20 @@ export default function ChatSection({ initialSelectedWaId }: ChatSectionProps) {
             void loadLeads();
           }
 
+          if (data.type === "bot_thinking" && data.contactId) {
+            const currentLead = selectedLeadRef.current;
+            if (currentLead && currentLead.id === Number(data.contactId)) {
+              setThinkingStep(data.step as string);
+            }
+          }
+
+          if (data.type === "bot_thinking_done" && data.contactId) {
+            const currentLead = selectedLeadRef.current;
+            if (currentLead && currentLead.id === Number(data.contactId)) {
+              setThinkingStep(null);
+            }
+          }
+
           if (data.type === "new_message" && data.waId && data.message) {
             const currentLead = selectedLeadRef.current;
             const incomingContactId = Number(data.contactId);
@@ -111,6 +140,7 @@ export default function ChatSection({ initialSelectedWaId }: ChatSectionProps) {
               normalizeWaId(currentLead.waId) === normalizeWaId(data.waId);
 
             if (currentLead && (matchesById || matchesByWaId)) {
+              setThinkingStep(null);
               setMessages((prev) => {
                 // Avoid duplicates
                 if (prev.some((m) => m.id === data.message.id)) return prev;
@@ -153,6 +183,7 @@ export default function ChatSection({ initialSelectedWaId }: ChatSectionProps) {
   }, [loadLeads, loadTemplates]);
 
   useEffect(() => {
+    setThinkingStep(null);
     if (selectedLead) {
       loadMessages(selectedLead.waId);
     } else {
@@ -171,7 +202,7 @@ export default function ChatSection({ initialSelectedWaId }: ChatSectionProps) {
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages]);
+  }, [messages, thinkingStep]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -459,6 +490,7 @@ export default function ChatSection({ initialSelectedWaId }: ChatSectionProps) {
                   </div>
                 ))
               )}
+              {thinkingStep && <ThinkingBubble step={thinkingStep} />}
               <div ref={messagesEndRef} />
             </div>
 
