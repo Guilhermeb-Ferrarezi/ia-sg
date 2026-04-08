@@ -3,10 +3,21 @@ import tailwindcss from "@tailwindcss/vite"
 import react from "@vitejs/plugin-react"
 import { defineConfig, loadEnv } from "vite"
 
+function resolvePort(rawValue: string | undefined, fallback: number): number {
+  const parsed = Number(rawValue ?? "")
+
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return parsed
+  }
+
+  return fallback
+}
+
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "")
-  const devApiTarget = env.VITE_DEV_API_TARGET || "http://localhost:3002"
+  const frontendPort = resolvePort(env.VITE_DEV_PORT, 8080)
+  const devApiTarget = env.VITE_DEV_API_TARGET || "http://localhost:3000"
   const devWsTarget =
     env.VITE_DEV_WS_TARGET ||
     (devApiTarget.startsWith("https://")
@@ -21,6 +32,9 @@ export default defineConfig(({ mode }) => {
       },
     },
     server: {
+      host: "0.0.0.0",
+      port: frontendPort,
+      strictPort: false,
       proxy: {
         "/api": {
           target: devApiTarget,
@@ -35,6 +49,11 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
         },
       },
+    },
+    preview: {
+      host: "0.0.0.0",
+      port: frontendPort,
+      strictPort: false,
     },
   }
 })

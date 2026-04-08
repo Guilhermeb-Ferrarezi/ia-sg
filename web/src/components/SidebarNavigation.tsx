@@ -14,6 +14,7 @@ type SidebarNavigationProps = {
   onCollapsedChange: (collapsed: boolean) => void;
   logoutSubmitting?: boolean;
   failedEventsCount: number;
+  overlay?: boolean;
 };
 
 export default function SidebarNavigation({
@@ -23,7 +24,8 @@ export default function SidebarNavigation({
   collapsed,
   onCollapsedChange,
   logoutSubmitting = false,
-  failedEventsCount
+  failedEventsCount,
+  overlay = false
 }: SidebarNavigationProps) {
   return (
     <TooltipProvider>
@@ -31,9 +33,11 @@ export default function SidebarNavigation({
         open={!collapsed}
         onOpenChange={(open) => onCollapsedChange(!open)}
         className={cn(
-          "hidden overflow-hidden md:fixed md:inset-y-0 md:left-0 md:z-40 md:flex md:flex-col",
+          overlay
+            ? "fixed inset-y-0 left-0 z-[70] flex flex-col shadow-[0_30px_120px_rgba(2,6,23,0.45)]"
+            : "hidden overflow-hidden md:fixed md:inset-y-0 md:left-0 md:z-40 md:flex md:flex-col",
           "border-r border-slate-800 bg-slate-950/95 transition-[width] duration-300 ease-out",
-          collapsed ? "md:w-20" : "md:w-64"
+          overlay ? (collapsed ? "w-20" : "w-64") : (collapsed ? "md:w-20" : "md:w-64")
         )}
       >
         <div className="flex h-full min-h-0 flex-col px-3 pb-3 pt-4">

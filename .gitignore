@@ -3,4 +3,5 @@ dist
 node_modules
 docker-compose.yml
 *.sh
-
+!docker-compose.yml
+!deploy_and_push.sh

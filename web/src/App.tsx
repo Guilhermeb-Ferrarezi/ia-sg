@@ -53,6 +53,7 @@ export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [offersWorkspaceOpen, setOffersWorkspaceOpen] = useState(false);
+  const [offersSidebarOverlayOpen, setOffersSidebarOverlayOpen] = useState(false);
   const [activeChatWaId, setActiveChatWaId] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
 
@@ -935,10 +936,10 @@ export default function App() {
       });
       await loadCrm();
       await loadLeadDetails(selectedLead.id);
-      addToast(enabled ? "Automação IA ativada!" : "Automação IA desativada.", "success");
+      addToast(enabled ? "Automação Lume ativada!" : "Automação Lume desativada.", "success");
     } catch (err) {
       setLeadDraft((prev) => prev ? { ...prev, botEnabled: !enabled } : prev);
-      setError(err instanceof Error ? err.message : "Falha ao atualizar automação IA.");
+      setError(err instanceof Error ? err.message : "Falha ao atualizar automação Lume.");
     }
   };
 
@@ -1327,6 +1328,12 @@ export default function App() {
       : null;
   const immersiveOffersMode = activePanel === "offers" && offersWorkspaceOpen;
 
+  useEffect(() => {
+    if (!immersiveOffersMode) {
+      setOffersSidebarOverlayOpen(false);
+    }
+  }, [immersiveOffersMode]);
+
   const handleConfirmAction = async () => {
     if (!confirmDialog) return;
     if (confirmDialog.action.type === "delete-faq") {
@@ -1409,6 +1416,34 @@ export default function App() {
           logoutSubmitting={submitting}
           failedEventsCount={failedWebhookEventsCount}
         />
+      ) : null}
+
+      {immersiveOffersMode && offersSidebarOverlayOpen ? (
+        <>
+          <button
+            type="button"
+            aria-label="Fechar sidebar principal"
+            className="fixed inset-0 z-[60] bg-slate-950/78 backdrop-blur-sm"
+            onClick={() => setOffersSidebarOverlayOpen(false)}
+          />
+          <SidebarNavigation
+            overlay
+            activePanel={activePanel}
+            onSelectPanel={(panel) => {
+              handleSelectPanel(panel);
+              setOffersSidebarOverlayOpen(false);
+            }}
+            onLogout={handleLogout}
+            collapsed={false}
+            onCollapsedChange={(collapsed) => {
+              if (collapsed) {
+                setOffersSidebarOverlayOpen(false);
+              }
+            }}
+            logoutSubmitting={submitting}
+            failedEventsCount={failedWebhookEventsCount}
+          />
+        </>
       ) : null}
 
       <section
@@ -2474,6 +2509,7 @@ export default function App() {
         <OffersSection
           active={activePanel === "offers"}
           onWorkspaceModeChange={setOffersWorkspaceOpen}
+          onRequestSidebar={() => setOffersSidebarOverlayOpen(true)}
           addToast={addToast}
           updateToast={updateToast}
         />

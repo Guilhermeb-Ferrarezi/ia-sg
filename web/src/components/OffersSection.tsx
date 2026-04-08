@@ -1,12 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
-import { ArrowLeft, Clock, Globe, LayoutDashboard, MessageSquare, MonitorPlay, Plus, RefreshCw, Send, Sparkles, Trash2, X } from "lucide-react";
+import { ArrowLeft, ChartNoAxesColumn, CodeXml, Ellipsis, FileText, Globe, History, LayoutDashboard, Menu, MessageSquare, MonitorPlay, PanelLeftClose, PanelsTopLeft, Plus, RefreshCw, Send, Sparkles, Trash2, X } from "lucide-react";
 import { apiFetch } from "../lib/apiFetch";
-import type { LandingCreationMessage, LandingCreationSession, LandingPreviewLeadContext, Offer } from "../types/dashboard";
+import type { AppLog, LandingCreationMessage, LandingCreationSession, LandingPageSummary, LandingPreviewLeadContext, LogsResponse, Offer } from "../types/dashboard";
 import LandingPreviewCanvas from "./LandingPreviewCanvas";
+import LandingAiActivityPanel from "./LandingAiActivityPanel";
+import LandingCodeIdePane from "./LandingCodeIdePane";
+import LandingDiscoveryQuestionnaire, {
+  buildLandingDiscoveryAnswersFromDraft,
+  getLandingDiscoveryMissingQuestionIds,
+  type LandingDiscoveryAnswers,
+} from "./LandingDiscoveryQuestionnaire";
 import { motion, AnimatePresence } from "framer-motion";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "./ui/dropdown-menu";
+import logoVermelha from "../assets/logoVermelha.png";
 
 type ToastType = "success" | "error" | "info" | "loading";
+const CHAT_PANE_MIN_WIDTH = 320;
+const CHAT_PANE_MAX_WIDTH = 600;
+const CHAT_PANE_DEFAULT_WIDTH = 380;
 
 const emptyPreviewLeadContext: LandingPreviewLeadContext = {
   interestedCourse: "",
@@ -21,6 +33,13 @@ const chatTimeFormatter = new Intl.DateTimeFormat("pt-BR", {
   minute: "2-digit"
 });
 
+const sessionTimeFormatter = new Intl.DateTimeFormat("pt-BR", {
+  day: "2-digit",
+  month: "short",
+  hour: "2-digit",
+  minute: "2-digit"
+});
+
 function sortSessionsByRecent(sessions: LandingCreationSession[]): LandingCreationSession[] {
   return [...sessions].sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
 }
@@ -29,14 +48,94 @@ function formatChatTimeLabel(value: string): string {
   return chatTimeFormatter.format(new Date(value));
 }
 
+function formatSessionTimeLabel(value: string): string {
+  return sessionTimeFormatter.format(new Date(value));
+}
+
+function getLogSessionId(log: AppLog): number | null {
+  if (typeof log.data !== "object" || log.data === null) return null;
+  const rawSessionId = (log.data as Record<string, unknown>).sessionId;
+  if (typeof rawSessionId === "number" && Number.isFinite(rawSessionId)) return rawSessionId;
+  if (typeof rawSessionId === "string") {
+    const parsed = Number(rawSessionId);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function clampChatPaneWidth(value: number): number {
+  return Math.min(CHAT_PANE_MAX_WIDTH, Math.max(CHAT_PANE_MIN_WIDTH, value));
+}
+
+function formatLandingDraftThemeLabel(draft: LandingCreationSession["offerDraft"] | null | undefined): string {
+  if (!draft) return "";
+
+  const parts = [
+    draft.visualTheme?.trim() || "",
+    draft.colorPalette?.trim() ? `Cores: ${draft.colorPalette.trim()}` : "",
+    draft.typographyStyle?.trim() ? `Tipografia: ${draft.typographyStyle.trim()}` : "",
+    draft.layoutStyle?.trim() ? `Layout: ${draft.layoutStyle.trim()}` : "",
+  ].filter(Boolean);
+
+  return parts.join(" | ");
+}
+
+function parseLandingDiscoveryContentNotes(value: string): string[] {
+  return value
+    .split(/\n|;|,/g)
+    .map((item) => item.replace(/^[\-\u2022]\s*/, "").trim())
+    .filter(Boolean);
+}
+
+function applyLandingDiscoveryAnswersToDraft(
+  draft: LandingCreationSession["offerDraft"],
+  answers: LandingDiscoveryAnswers
+): LandingCreationSession["offerDraft"] {
+  const normalizedNotes = answers.contentNotes.trim();
+  const approvedFacts = parseLandingDiscoveryContentNotes(normalizedNotes);
+  const firstContentLine = normalizedNotes
+    .split("\n")
+    .map((line) => line.trim())
+    .find(Boolean) || "";
+
+  return {
+    ...draft,
+    colorPalette: answers.colorPalette.trim(),
+    typographyStyle: answers.typographyStyle.trim(),
+    layoutStyle: answers.layoutStyle.trim(),
+    shortDescription: draft.shortDescription.trim() || firstContentLine || normalizedNotes,
+    approvedFacts: approvedFacts.length ? approvedFacts : draft.approvedFacts,
+  };
+}
+
+function buildLandingDiscoveryChatMessage(answers: LandingDiscoveryAnswers): string {
+  const approvedFacts = parseLandingDiscoveryContentNotes(answers.contentNotes);
+
+  return [
+    "Respostas do briefing da landing:",
+    answers.colorPalette.trim() ? `Cores: ${answers.colorPalette.trim()}` : "",
+    answers.typographyStyle.trim() ? `Tipografia: ${answers.typographyStyle.trim()}` : "",
+    answers.layoutStyle.trim() ? `Layout: ${answers.layoutStyle.trim()}` : "",
+    approvedFacts.length
+      ? `Pontos principais:\n- ${approvedFacts.join("\n- ")}`
+      : answers.contentNotes.trim()
+        ? `Pontos principais: ${answers.contentNotes.trim()}`
+        : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 export default function OffersSection({
   active,
   onWorkspaceModeChange,
+  onRequestSidebar,
   addToast,
   updateToast
 }: {
   active: boolean;
   onWorkspaceModeChange?: (open: boolean) => void;
+  onRequestSidebar?: () => void;
   addToast: (message: string, type?: ToastType) => string;
   updateToast: (id: string, message: string, type: ToastType) => void;
 }) {
@@ -53,8 +152,16 @@ export default function OffersSection({
   const [deletingOfferId, setDeletingOfferId] = useState<number | null>(null);
   const [togglingOfferId, setTogglingOfferId] = useState<number | null>(null);
   const [showDraftPanel, setShowDraftPanel] = useState(false);
+  const [forceHistorySidebar, setForceHistorySidebar] = useState(false);
+  const [chatCollapsed, setChatCollapsed] = useState(false);
+  const [chatPaneWidth, setChatPaneWidth] = useState(CHAT_PANE_DEFAULT_WIDTH);
+  const [isResizingChatPane, setIsResizingChatPane] = useState(false);
+  const [previewPaneMode, setPreviewPaneMode] = useState<"preview" | "code">("preview");
+  const [logoHovered, setLogoHovered] = useState(false);
   const [error, setError] = useState("");
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const [discoveryAnswers, setDiscoveryAnswers] = useState<LandingDiscoveryAnswers | null>(null);
+  const [submittingDiscovery, setSubmittingDiscovery] = useState(false);
 
   const sortedSessions = useMemo(() => sortSessionsByRecent(sessions), [sessions]);
   const latestSession = useMemo(() => sortedSessions[0] ?? null, [sortedSessions]);
@@ -62,23 +169,115 @@ export default function OffersSection({
     if (selectedSessionId === 0) return pendingSession;
     return sortedSessions.find((session) => session.id === selectedSessionId) || null;
   }, [sortedSessions, selectedSessionId, pendingSession]);
+  const selectedSessionCodeBundle = useMemo(() => {
+    if (!selectedSession) return null;
+    return selectedSession.preview?.landing?.landingCodeBundleJson || selectedSession.codeBundleDraft || null;
+  }, [selectedSession]);
+  const selectedSessionDiscoveryMissing = useMemo(() => {
+    if (!selectedSession) return [];
+    return getLandingDiscoveryMissingQuestionIds(buildLandingDiscoveryAnswersFromDraft(selectedSession.offerDraft));
+  }, [selectedSession]);
 
   const [localOfferDraft, setLocalOfferDraft] = useState<LandingCreationSession["offerDraft"] | null>(null);
   const [savingDraft, setSavingDraft] = useState(false);
-  const [sessionContextMenu, setSessionContextMenu] = useState<{ x: number; y: number; sessionId: number; confirm?: boolean } | null>(null);
+  const [sessionToDeleteId, setSessionToDeleteId] = useState<number | null>(null);
+  const [aiActivityLogs, setAiActivityLogs] = useState<AppLog[]>([]);
+  const [aiActivityLoading, setAiActivityLoading] = useState(false);
+  const [aiActivityError, setAiActivityError] = useState("");
   const draftDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    const handleGlobalClick = () => setSessionContextMenu(null);
-    window.addEventListener("click", handleGlobalClick);
-    return () => window.removeEventListener("click", handleGlobalClick);
-  }, []);
+  const chatResizeStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
 
   useEffect(() => {
     if (showDraftPanel && selectedSession) {
       setLocalOfferDraft(selectedSession.offerDraft);
     }
   }, [showDraftPanel, selectedSessionId]);
+
+  useEffect(() => {
+    if (!selectedSession) {
+      setDiscoveryAnswers(null);
+      return;
+    }
+
+    setDiscoveryAnswers(buildLandingDiscoveryAnswersFromDraft(selectedSession.offerDraft));
+  }, [selectedSessionId]);
+
+  useEffect(() => {
+    setPreviewPaneMode("preview");
+  }, [selectedSessionId]);
+
+  useEffect(() => {
+    if (previewPaneMode === "code" && !selectedSessionCodeBundle) {
+      setPreviewPaneMode("preview");
+    }
+  }, [previewPaneMode, selectedSessionCodeBundle]);
+
+  useEffect(() => {
+    function handlePointerMove(event: PointerEvent) {
+      if (!chatResizeStateRef.current) return;
+      const deltaX = event.clientX - chatResizeStateRef.current.startX;
+      setChatPaneWidth(clampChatPaneWidth(chatResizeStateRef.current.startWidth + deltaX));
+    }
+
+    function handlePointerUp() {
+      chatResizeStateRef.current = null;
+      setIsResizingChatPane(false);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    }
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerUp);
+    window.addEventListener("blur", handlePointerUp);
+
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerUp);
+      window.removeEventListener("blur", handlePointerUp);
+    };
+  }, []);
+
+  const recentSessions = useMemo(() => {
+    if (!selectedSession || selectedSession.id === 0) {
+      return sortedSessions.slice(0, 3);
+    }
+
+    return sortedSessions.filter((session) => session.id !== selectedSession.id).slice(0, 3);
+  }, [selectedSession, sortedSessions]);
+
+  const sidebarSessions = useMemo(() => {
+    if (selectedSessionId === 0 && pendingSession) {
+      return [pendingSession, ...sortedSessions];
+    }
+
+    return sortedSessions;
+  }, [pendingSession, selectedSessionId, sortedSessions]);
+
+  const sessionToDelete = useMemo(() => {
+    if (sessionToDeleteId === null) return null;
+    if (selectedSession?.id === sessionToDeleteId) return selectedSession;
+    return sortedSessions.find((session) => session.id === sessionToDeleteId) || null;
+  }, [selectedSession, sessionToDeleteId, sortedSessions]);
+
+  const openSessionWorkspace = useCallback((session: LandingCreationSession) => {
+    setSelectedSessionId(session.id);
+    setForceHistorySidebar(session.chatHistory.length === 0);
+  }, []);
+
+  const startChatResize = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
+    if (chatCollapsed) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    chatResizeStateRef.current = {
+      startX: event.clientX,
+      startWidth: chatPaneWidth
+    };
+    setIsResizingChatPane(true);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  }, [chatCollapsed, chatPaneWidth]);
 
   const updateLocalDraft = useCallback((updatedDraft: LandingCreationSession["offerDraft"]) => {
     setLocalOfferDraft(updatedDraft);
@@ -100,6 +299,34 @@ export default function OffersSection({
     setSelectedSessionId((current) => (current && nextSessions.some((session) => session.id === current) ? current : null));
   }, []);
 
+  const loadAiActivity = useCallback(async (sessionId: number | null | undefined, options?: { silent?: boolean }) => {
+    if (!sessionId || sessionId <= 0) {
+      setAiActivityLogs([]);
+      setAiActivityError("");
+      setAiActivityLoading(false);
+      return;
+    }
+
+    if (!options?.silent) {
+      setAiActivityLoading(true);
+    }
+    setAiActivityError("");
+
+    try {
+      const response = await apiFetch<LogsResponse>(`/logs?search=${encodeURIComponent("landing.creation")}&limit=80`);
+      const filteredLogs = response.logs
+        .filter((log) => getLogSessionId(log) === sessionId)
+        .sort((left, right) => new Date(right.ts).getTime() - new Date(left.ts).getTime());
+      setAiActivityLogs(filteredLogs);
+    } catch (err) {
+      setAiActivityError(err instanceof Error ? err.message : "Falha ao carregar a atividade da IA.");
+    } finally {
+      if (!options?.silent) {
+        setAiActivityLoading(false);
+      }
+    }
+  }, []);
+
   const replaceSession = useCallback((session: LandingCreationSession) => {
     setSessions((current) => {
       const next = current.some((item) => item.id === session.id)
@@ -109,6 +336,15 @@ export default function OffersSection({
     });
     setSelectedSessionId(session.id);
   }, []);
+
+  const ensureCreationSessionPersisted = useCallback(async (session: LandingCreationSession) => {
+    if (session.id > 0) return session;
+
+    const response = await apiFetch<{ session: LandingCreationSession }>("/landing-creation/sessions", { method: "POST" });
+    replaceSession(response.session);
+    setPendingSession(null);
+    return response.session;
+  }, [replaceSession]);
 
   useEffect(() => {
     if (!active) return;
@@ -128,6 +364,23 @@ export default function OffersSection({
   }, [active, onWorkspaceModeChange, selectedSession]);
 
   useEffect(() => {
+    if (!active) return;
+    void loadAiActivity(selectedSession?.id ?? null);
+  }, [active, loadAiActivity, selectedSession?.id]);
+
+  useEffect(() => {
+    if (!active || !selectedSession || selectedSession.id <= 0) return;
+    if (!(sendingChat || previewing || publishingSession)) return;
+
+    void loadAiActivity(selectedSession.id, { silent: true });
+    const intervalId = window.setInterval(() => {
+      void loadAiActivity(selectedSession.id, { silent: true });
+    }, 1800);
+
+    return () => window.clearInterval(intervalId);
+  }, [active, loadAiActivity, previewing, publishingSession, selectedSession, sendingChat]);
+
+  useEffect(() => {
     const textarea = composerTextareaRef.current;
     if (!textarea) return;
     textarea.style.height = "0px";
@@ -139,15 +392,47 @@ export default function OffersSection({
     const local: LandingCreationSession = {
       id: 0,
       title: "",
-      status: "active",
-      offerDraft: { title: "", slug: "", description: "", targetAudience: "", duration: "", modality: "", highlights: [] },
-      promptDraft: { systemPrompt: "", welcomeMessage: "", objectionHandling: "" },
+      status: "draft",
+      offerDraft: {
+        title: "",
+        slug: "",
+        aliases: [],
+        durationLabel: "",
+        modality: "",
+        shortDescription: "",
+        approvedFacts: [],
+        ctaLabel: "",
+        ctaUrl: "",
+        visualTheme: "",
+        colorPalette: "",
+        typographyStyle: "",
+        layoutStyle: "",
+        isActive: true,
+      },
+      promptDraft: {
+        systemPrompt: "",
+        toneGuidelines: "",
+        requiredRules: [],
+        ctaRules: [],
+        autoGenerateEnabled: true,
+        autoSendEnabled: false,
+        confidenceThreshold: 0.6,
+      },
       chatHistory: [],
+      readiness: {
+        canPreview: false,
+        canPublish: false,
+        missingPreviewFields: [],
+        missingPublishFields: [],
+      },
+      builderDraft: null,
+      codeBundleDraft: null,
       preview: null,
+      publishedOfferId: null,
       createdAt: now,
       updatedAt: now,
-    } as unknown as LandingCreationSession;
-    setPendingSession(local);
+    };
+    setPendingSession(local as LandingCreationSession);
     setSelectedSessionId(0);
   };
 
@@ -161,10 +446,7 @@ export default function OffersSection({
     let session = selectedSession;
     if (session.id === 0) {
       try {
-        const response = await apiFetch<{ session: LandingCreationSession }>("/landing-creation/sessions", { method: "POST" });
-        session = response.session;
-        replaceSession(session);
-        setPendingSession(null);
+        session = await ensureCreationSessionPersisted(session);
       } catch (err) {
         addToast(err instanceof Error ? err.message : "Falha ao criar workspace.", "error");
         setSessionChatMessage(message);
@@ -195,17 +477,113 @@ export default function OffersSection({
         }
       );
       replaceSession(response.session);
+      setPreviewing(true);
+      try {
+        const previewResponse = await apiFetch<{ session: LandingCreationSession }>(
+          `/landing-creation/sessions/${session.id}/preview`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              offerDraft: response.session.offerDraft,
+              promptDraft: response.session.promptDraft,
+              leadContext: emptyPreviewLeadContext
+            })
+          }
+        );
+        replaceSession(previewResponse.session);
+      } catch (previewErr) {
+        addToast(previewErr instanceof Error ? previewErr.message : "Falha ao gerar preview automatico.", "error");
+      } finally {
+        setPreviewing(false);
+      }
     } catch (err) {
       addToast(err instanceof Error ? err.message : "Falha ao enviar mensagem.", "error");
       replaceSession(session);
       setSessionChatMessage(message);
     } finally {
       setSendingChat(false);
+      void loadAiActivity(session.id);
+    }
+  };
+
+  const submitDiscoveryQuestionnaire = async () => {
+    if (!selectedSession || !discoveryAnswers) return;
+
+    const discoveryMessage = buildLandingDiscoveryChatMessage(discoveryAnswers);
+    if (!discoveryMessage.trim()) return;
+
+    setSubmittingDiscovery(true);
+    setSendingChat(true);
+
+    let session = selectedSession;
+
+    try {
+      session = await ensureCreationSessionPersisted(session);
+
+      if (draftDebounceRef.current) clearTimeout(draftDebounceRef.current);
+      const updatedDraft = applyLandingDiscoveryAnswersToDraft(session.offerDraft, discoveryAnswers);
+      const patchResponse = await apiFetch<{ session: LandingCreationSession }>(
+        `/landing-creation/sessions/${session.id}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ offerDraft: updatedDraft }),
+        }
+      );
+      session = patchResponse.session;
+      replaceSession(session);
+
+      const optimisticMessage: LandingCreationMessage = {
+        role: "user",
+        content: discoveryMessage,
+        createdAt: new Date().toISOString(),
+      };
+      const optimisticSession: LandingCreationSession = {
+        ...session,
+        chatHistory: [...session.chatHistory, optimisticMessage],
+        updatedAt: new Date().toISOString(),
+      };
+      replaceSession(optimisticSession);
+
+      const response = await apiFetch<{ session: LandingCreationSession }>(
+        `/landing-creation/sessions/${session.id}/messages`,
+        {
+          method: "POST",
+          body: JSON.stringify({ message: discoveryMessage }),
+        }
+      );
+      replaceSession(response.session);
+      setPreviewing(true);
+
+      try {
+        const previewResponse = await apiFetch<{ session: LandingCreationSession }>(
+          `/landing-creation/sessions/${session.id}/preview`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              offerDraft: response.session.offerDraft,
+              promptDraft: response.session.promptDraft,
+              leadContext: emptyPreviewLeadContext,
+            })
+          }
+        );
+        replaceSession(previewResponse.session);
+      } catch (previewErr) {
+        addToast(previewErr instanceof Error ? previewErr.message : "Falha ao gerar preview automatico.", "error");
+      } finally {
+        setPreviewing(false);
+      }
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : "Falha ao enviar respostas do briefing.", "error");
+    } finally {
+      setSendingChat(false);
+      setSubmittingDiscovery(false);
+      void loadAiActivity(session.id);
     }
   };
 
   const generateSessionPreview = async () => {
     if (!selectedSession) return;
+    const sessionId = selectedSession.id;
     setPreviewing(true);
     const toastId = addToast("Gerando preview do chatbot...", "loading");
     try {
@@ -226,15 +604,17 @@ export default function OffersSection({
       updateToast(toastId, err instanceof Error ? err.message : "Falha ao gerar preview.", "error");
     } finally {
       setPreviewing(false);
+      void loadAiActivity(sessionId, { silent: true });
     }
   };
 
   const publishSession = async () => {
     if (!selectedSession) return;
+    const sessionId = selectedSession.id;
     setPublishingSession(true);
     const toastId = addToast("Publicando oferta do chatbot...", "loading");
     try {
-      const response = await apiFetch<{ session: LandingCreationSession }>(
+      const response = await apiFetch<{ session: LandingCreationSession; landing: LandingPageSummary }>(
         `/landing-creation/sessions/${selectedSession.id}/publish`,
         {
           method: "POST",
@@ -244,13 +624,26 @@ export default function OffersSection({
           })
         }
       );
-      replaceSession(response.session);
+      replaceSession(response.session.preview
+        ? {
+          ...response.session,
+          preview: {
+            ...response.session.preview,
+            landing: response.landing
+          }
+        }
+        : response.session);
       await loadOffers();
-      updateToast(toastId, "Oferta publicada com sucesso.", "success");
+      updateToast(
+        toastId,
+        response.landing.artifactUrl ? "Oferta publicada e artefato enviado ao bucket." : "Oferta publicada com sucesso.",
+        "success"
+      );
     } catch (err) {
       updateToast(toastId, err instanceof Error ? err.message : "Falha ao publicar oferta.", "error");
     } finally {
       setPublishingSession(false);
+      void loadAiActivity(sessionId, { silent: true });
     }
   };
 
@@ -314,7 +707,9 @@ export default function OffersSection({
       setSessions(prev => prev.filter(s => s.id !== sessionId));
       if (selectedSessionId === sessionId) {
         setSelectedSessionId(null);
+        setPendingSession(null);
       }
+      setSessionToDeleteId((current) => (current === sessionId ? null : current));
       updateToast(toastId, "Rascunho removido.", "success");
     } catch (err) {
       updateToast(toastId, err instanceof Error ? err.message : "Falha ao excluir rascunho.", "error");
@@ -326,340 +721,661 @@ export default function OffersSection({
   const hasPreview = selectedSession?.preview != null;
 
   if (selectedSession) {
+    const aiBusyState = sendingChat
+      ? {
+          busy: true,
+          type: "chat" as const,
+          label: "Lume esta lendo sua mensagem",
+          description: "A IA esta comparando o que voce pediu com o draft atual e preparando a proxima resposta."
+        }
+      : previewing
+        ? {
+            busy: true,
+            type: "preview" as const,
+            label: "Lume esta gerando o preview",
+            description: "A IA esta montando a estrutura da landing e enviando o resultado para o canvas."
+          }
+        : publishingSession
+          ? {
+              busy: true,
+              type: "publish" as const,
+              label: "Lume esta publicando a landing",
+              description: "A IA e o backend estao consolidando a versao final e persistindo os artefatos publicados."
+            }
+          : savingDraft
+            ? {
+                busy: true,
+                type: "save" as const,
+                label: "Lume esta salvando os dados da landing",
+                description: "Os ajustes manuais desta sessao estao sendo sincronizados antes da proxima interacao."
+              }
+          : {
+              busy: false,
+              type: "idle" as const,
+              label: "",
+              description: ""
+            };
+    const activeSessionTitle = selectedSession.title || "Nova landing";
+    const activeSessionTheme = formatLandingDraftThemeLabel(selectedSession.offerDraft);
+    const activeSessionMeta = activeSessionTheme
+      ? `Tema: ${activeSessionTheme}`
+      : `Atualizado ${formatSessionTimeLabel(selectedSession.updatedAt)}`;
+    const useCompactHistoryDropdown = selectedSession.chatHistory.length > 0 && !forceHistorySidebar;
+    const showHistorySidebar = forceHistorySidebar || !useCompactHistoryDropdown;
+    const shouldShowDiscoveryQuestionnaire =
+      Boolean(discoveryAnswers) &&
+      selectedSession.chatHistory.length > 0 &&
+      selectedSessionDiscoveryMissing.length > 0;
+    const workspaceGridColumns = showHistorySidebar
+      ? (hasPreview ? `280px ${chatPaneWidth}px minmax(0,1fr)` : "280px minmax(0,1fr)")
+      : chatCollapsed && hasPreview
+        ? "0px minmax(0,1fr)"
+        : (hasPreview ? `${chatPaneWidth}px minmax(0,1fr)` : "1fr");
+
     return (
       <motion.section 
         initial={{ opacity: 0, y: 30, scale: 0.95 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         exit={{ opacity: 0, scale: 0.95 }}
         transition={{ type: "spring", stiffness: 250, damping: 25 }}
-        className="flex flex-col gap-4 panel-enter h-screen w-full overflow-hidden p-4"
+        className="flex h-screen w-full flex-col gap-0 overflow-hidden px-0 py-0 panel-enter"
       >
-        <div className="flex items-center justify-start gap-4 px-2">
-          <motion.button
-            whileHover={{ scale: 1.05, boxShadow: "0 0 15px rgba(139, 92, 246, 0.4)" }}
-            whileTap={{ scale: 0.95 }}
-            type="button"
-            onClick={() => { setSelectedSessionId(null); setPendingSession(null); }}
-            className="inline-flex items-center gap-2 rounded-2xl border border-slate-700/80 bg-slate-900/50 backdrop-blur-md px-5 py-3 text-sm font-bold text-slate-100 transition-colors hover:border-violet-500/50 hover:bg-slate-900 shadow-lg"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            Voltar
-          </motion.button>
+        <div className="sticky top-0 z-30">
+          <div className="grid min-h-[48px] grid-cols-1 gap-2 border-b border-slate-800/60 bg-slate-950/95 px-3 py-1 backdrop-blur-xl lg:grid-cols-[minmax(0,340px)_minmax(0,1fr)_auto] lg:items-center">
+            <div className="flex min-w-0 items-center gap-2.5">
+              {useCompactHistoryDropdown ? (
+                <div className="flex min-w-0 items-center gap-2.5">
+                  <button
+                    type="button"
+                    aria-label="Abrir menu principal"
+                    className="group relative flex size-9 shrink-0 items-center justify-center rounded-lg overflow-hidden"
+                    onMouseEnter={() => setLogoHovered(true)}
+                    onMouseLeave={() => setLogoHovered(false)}
+                    onClick={() => onRequestSidebar?.()}
+                  >
+                    <img
+                      src={logoVermelha}
+                      alt="Santos Tech"
+                      className={`h-7 w-7 object-contain transition-all duration-200 ${logoHovered ? "opacity-0 scale-75" : "opacity-100 scale-100"}`}
+                    />
+                    <div className={`absolute inset-0 flex items-center justify-center transition-all duration-200 ${logoHovered ? "opacity-100 scale-100" : "opacity-0 scale-75"}`}>
+                      <Menu className="h-5 w-5 text-slate-200" />
+                    </div>
+                  </button>
 
-          <div className="flex flex-wrap items-center gap-3 ml-2">
-            <motion.button
-              whileHover={{ scale: 1.05, boxShadow: "0 0 20px rgba(139, 92, 246, 0.4)" }}
-              whileTap={{ scale: 0.95 }}
+                  <div className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-bold text-white">{activeSessionTitle}</span>
+                    <span className="block truncate text-[11px] text-slate-500">{activeSessionMeta}</span>
+                  </div>
+
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        aria-label="Historico de chats"
+                        className="inline-flex size-8 shrink-0 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"
+                      >
+                        <History className="h-4 w-4" />
+                      </button>
+                    </DropdownMenuTrigger>
+
+                    <DropdownMenuContent
+                      align="start"
+                      sideOffset={8}
+                      className="w-[min(92vw,340px)] rounded-xl border border-slate-700/80 bg-slate-950/95 p-2 shadow-xl backdrop-blur-2xl"
+                    >
+                      <DropdownMenuLabel className="px-2 pb-1.5 pt-0.5 text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                        Chats recentes
+                      </DropdownMenuLabel>
+
+                      <DropdownMenuGroup className="flex flex-col gap-0.5">
+                        <DropdownMenuItem
+                          onSelect={() => {
+                            setForceHistorySidebar(true);
+                            void createSession();
+                          }}
+                          className="rounded-lg px-2 py-2 focus:bg-violet-500/15 focus:text-white"
+                        >
+                          <Plus className="h-4 w-4 text-violet-400" />
+                          <span className="text-sm font-semibold text-slate-200">Novo rascunho</span>
+                        </DropdownMenuItem>
+                      </DropdownMenuGroup>
+
+                      <DropdownMenuSeparator className="my-1.5 bg-slate-800/90" />
+
+                      {recentSessions.length ? (
+                        <DropdownMenuGroup className="flex flex-col gap-0.5">
+                          {recentSessions.map((session) => {
+                            const sessionTheme = formatLandingDraftThemeLabel(session.offerDraft);
+                            return (
+                              <DropdownMenuItem
+                                key={session.id}
+                                onSelect={() => {
+                                  setSelectedSessionId(session.id);
+                                  setForceHistorySidebar(false);
+                                }}
+                                className="rounded-lg px-2 py-2 focus:bg-slate-800 focus:text-white"
+                              >
+                                <MessageSquare className="h-4 w-4 text-slate-400" />
+                                <div className="flex min-w-0 flex-1 flex-col">
+                                  <span className="truncate text-sm font-semibold text-slate-200">{session.title || "Nova landing"}</span>
+                                  <span className="truncate text-[11px] text-slate-500">
+                                    {sessionTheme ? `Tema: ${sessionTheme}` : formatSessionTimeLabel(session.updatedAt)}
+                                  </span>
+                                </div>
+                              </DropdownMenuItem>
+                            );
+                          })}
+                        </DropdownMenuGroup>
+                      ) : (
+                        <div className="px-2 py-2 text-sm text-slate-500">Sem outros chats.</div>
+                      )}
+
+                      <DropdownMenuSeparator className="my-1.5 bg-slate-800/90" />
+
+                      <DropdownMenuGroup className="flex flex-col gap-0.5">
+                        <DropdownMenuItem
+                          onSelect={() => {
+                            if (selectedSession.id > 0) setSessionToDeleteId(selectedSession.id);
+                          }}
+                          disabled={selectedSession.id === 0}
+                          variant="destructive"
+                          className="rounded-lg px-2 py-2"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                          <span className="text-sm font-semibold">Excluir chat atual</span>
+                        </DropdownMenuItem>
+
+                        <DropdownMenuItem
+                          onSelect={() => {
+                            setSelectedSessionId(null);
+                            setPendingSession(null);
+                            setForceHistorySidebar(false);
+                          }}
+                          className="rounded-lg px-2 py-2 focus:bg-slate-800 focus:text-white"
+                        >
+                          <ArrowLeft className="h-4 w-4 text-slate-400" />
+                          <span className="text-sm font-semibold text-slate-200">Voltar para lista</span>
+                        </DropdownMenuItem>
+                      </DropdownMenuGroup>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+
+                  {hasPreview && (
+                    <button
+                      type="button"
+                      aria-label={chatCollapsed ? "Expandir chat" : "Colapsar chat"}
+                      onClick={() => setChatCollapsed(!chatCollapsed)}
+                      className="inline-flex size-8 shrink-0 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"
+                    >
+                      <PanelLeftClose className={`h-4 w-4 transition-transform ${chatCollapsed ? "rotate-180" : ""}`} />
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedSessionId(null);
+                      setPendingSession(null);
+                      setForceHistorySidebar(false);
+                    }}
+                    className="inline-flex items-center gap-2 rounded-lg border border-slate-700/50 bg-slate-900/80 px-3 py-1.5 text-sm font-semibold text-slate-200 transition-colors hover:bg-slate-800"
+                  >
+                    <ArrowLeft className="h-4 w-4" />
+                    Voltar
+                  </button>
+                </>
+              )}
+            </div>
+
+            <div className="hidden min-w-0 items-center justify-center lg:flex">
+              {hasPreview ? (
+                <div className="inline-flex max-w-full items-center gap-0.5 rounded-lg border border-slate-700/50 bg-slate-900/90 px-0.5 py-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setPreviewPaneMode("preview")}
+                    className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                      previewPaneMode === "preview"
+                        ? "bg-emerald-500/15 text-emerald-300"
+                        : "text-slate-400 hover:bg-slate-800 hover:text-white"
+                    }`}
+                  >
+                    <PanelsTopLeft className="h-3.5 w-3.5" />
+                    Preview
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Resumo da landing"
+                    className="inline-flex size-8 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"
+                  >
+                    <FileText className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Estrutura da landing"
+                    onClick={() => {
+                      if (selectedSessionCodeBundle) {
+                        setPreviewPaneMode("code");
+                      }
+                    }}
+                    disabled={!selectedSessionCodeBundle}
+                    className={`inline-flex size-8 items-center justify-center rounded-md transition-colors ${
+                      selectedSessionCodeBundle
+                        ? previewPaneMode === "code"
+                          ? "bg-sky-500/15 text-sky-200"
+                          : "text-slate-400 hover:bg-slate-800 hover:text-white"
+                        : "cursor-not-allowed text-slate-600"
+                    }`}
+                  >
+                    <CodeXml className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Publicacao da landing"
+                    className="inline-flex size-8 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"
+                  >
+                    <Globe className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Metricas da landing"
+                    className="inline-flex size-8 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"
+                  >
+                    <ChartNoAxesColumn className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Mais opcoes"
+                    className="inline-flex size-8 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"
+                  >
+                    <Ellipsis className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="flex flex-wrap items-center justify-start gap-1.5 lg:justify-end">
+            <button
               type="button"
               onClick={() => setShowDraftPanel(true)}
-              className="group relative inline-flex overflow-hidden items-center gap-2 rounded-2xl border border-violet-500/30 bg-violet-500/10 px-5 py-3 text-sm font-bold text-violet-100 transition-colors hover:border-violet-500/50 hover:bg-violet-500/20 shadow-lg"
+              className="inline-flex items-center gap-2 rounded-lg border border-slate-700/50 bg-slate-800/60 px-3 py-1.5 text-sm font-semibold text-slate-200 transition-colors hover:bg-slate-700/60"
             >
-              <div className="absolute inset-0 bg-gradient-to-r from-violet-500/0 via-violet-500/20 to-violet-500/0 opacity-0 group-hover:opacity-100 animate-[shimmer_2s_infinite]" />
-              <LayoutDashboard className="h-4 w-4 group-hover:scale-110 transition-transform" />
+              <LayoutDashboard className="h-4 w-4 text-violet-400" />
               Preencher dados
-            </motion.button>
+            </button>
 
-            <motion.button
-              whileHover={{ scale: 1.05, boxShadow: "0 0 20px rgba(6, 182, 212, 0.4)" }}
-              whileTap={{ scale: 0.95 }}
+            <button
               type="button"
               disabled={previewing}
-              className="inline-flex items-center gap-2 rounded-2xl border border-cyan-500/30 bg-cyan-500/10 px-5 py-3 text-sm font-bold text-cyan-100 transition-colors hover:border-cyan-400/50 hover:bg-cyan-500/20 shadow-lg disabled:opacity-50 relative overflow-hidden"
+              className="inline-flex items-center gap-2 rounded-lg border border-slate-700/50 bg-slate-800/60 px-3 py-1.5 text-sm font-semibold text-slate-200 transition-colors hover:bg-slate-700/60 disabled:opacity-50"
               onClick={generateSessionPreview}
             >
-              <div className="absolute inset-0 bg-gradient-to-r from-cyan-500/0 via-cyan-500/20 to-cyan-500/0 opacity-0 hover:opacity-100 transition-opacity" />
-              {previewing ? <RefreshCw className="h-4 w-4 animate-spin text-cyan-300 relative z-10" /> : <MonitorPlay className="h-4 w-4 text-cyan-400 relative z-10" />}
-              <span className="relative z-10">{previewing ? "Gerando..." : "Gerar preview"}</span>
-            </motion.button>
+              {previewing ? <RefreshCw className="h-4 w-4 animate-spin text-cyan-400" /> : <MonitorPlay className="h-4 w-4 text-cyan-400" />}
+              {previewing ? "Gerando..." : "Gerar preview"}
+            </button>
 
-            <motion.button
-              whileHover={{ scale: 1.05, boxShadow: "0 0 20px rgba(16, 185, 129, 0.4)" }}
-              whileTap={{ scale: 0.95 }}
+            <button
               type="button"
               disabled={publishingSession}
-              className="relative overflow-hidden inline-flex items-center gap-2 rounded-2xl border border-emerald-500/40 bg-emerald-500/15 px-5 py-3 text-sm font-bold text-emerald-100 transition-colors hover:border-emerald-400/60 hover:bg-emerald-500/25 shadow-lg disabled:opacity-50 group"
+              className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-emerald-500 disabled:opacity-50"
               onClick={publishSession}
             >
-              <div className="absolute right-0 top-0 h-full w-20 blur-[20px] bg-emerald-400/30 group-hover:animate-pulse" />
-              {publishingSession ? <RefreshCw className="h-4 w-4 animate-spin text-emerald-300 relative z-10" /> : <Sparkles className="h-4 w-4 text-emerald-400 relative z-10" />}
-              <span className="relative z-10">{publishingSession ? "Publicando..." : "Publicar"}</span>
-            </motion.button>
+              {publishingSession ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+              {publishingSession ? "Publicando..." : "Publicar"}
+            </button>
+            </div>
           </div>
         </div>
 
-        <div className="flex min-h-0 flex-1 gap-5 overflow-hidden h-full">
-          {/* Sessions Sidebar */}
-          <motion.aside 
-            initial={{ x: -50, opacity: 0 }}
-            animate={{ x: 0, opacity: 1 }}
-            transition={{ type: "spring", damping: 20, delay: 0.1 }}
-            className="flex w-[320px] h-full flex-shrink-0 flex-col overflow-hidden rounded-[32px] border border-slate-700/50 bg-slate-900/40 backdrop-blur-xl shadow-2xl relative"
-          >
-            <div className="absolute inset-0 bg-gradient-to-b from-violet-500/5 to-transparent pointer-events-none" />
-            <div className="border-b border-slate-700/50 px-6 py-5 relative z-10 bg-slate-900/30">
-              <div className="flex items-center gap-3 text-slate-300">
-                <Clock className="h-5 w-5 text-violet-400 drop-shadow-[0_0_8px_rgba(167,139,250,0.5)]" />
-                <span className="text-xs font-black uppercase tracking-[0.2em] bg-clip-text text-transparent bg-gradient-to-r from-violet-400 to-cyan-400">Histórico</span>
-              </div>
-            </div>
-            <div className="supabase-scroll flex-1 overflow-y-auto p-4 space-y-3 relative z-10">
-              <motion.button
-                whileHover={{ scale: 1.02 }}
-                whileTap={{ scale: 0.98 }}
-                onClick={() => void createSession()}
-                disabled={creatingSession}
-                className="w-full mb-4 flex items-center justify-center gap-2 rounded-[22px] border-2 border-dashed border-slate-700/70 p-4 text-sm font-bold text-slate-400 transition-all hover:border-violet-500/50 hover:text-violet-300 hover:bg-violet-500/5 disabled:opacity-50"
-              >
-                {creatingSession ? <RefreshCw className="h-4 w-4 animate-spin text-violet-400" /> : <Plus className="h-4 w-4" />}
-                Novo rascunho
-              </motion.button>
-              <AnimatePresence>
-                {sortedSessions.map((s, index) => (
-                  <motion.button
-                    key={s.id}
-                    initial={{ opacity: 0, x: -20, scale: 0.95 }}
-                    animate={{ opacity: 1, x: 0, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.9 }}
-                    transition={{ type: "spring", delay: index * 0.05 }}
-                    whileHover={{ scale: 1.02, x: 5 }}
-                    whileTap={{ scale: 0.98 }}
-                    onClick={() => setSelectedSessionId(s.id)}
-                    onContextMenu={(e) => {
-                      e.preventDefault();
-                      setSessionContextMenu({ x: e.clientX, y: e.clientY, sessionId: s.id });
-                    }}
-                    className={`w-full group rounded-[22px] p-4 text-left transition-all relative overflow-hidden ${
-                      selectedSessionId === s.id 
-                        ? "bg-violet-500/15 border border-violet-500/40 shadow-[0_0_20px_rgba(139,92,246,0.15)]" 
-                        : "bg-slate-800/30 border border-slate-700/30 hover:bg-slate-800/60 hover:border-slate-600/50"
-                    }`}
-                  >
-                    {selectedSessionId === s.id && (
-                       <motion.div layoutId="sidebar-active" className="absolute left-0 top-0 bottom-0 w-1.5 bg-violet-400 rounded-r-full shadow-[0_0_10px_rgba(167,139,250,0.8)]" />
-                    )}
-                    <div className="flex items-start gap-4">
-                      <div className={`mt-0.5 shrink-0 rounded-xl p-2.5 transition-colors ${selectedSessionId === s.id ? "bg-violet-500 text-white shadow-[0_0_15px_rgba(139,92,246,0.5)]" : "bg-slate-900 text-slate-400 group-hover:text-violet-300"}`}>
-                        <MessageSquare className="h-4 w-4" />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <p className={`truncate text-[15px] font-bold ${selectedSessionId === s.id ? "text-white" : "text-slate-300 group-hover:text-white"}`}>
-                          {s.title || "Nova landing"}
-                        </p>
-                        <p className="mt-1.5 text-[11px] font-medium text-slate-500 group-hover:text-slate-400 transition-colors">
-                          {new Date(s.updatedAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
-                        </p>
-                      </div>
-                    </div>
-                  </motion.button>
-                ))}
-              </AnimatePresence>
-            </div>
-          </motion.aside>
-
-          {sessionContextMenu && createPortal(
-            <>
-              <div 
-                className={`fixed inset-0 ${sessionContextMenu.confirm ? 'bg-black/80 backdrop-blur-md z-[9999]' : 'z-[9998]'}`} 
-                onClick={() => setSessionContextMenu(null)} 
-              />
-              
-              {!sessionContextMenu.confirm ? (
-                <div
-                  className="fixed z-[9999] min-w-[160px] overflow-hidden rounded-xl border border-slate-800 bg-[#121212]/95 p-1 backdrop-blur-md shadow-2xl animate-in fade-in zoom-in-95 duration-100"
-                  style={{ top: sessionContextMenu.y, left: sessionContextMenu.x }}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setSessionContextMenu(prev => prev ? { ...prev, confirm: true } : null);
-                    }}
-                    className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm font-bold text-rose-400 transition-colors hover:bg-rose-500/10"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                    Excluir rascunho
-                  </button>
-                </div>
-              ) : (
-                <div className="fixed inset-0 z-[9999] flex items-center justify-center pointer-events-none p-4">
-                  <div 
-                    className="pointer-events-auto w-full max-w-sm overflow-hidden rounded-3xl border border-rose-500/20 bg-slate-900/95 p-6 backdrop-blur-xl shadow-[0_0_80px_rgba(225,29,72,0.15)] animate-in fade-in zoom-in-95 duration-200"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <div className="flex flex-col items-center mb-6">
-                      <div className="w-14 h-14 rounded-full bg-rose-500/10 flex items-center justify-center mb-4">
-                        <Trash2 className="h-7 w-7 text-rose-500" />
-                      </div>
-                      <h3 className="text-xl font-black text-white mb-2">Excluir rascunho?</h3>
-                      <p className="text-sm text-slate-400 text-center leading-relaxed">Essa ação é permanente. Tem certeza que deseja deletar os dados destas configurações?</p>
-                    </div>
-                    
-                    <div className="flex items-center gap-3 w-full">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setSessionContextMenu(null);
-                        }}
-                        className="flex-1 rounded-2xl px-4 py-3.5 text-[15px] font-bold text-slate-300 bg-slate-800/80 hover:bg-slate-700 hover:text-white transition-colors"
-                      >
-                        Cancelar
-                      </button>
-                      <button
-                        onClick={() => {
-                          void deleteSession(sessionContextMenu.sessionId);
-                          setSessionContextMenu(null);
-                        }}
-                        className="flex-1 rounded-2xl px-4 py-3.5 text-[15px] font-bold text-white bg-rose-600 hover:bg-rose-500 shadow-[0_0_20px_rgba(225,29,72,0.4)] hover:shadow-[0_0_30px_rgba(225,29,72,0.6)] transition-all"
-                      >
-                        Excluir
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </>,
-            document.body
-          )}
-
-          <motion.div
-            layout
-            className="min-h-0 flex-1 h-full transition-all duration-500 ease-[cubic-bezier(0.4,0,0.2,1)]"
+        <div className="flex min-h-0 h-full flex-1 overflow-hidden">
+          <div
+            className="min-h-0 flex-1 h-full transition-[grid-template-columns] duration-200 ease-out"
             style={{
               display: "grid",
-              gridTemplateColumns: hasPreview ? "440px minmax(0,1fr)" : "1fr",
-              gap: hasPreview ? "20px" : "0"
+              gridTemplateColumns: workspaceGridColumns,
+              gap: "0"
             }}
           >
-          <motion.aside
-            layout
-            className="flex min-h-0 h-full flex-col overflow-hidden transition-all duration-500 ease-[cubic-bezier(0.4,0,0.2,1)] relative"
-            style={{
-              maxWidth: hasPreview ? "100%" : "800px",
-              margin: hasPreview ? "0" : "0 auto",
-              width: "100%",
-              backgroundColor: hasPreview ? "rgba(15, 23, 42, 0.45)" : "transparent",
-              border: hasPreview ? "1px solid rgba(51, 65, 85, 0.6)" : "none",
-              borderRadius: "32px",
-              boxShadow: hasPreview ? "0 24px 80px rgba(0,0,0,0.5)" : "none",
-              backdropFilter: hasPreview ? "blur(12px)" : "none"
-            }}
-          >
-            {hasPreview && <div className="absolute inset-0 bg-gradient-to-br from-cyan-500/5 to-violet-500/5 pointer-events-none" />}
-            
-            <div className={`px-6 py-5 z-10 ${hasPreview ? "border-b border-slate-800/80 bg-slate-900/40" : ""}`}>
-              <motion.h2 layout="position" className="text-2xl font-black tracking-tight text-white drop-shadow-md">
-                {selectedSession.title || "Nova landing"}
-              </motion.h2>
-            </div>
-
-            <div className="flex min-h-0 flex-1 flex-col z-10">
-              <div className="min-h-0 flex-1 px-5 py-6">
-                <div className="supabase-scroll h-full space-y-4 overflow-y-auto pr-2">
-                  <AnimatePresence initial={false}>
-                    {selectedSession.chatHistory.length ? (
-                      selectedSession.chatHistory.map((message, index) => (
-                        <motion.div
-                          key={`${message.createdAt}-${index}`}
-                          initial={{ opacity: 0, y: 20, scale: 0.95 }}
-                          animate={{ opacity: 1, y: 0, scale: 1 }}
-                          transition={{ type: "spring", stiffness: 250, damping: 25 }}
-                          className={message.role === "assistant" ? "max-w-[88%]" : "ml-auto max-w-[84%]"}
-                        >
-                          <motion.article
-                            whileHover={{ scale: 1.01 }}
-                            className={`rounded-[28px] px-5 py-4 shadow-xl ${message.role === "assistant"
-                              ? "bg-slate-800/80 backdrop-blur-md text-slate-100 border border-slate-700/50"
-                              : "border border-violet-400/30 bg-[linear-gradient(135deg,rgba(109,40,217,0.85),rgba(76,29,149,0.9))] text-violet-50 relative overflow-hidden"
-                              }`}
-                          >
-                            {message.role !== "assistant" && (
-                              <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full blur-[30px] pointer-events-none" />
-                            )}
-                            <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-inherit relative z-10">{message.content}</p>
-                            <div className={`mt-3 text-[11px] font-medium relative z-10 ${message.role === "assistant" ? "text-slate-500" : "text-violet-200"}`}>
-                              {formatChatTimeLabel(message.createdAt)}
-                            </div>
-                          </motion.article>
-                        </motion.div>
-                      ))
-                    ) : (
-                      <motion.div 
-                        initial={{ opacity: 0, y: 20 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        className="max-w-[88%] rounded-[28px] bg-slate-800/50 backdrop-blur-md border border-slate-700/50 px-6 py-5 text-[15px] leading-8 text-slate-300 shadow-xl"
-                      >
-                        <div className="flex items-center gap-3 mb-2">
-                          <Sparkles className="h-5 w-5 text-amber-400" />
-                          <h3 className="font-bold text-white">IA Assistente</h3>
-                        </div>
-                        <p>Olá! Vamos criar uma landing page juntos? Comece descrevendo a oferta ou curso que você quer focar.</p>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
-              </div>
-
-              <div className={`p-5 ${hasPreview ? "border-t border-slate-800/80 bg-slate-900/60 backdrop-blur-md" : ""}`}>
-                <div className="flex items-center gap-3">
-                  <motion.div 
-                    whileFocus={{ scale: 1.01, boxShadow: "0 0 0 2px rgba(139,92,246,0.3)" }}
-                    className="min-w-0 flex-1 rounded-[30px] border border-slate-600/50 bg-slate-900/90 backdrop-blur-xl p-3 shadow-xl transition-all ring-1 ring-white/10 relative overflow-hidden group focus-within:border-violet-500/50 focus-within:ring-violet-500/20"
-                  >
-                    <textarea
-                      ref={composerTextareaRef}
-                      rows={1}
-                      placeholder="Peça à IA sobre o design ou conteúdo..."
-                      className="w-full resize-none overflow-hidden bg-transparent px-3 py-2 text-[15px] leading-7 text-white outline-none placeholder:text-slate-500 relative z-10"
-                      value={sessionChatMessage}
-                      onChange={(event) => setSessionChatMessage(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter" && !event.shiftKey) {
-                          event.preventDefault();
-                          void sendChatMessage();
-                        }
-                      }}
-                    />
-                  </motion.div>
+            {showHistorySidebar ? (
+              <aside
+                className="flex min-h-0 h-full flex-col overflow-hidden border-r border-slate-800/60 bg-slate-950/80 backdrop-blur-2xl"
+              >
+                <div className="border-b border-slate-800/60 px-3.5 py-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-[0.26em] text-slate-500">Chats</p>
+                      <h3 className="mt-1 text-lg font-black text-white">Historico recente</h3>
+                    </div>
+                    <span className="rounded-full border border-slate-700/80 bg-slate-900/80 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">
+                      {sidebarSessions.length}
+                    </span>
+                  </div>
 
                   <motion.button
-                    whileHover={{ scale: 1.1, rotate: -10 }}
-                    whileTap={{ scale: 0.9 }}
+                    whileHover={{ scale: 1.01 }}
+                    whileTap={{ scale: 0.99 }}
                     type="button"
-                    disabled={sendingChat || !sessionChatMessage.trim()}
-                    className="inline-flex h-[60px] w-[60px] shrink-0 items-center justify-center rounded-[24px] bg-[linear-gradient(135deg,rgba(139,92,246,1),rgba(109,40,217,1))] text-white shadow-[0_10px_30px_rgba(109,40,217,0.5)] transition-all hover:brightness-125 disabled:opacity-50 disabled:hover:scale-100 disabled:hover:rotate-0"
-                    onClick={sendChatMessage}
+                    onClick={() => {
+                      setForceHistorySidebar(true);
+                      void createSession();
+                    }}
+                    className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-[18px] border border-dashed border-violet-500/25 bg-violet-500/8 px-3.5 py-2.5 text-sm font-bold text-violet-100 transition-colors hover:border-violet-400/45 hover:bg-violet-500/12"
                   >
-                    {sendingChat ? <RefreshCw className="h-6 w-6 animate-spin" /> : <Send className="h-6 w-6 ml-1" />}
+                    <Plus className="h-4 w-4" />
+                    Novo chat
                   </motion.button>
                 </div>
-              </div>
-            </div>
-          </motion.aside>
 
-          <AnimatePresence>
-            {hasPreview && (
-              <motion.main 
-                initial={{ opacity: 0, x: 50, scale: 0.95 }}
-                animate={{ opacity: 1, x: 0, scale: 1 }}
-                exit={{ opacity: 0, x: 50, scale: 0.95 }}
-                transition={{ type: "spring", stiffness: 200, damping: 25 }}
-                className="flex min-h-0 flex-col rounded-[32px] border border-slate-700/60 bg-slate-900/40 backdrop-blur-2xl p-5 shadow-[0_0_50px_rgba(0,0,0,0.5)] relative overflow-hidden"
-              >
-                <div className="absolute top-0 right-0 w-80 h-80 bg-cyan-500/10 blur-[100px] rounded-full pointer-events-none" />
-                <div className="absolute bottom-0 left-0 w-80 h-80 bg-violet-500/10 blur-[100px] rounded-full pointer-events-none" />
-                <div className="min-h-0 flex-1 overflow-hidden rounded-[20px] bg-black/50 border border-slate-800 relative z-10">
-                  <div className="supabase-scroll h-full overflow-y-auto w-full">
-                    <LandingPreviewCanvas
-                      offer={selectedSession.preview!.offer}
-                      landing={selectedSession.preview!.landing}
-                      previewLabel="Preview em Tempo Real ⚡"
-                    />
+                <div className="supabase-scroll flex-1 overflow-y-auto p-2">
+                  <div className="flex flex-col gap-2">
+                    {sidebarSessions.map((session, index) => {
+                      const isPending = session.id === 0;
+                      const isActive = selectedSession.id === session.id;
+                      const sessionTheme = formatLandingDraftThemeLabel(session.offerDraft);
+                      const sessionMeta = sessionTheme
+                        ? `Tema: ${sessionTheme}`
+                        : `Atualizado ${formatSessionTimeLabel(session.updatedAt)}`;
+
+                      return (
+                        <motion.div
+                          key={`${session.id}-${index}`}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => {
+                            openSessionWorkspace(session);
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              openSessionWorkspace(session);
+                            }
+                          }}
+                          className={`group flex items-start gap-2.5 rounded-[18px] border px-2.5 py-2.5 text-left transition-all ${
+                            isActive
+                              ? "border-violet-500/35 bg-[linear-gradient(135deg,rgba(109,40,217,0.18),rgba(49,46,129,0.14))] shadow-[0_0_18px_rgba(139,92,246,0.14)]"
+                              : "border-slate-800/70 bg-[linear-gradient(135deg,rgba(49,46,129,0.12),rgba(15,23,42,0.2))] hover:border-slate-600/70 hover:bg-[linear-gradient(135deg,rgba(67,56,202,0.16),rgba(15,23,42,0.3))]"
+                          }`}
+                        >
+                          <div className={`mt-0.5 flex size-11 shrink-0 items-center justify-center rounded-[16px] border ${
+                            isActive
+                              ? "border-violet-400/25 bg-violet-500/18 text-violet-100"
+                              : "border-slate-800/70 bg-[linear-gradient(135deg,rgba(30,27,75,0.3),rgba(15,23,42,0.42))] text-slate-300"
+                          }`}>
+                            <MessageSquare className="h-4 w-4" />
+                          </div>
+
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0">
+                                <p className="truncate text-sm font-black text-white">
+                                  {session.title || "Nova landing"}
+                                </p>
+                                <p className="mt-1 truncate text-xs text-slate-400">{sessionMeta}</p>
+                              </div>
+
+                              {!isPending ? (
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setSessionToDeleteId(session.id);
+                                  }}
+                                  className="mt-0.5 inline-flex size-8 shrink-0 items-center justify-center rounded-full border border-transparent text-slate-500 transition-colors hover:border-rose-500/20 hover:bg-rose-500/10 hover:text-rose-300"
+                                  aria-label="Excluir rascunho"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              ) : null}
+                            </div>
+
+                            <div className="mt-3 flex items-center gap-2">
+                              <span className={`rounded-full px-2 py-1 text-[10px] font-black uppercase tracking-[0.22em] ${
+                                isActive ? "bg-violet-500/15 text-violet-100" : "bg-slate-800/90 text-slate-400"
+                              }`}>
+                                {isPending ? "Rascunho local" : "Workspace"}
+                              </span>
+                            </div>
+                          </div>
+                        </motion.div>
+                      );
+                    })}
                   </div>
                 </div>
-              </motion.main>
-            )}
-          </AnimatePresence>
-          </motion.div>
+              </aside>
+            ) : null}
+
+            <AnimatePresence mode="wait" initial={false}>
+              <motion.aside
+                key={`session-pane-${selectedSession.id}-${hasPreview ? "preview" : "solo"}-${showHistorySidebar ? "sidebar" : "compact"}`}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{
+                  opacity: chatCollapsed && hasPreview ? 0 : 1,
+                  x: chatCollapsed && hasPreview ? -20 : 0,
+                  y: 0
+                }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.18, ease: "easeOut" }}
+                className={`relative flex min-h-0 h-full flex-col overflow-hidden ${chatCollapsed && hasPreview ? "pointer-events-none" : ""}`}
+                style={{
+                  maxWidth: hasPreview || showHistorySidebar ? "100%" : "800px",
+                  margin: hasPreview || showHistorySidebar ? "0" : "0 auto",
+                  width: "100%",
+                  backgroundColor: "rgba(2, 6, 23, 0.6)",
+                  border: "none",
+                  borderRight: hasPreview && !(chatCollapsed && !showHistorySidebar) ? "1px solid rgba(51,65,85,0.4)" : "none",
+                  borderRadius: "0",
+                  boxShadow: "none",
+                  backdropFilter: "none"
+                }}
+              >
+                {hasPreview && !chatCollapsed ? (
+                  <button
+                    type="button"
+                    aria-label="Redimensionar largura do chat"
+                    onPointerDown={startChatResize}
+                    className="absolute right-0 top-0 z-30 hidden h-full w-3 -translate-x-1/2 cursor-col-resize touch-none lg:block"
+                  >
+                    <span className="mx-auto block h-full w-px bg-slate-800/70 transition-colors hover:bg-violet-400/50" />
+                  </button>
+                ) : null}
+                <div className="z-10 space-y-3 px-3.5 py-2.5">
+                  <h2 className="text-2xl font-black tracking-tight text-white drop-shadow-md">
+                    {selectedSession.title || "Nova landing"}
+                  </h2>
+                  <LandingAiActivityPanel
+                    activityType={aiBusyState.type}
+                    busy={aiBusyState.busy}
+                    busyLabel={aiBusyState.label}
+                    busyDescription={aiBusyState.description}
+                    logs={aiActivityLogs}
+                    loading={aiActivityLoading}
+                    error={aiActivityError}
+                    onRefresh={() => void loadAiActivity(selectedSession.id)}
+                  />
+                </div>
+
+                <div className="flex min-h-0 flex-1 flex-col z-10">
+                  <div className="min-h-0 flex-1 px-3.5 py-3.5">
+                    <div className="supabase-scroll h-full overflow-y-auto pr-1">
+                      {selectedSession.chatHistory.length ? (
+                        <div className="space-y-3.5">
+                          {shouldShowDiscoveryQuestionnaire && discoveryAnswers ? (
+                            <LandingDiscoveryQuestionnaire
+                              value={discoveryAnswers}
+                              onChange={setDiscoveryAnswers}
+                              onSubmit={() => void submitDiscoveryQuestionnaire()}
+                              submitting={submittingDiscovery}
+                            />
+                          ) : null}
+
+                          {selectedSession.chatHistory.map((message, index) => (
+                            <div
+                              key={`${message.createdAt}-${index}`}
+                              className={message.role === "assistant" ? "max-w-[88%]" : "ml-auto max-w-[84%]"}
+                            >
+                              <motion.article
+                                whileHover={{ scale: 1.01 }}
+                                className={`rounded-[20px] px-3.5 py-3 shadow-xl ${message.role === "assistant"
+                                  ? "bg-[linear-gradient(135deg,rgba(30,41,59,0.82),rgba(15,23,42,0.74))] backdrop-blur-md text-slate-100 border border-slate-800/40"
+                                  : "border border-violet-400/25 bg-[linear-gradient(135deg,rgba(109,40,217,0.82),rgba(76,29,149,0.88))] text-violet-50 relative overflow-hidden"
+                                  }`}
+                              >
+                                {message.role !== "assistant" && (
+                                  <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full blur-[30px] pointer-events-none" />
+                                )}
+                                <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-inherit relative z-10">{message.content}</p>
+                                <div className={`mt-3 text-[11px] font-medium relative z-10 ${message.role === "assistant" ? "text-slate-500" : "text-violet-200"}`}>
+                                  {formatChatTimeLabel(message.createdAt)}
+                                </div>
+                              </motion.article>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="max-w-[88%] rounded-[20px] border border-slate-800/40 bg-[linear-gradient(135deg,rgba(30,41,59,0.58),rgba(15,23,42,0.5))] px-4 py-3.5 text-[15px] leading-8 text-slate-300 shadow-xl backdrop-blur-md">
+                          <div className="mb-2 flex items-center gap-3">
+                            <Sparkles className="h-5 w-5 text-amber-400" />
+                            <h3 className="font-bold text-white">Lume</h3>
+                          </div>
+                          <p>Olá! Vamos criar uma landing page juntos? Comece descrevendo a oferta ou curso que você quer focar.</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="border-t border-slate-800/40 p-3">
+                    <div className="flex items-center gap-3">
+                      <motion.div
+                        whileFocus={{ scale: 1.01, boxShadow: "0 0 0 2px rgba(139,92,246,0.3)" }}
+                        className="group relative min-w-0 flex-1 overflow-hidden rounded-[18px] border border-slate-700/45 bg-[linear-gradient(135deg,rgba(15,23,42,0.94),rgba(30,41,59,0.78))] p-2 shadow-xl transition-all ring-1 ring-white/8 backdrop-blur-xl focus-within:border-violet-500/45 focus-within:ring-violet-500/15"
+                      >
+                        <textarea
+                          ref={composerTextareaRef}
+                          rows={1}
+                          placeholder="Peça à Lume sobre o design ou conteúdo..."
+                          className="relative z-10 w-full resize-none overflow-hidden bg-transparent px-2.5 py-1.5 text-[15px] leading-7 text-white outline-none placeholder:text-slate-500"
+                          value={sessionChatMessage}
+                          onChange={(event) => setSessionChatMessage(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" && !event.shiftKey) {
+                              event.preventDefault();
+                              void sendChatMessage();
+                            }
+                          }}
+                        />
+                      </motion.div>
+
+                      <motion.button
+                        whileHover={{ scale: 1.1, rotate: -10 }}
+                        whileTap={{ scale: 0.9 }}
+                        type="button"
+                        disabled={sendingChat || !sessionChatMessage.trim()}
+                        className="inline-flex h-[50px] w-[50px] shrink-0 items-center justify-center rounded-[18px] bg-[linear-gradient(135deg,rgba(139,92,246,1),rgba(109,40,217,1))] text-white shadow-[0_8px_20px_rgba(109,40,217,0.36)] transition-all hover:brightness-125 disabled:opacity-50 disabled:hover:scale-100 disabled:hover:rotate-0"
+                        onClick={sendChatMessage}
+                      >
+                        {sendingChat ? <RefreshCw className="h-6 w-6 animate-spin" /> : <Send className="h-6 w-6 ml-1" />}
+                      </motion.button>
+                    </div>
+                  </div>
+                </div>
+              </motion.aside>
+            </AnimatePresence>
+
+            <AnimatePresence>
+              {hasPreview && (
+                <motion.main 
+                  key={`preview-pane-${selectedSession.id}-${selectedSession.preview?.landing?.version ?? 0}-${previewPaneMode}`}
+                  initial={{ opacity: 0, x: 12 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: 12 }}
+                  transition={{ duration: 0.18, ease: "easeOut" }}
+                  className="relative flex min-h-0 flex-col overflow-hidden bg-slate-950/40"
+                >
+                  {isResizingChatPane ? (
+                    <div className="absolute inset-0 z-40 cursor-col-resize bg-transparent" />
+                  ) : null}
+                  {previewPaneMode === "code" && selectedSessionCodeBundle ? (
+                    <LandingCodeIdePane
+                      bundle={selectedSessionCodeBundle}
+                      title={activeSessionTitle}
+                      onBackToPreview={() => setPreviewPaneMode("preview")}
+                      onToast={(message, type) => {
+                        addToast(message, type);
+                      }}
+                    />
+                  ) : (
+                    <div className="relative z-10 min-h-0 flex-1 overflow-hidden">
+                      <div className="supabase-scroll h-full overflow-y-auto w-full">
+                        <LandingPreviewCanvas
+                          offer={selectedSession.preview!.offer}
+                          landing={selectedSession.preview!.landing}
+                          previewLabel="Preview em Tempo Real ⚡"
+                        />
+                        {selectedSession.preview?.landing?.artifactUrl ? (
+                          <div className="border-t border-slate-800/50 bg-slate-950/75 px-4 py-4">
+                            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-400/15 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-50">
+                              <div className="min-w-0 flex-1">
+                                <p className="text-[11px] font-black uppercase tracking-[0.22em] text-emerald-200/80">Artefato no bucket</p>
+                                <p className="mt-1 break-all text-emerald-50/90">{selectedSession.preview.landing.artifactUrl}</p>
+                              </div>
+                              <a
+                                href={selectedSession.preview.landing.artifactUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex shrink-0 items-center gap-2 rounded-full border border-emerald-300/20 bg-emerald-400/10 px-4 py-2 text-xs font-black uppercase tracking-[0.18em] text-emerald-100 transition-colors hover:bg-emerald-400/20"
+                              >
+                                Abrir
+                              </a>
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  )}
+                </motion.main>
+              )}
+            </AnimatePresence>
+          </div>
+
+          <Dialog open={sessionToDeleteId !== null} onOpenChange={(open) => !open && setSessionToDeleteId(null)}>
+            <DialogContent className="max-w-md overflow-hidden rounded-[32px] border border-rose-500/20 bg-slate-950/95 p-0">
+              <DialogHeader className="gap-3 p-6 pb-0">
+                <div className="flex size-14 items-center justify-center rounded-full border border-rose-500/20 bg-rose-500/10 text-rose-400">
+                  <Trash2 className="h-6 w-6" />
+                </div>
+                <DialogTitle>Excluir chat atual?</DialogTitle>
+                <DialogDescription>
+                  {sessionToDelete
+                    ? `O rascunho "${sessionToDelete.title || "Nova landing"}" sera removido permanentemente.`
+                    : "Este rascunho sera removido permanentemente."}
+                </DialogDescription>
+              </DialogHeader>
+
+              <DialogFooter className="border-t border-slate-800/80 bg-slate-950/80 p-6 pt-4">
+                <button
+                  type="button"
+                  onClick={() => setSessionToDeleteId(null)}
+                  className="rounded-2xl bg-slate-800/80 px-4 py-3 text-sm font-bold text-slate-300 transition-colors hover:bg-slate-700 hover:text-white"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (sessionToDeleteId !== null) {
+                      void deleteSession(sessionToDeleteId);
+                    }
+                    setSessionToDeleteId(null);
+                  }}
+                  className="rounded-2xl bg-rose-600 px-4 py-3 text-sm font-bold text-white shadow-[0_0_24px_rgba(225,29,72,0.35)] transition-colors hover:bg-rose-500"
+                >
+                  Excluir
+                </button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
 
           {/* Draft Slider Panel */}
           <AnimatePresence>
@@ -699,6 +1415,89 @@ export default function OffersSection({
                   </div>
 
                   <div className="supabase-scroll flex-1 space-y-6 overflow-y-auto pr-3 pb-8">
+                    {selectedSession?.codeBundleDraft ? (
+                      <div className="rounded-3xl border border-cyan-400/15 bg-cyan-500/8 p-5 shadow-[0_18px_55px_rgba(8,145,178,0.12)]">
+                        <div className="mb-3 flex items-center gap-3">
+                          <div className="rounded-2xl border border-cyan-400/20 bg-cyan-500/10 p-2 text-cyan-200">
+                            <CodeXml className="h-4 w-4" />
+                          </div>
+                          <div>
+                            <p className="text-[11px] font-black uppercase tracking-[0.22em] text-cyan-200/80">React bundle</p>
+                            <p className="text-sm font-semibold text-white">Origem principal da landing gerada pela IA</p>
+                          </div>
+                        </div>
+                        <div className="grid gap-3">
+                          <div className="rounded-2xl border border-white/10 bg-slate-900/70 px-4 py-3">
+                            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">Resumo</p>
+                            <p className="mt-2 text-sm font-semibold text-white">
+                              {selectedSession.codeBundleDraft.metadata.summary}
+                            </p>
+                          </div>
+
+                          <div className="rounded-2xl border border-white/10 bg-slate-900/70 px-4 py-3">
+                            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">Arquivos</p>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {selectedSession.codeBundleDraft.files.map((file) => (
+                                <span
+                                  key={file.path}
+                                  className="rounded-full border border-white/10 bg-slate-950/80 px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.18em] text-slate-200"
+                                >
+                                  {file.path}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+
+                          <div className="rounded-2xl border border-white/10 bg-slate-900/70 px-4 py-3">
+                            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">Componentes usados</p>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {selectedSession.codeBundleDraft.usedComponents.map((componentName) => (
+                                <span
+                                  key={componentName}
+                                  className="rounded-full border border-white/10 bg-slate-950/80 px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.18em] text-slate-200"
+                                >
+                                  {componentName}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+
+                          <div className="rounded-2xl border border-white/10 bg-slate-900/70 px-4 py-3">
+                            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">Origem</p>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              <span className="rounded-full border border-white/10 bg-slate-950/80 px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.18em] text-slate-200">
+                                {selectedSession.codeBundleDraft.source === "fallback" ? "Fallback controlado" : "IA"}
+                              </span>
+                              <span className="rounded-full border border-white/10 bg-slate-950/80 px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.18em] text-slate-200">
+                                {selectedSession.codeBundleDraft.entryFile}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ) : selectedSession?.builderDraft?.nodes?.length ? (
+                      <div className="rounded-3xl border border-cyan-400/15 bg-cyan-500/8 p-5 shadow-[0_18px_55px_rgba(8,145,178,0.12)]">
+                        <div className="mb-3 flex items-center gap-3">
+                          <div className="rounded-2xl border border-cyan-400/20 bg-cyan-500/10 p-2 text-cyan-200">
+                            <PanelsTopLeft className="h-4 w-4" />
+                          </div>
+                          <div>
+                            <p className="text-[11px] font-black uppercase tracking-[0.22em] text-cyan-200/80">Builder legado</p>
+                            <p className="text-sm font-semibold text-white">Fallback estrutural para landings antigas</p>
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {selectedSession.builderDraft.nodes.map((node) => (
+                            <span
+                              key={node.id}
+                              className="rounded-full border border-white/10 bg-slate-900/70 px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.18em] text-slate-200"
+                            >
+                              {node.type}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
                     <div className="space-y-5">
                       <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
                         <label className="mb-2 block text-xs font-black uppercase tracking-[0.15em] text-violet-300">Titulo da Oferta</label>
@@ -784,6 +1583,41 @@ export default function OffersSection({
                           onChange={(e) => updateLocalDraft({ ...localOfferDraft, visualTheme: e.target.value })}
                         />
                       </motion.div>
+
+                      <div className="grid grid-cols-1 gap-5 md:grid-cols-3">
+                        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.5 }}>
+                          <label className="mb-2 block text-xs font-black uppercase tracking-[0.15em] text-violet-300">Cores</label>
+                          <input
+                            type="text"
+                            placeholder="Ex: verde profissional"
+                            className="w-full rounded-2xl border border-slate-700/50 bg-slate-900/60 px-5 py-4 text-sm text-white focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20 focus:outline-none transition-all shadow-inner"
+                            value={localOfferDraft.colorPalette || ""}
+                            onChange={(e) => updateLocalDraft({ ...localOfferDraft, colorPalette: e.target.value })}
+                          />
+                        </motion.div>
+
+                        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.55 }}>
+                          <label className="mb-2 block text-xs font-black uppercase tracking-[0.15em] text-violet-300">Tipografia</label>
+                          <input
+                            type="text"
+                            placeholder="Ex: elegante"
+                            className="w-full rounded-2xl border border-slate-700/50 bg-slate-900/60 px-5 py-4 text-sm text-white focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20 focus:outline-none transition-all shadow-inner"
+                            value={localOfferDraft.typographyStyle || ""}
+                            onChange={(e) => updateLocalDraft({ ...localOfferDraft, typographyStyle: e.target.value })}
+                          />
+                        </motion.div>
+
+                        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.6 }}>
+                          <label className="mb-2 block text-xs font-black uppercase tracking-[0.15em] text-violet-300">Layout</label>
+                          <input
+                            type="text"
+                            placeholder="Ex: hero + grid"
+                            className="w-full rounded-2xl border border-slate-700/50 bg-slate-900/60 px-5 py-4 text-sm text-white focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20 focus:outline-none transition-all shadow-inner"
+                            value={localOfferDraft.layoutStyle || ""}
+                            onChange={(e) => updateLocalDraft({ ...localOfferDraft, layoutStyle: e.target.value })}
+                          />
+                        </motion.div>
+                      </div>
                     </div>
                   </div>
 
@@ -829,7 +1663,7 @@ export default function OffersSection({
           {latestSession ? (
             <button
               type="button"
-              onClick={() => setSelectedSessionId(latestSession.id)}
+              onClick={() => openSessionWorkspace(latestSession)}
               className="inline-flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-950/70 px-4 py-3 text-sm font-bold text-slate-100 transition-all hover:border-slate-600 hover:bg-slate-950"
             >
               <RefreshCw className="h-4 w-4" />

@@ -258,10 +258,10 @@ export default function LeadQualificationPanel({
                     </div>
                     <div className="mt-4 rounded-2xl border border-slate-800/70 bg-slate-900/70 p-4">
                       <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-slate-500">
-                        Resumo da IA
+                        Resumo da Lume
                       </p>
                       <p className="mt-2 text-sm leading-6 text-slate-200">
-                        {lead.aiSummary || "A IA ainda nao consolidou um resumo do contexto deste lead."}
+                        {lead.aiSummary || "A Lume ainda nao consolidou um resumo do contexto deste lead."}
                       </p>
                     </div>
                   </div>

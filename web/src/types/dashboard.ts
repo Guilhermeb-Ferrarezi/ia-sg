@@ -354,12 +354,119 @@ export type LandingSections = {
   };
 };
 
+export type LandingBuilderNode =
+  | {
+    id: string;
+    type: "hero";
+    props: {
+      eyebrow?: string;
+      headline?: string;
+      subheadline?: string;
+      highlights?: string[];
+      ctaLabel?: string;
+    };
+  }
+  | {
+    id: string;
+    type: "info-panel";
+    props: {
+      title?: string;
+      items?: Array<{ label: string; value: string }>;
+      helper?: string;
+    };
+  }
+  | {
+    id: string;
+    type: "feature-grid";
+    props: {
+      title?: string;
+      items?: Array<{ title: string; description: string }>;
+    };
+  }
+  | {
+    id: string;
+    type: "proof-list";
+    props: {
+      title?: string;
+      items?: string[];
+    };
+  }
+  | {
+    id: string;
+    type: "faq-list";
+    props: {
+      title?: string;
+      items?: Array<{ question: string; answer: string }>;
+    };
+  }
+  | {
+    id: string;
+    type: "cta-band";
+    props: {
+      eyebrow?: string;
+      label?: string;
+      helper?: string;
+    };
+  };
+
+export type LandingBuilderDocument = {
+  version: number;
+  kind: "landing-builder-v1";
+  metadata: {
+    title: string;
+    slug: string;
+    description?: string;
+  };
+  theme: {
+    accent: string;
+    surface: string;
+    canvas: string;
+  };
+  nodes: LandingBuilderNode[];
+};
+
+export type LandingCodeFile = {
+  path: string;
+  code: string;
+  summary?: string;
+};
+
+export type LandingCodeBundle = {
+  version: number;
+  kind: "landing-code-bundle-v1";
+  framework: "vite-react";
+  source: "ai" | "fallback";
+  entryFile: string;
+  files: LandingCodeFile[];
+  metadata: {
+    title: string;
+    slug: string;
+    description?: string;
+    summary: string;
+    generatedAt: string;
+    visualTheme?: string;
+  };
+  themeTokens: {
+    accent: string;
+    surface: string;
+    canvas: string;
+    text: string;
+    muted: string;
+  };
+  usedComponents: string[];
+  usedImports: string[];
+};
+
 export type LandingPageSummary = {
   id: number;
   offerId: number;
   version: number;
   status: string;
   sectionsJson: LandingSections;
+  builderDocumentJson?: LandingBuilderDocument | null;
+  landingCodeBundleJson?: LandingCodeBundle | null;
+  artifactKey?: string | null;
+  artifactUrl?: string | null;
   promptSnapshot?: unknown;
   sourceFactsSnapshot?: unknown;
   publishedAt: string | null;
@@ -404,6 +511,9 @@ export type LandingCreationDraft = {
   ctaLabel: string;
   ctaUrl: string;
   visualTheme: string;
+  colorPalette: string;
+  typographyStyle: string;
+  layoutStyle: string;
   isActive: boolean;
 };
 
@@ -422,6 +532,8 @@ export type LandingCreationSession = {
   promptDraft: LandingPromptConfig;
   chatHistory: LandingCreationMessage[];
   readiness: LandingCreationReadiness;
+  builderDraft?: LandingBuilderDocument | null;
+  codeBundleDraft?: LandingCodeBundle | null;
   preview: LandingPreviewResponse | null;
   publishedOfferId: number | null;
   createdAt: string;

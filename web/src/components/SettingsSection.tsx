@@ -160,7 +160,7 @@ export default function SettingsSection({
       setAi(data);
       setAiDraft({});
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Falha ao carregar configuracoes da IA.";
+      const message = err instanceof Error ? err.message : "Falha ao carregar configuracoes da Lume.";
       setAiError(message);
       if (aiRef.current) addToast(message, "error");
     } finally {
@@ -209,7 +209,7 @@ export default function SettingsSection({
   const saveAI = async () => {
     setAiSaving(true);
     setAiError("");
-    const toastId = addToast("Salvando configuracoes da IA...", "loading");
+    const toastId = addToast("Salvando configuracoes da Lume...", "loading");
     try {
       const data = await apiFetch<AISettings>("/settings/ai", {
         method: "PUT",
@@ -217,7 +217,7 @@ export default function SettingsSection({
       });
       setAi(data);
       setAiDraft({});
-      updateToast(toastId, "Configuracoes da IA salvas com sucesso!", "success");
+      updateToast(toastId, "Configuracoes da Lume salvas com sucesso!", "success");
     } catch (err) {
       const message = err instanceof Error ? err.message : "Falha ao salvar.";
       setAiError(message);
@@ -380,7 +380,7 @@ export default function SettingsSection({
               Configuracoes
             </h2>
             <p className="text-sm text-slate-500">
-              Carregando IA, perfil do WhatsApp e parametros operacionais.
+              Carregando Lume, perfil do WhatsApp e parametros operacionais.
             </p>
           </div>
         </div>
@@ -399,7 +399,7 @@ export default function SettingsSection({
                   Boot de Configuracoes
                 </p>
                 <h3 className="mt-1 text-xl font-semibold text-slate-100">
-                  Sincronizando painel, perfil e preferencias da IA
+                  Sincronizando painel, perfil e preferencias da Lume
                 </h3>
               </div>
             </div>
@@ -407,7 +407,7 @@ export default function SettingsSection({
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <LoadingStepCard
                 icon={Brain}
-                title="Config da IA"
+                title="Config da Lume"
                 description="Modelo, persona, historico e temporizacao"
               />
               <LoadingStepCard
@@ -462,7 +462,7 @@ export default function SettingsSection({
             Configuracoes
           </h2>
           <p className="text-sm text-slate-500">
-            Gerencie a IA e o perfil do WhatsApp Business
+            Gerencie a Lume e o perfil do WhatsApp Business
           </p>
         </div>
       </div>
@@ -494,14 +494,14 @@ export default function SettingsSection({
         <div className="space-y-6 panel-enter" key="ai-tab">
           {aiLoading && !ai ? (
             <PanelLoadingState
-              title="Carregando configuracoes da IA"
+              title="Carregando configuracoes da Lume"
               description="Buscando modelo, persona e politicas de resposta no backend."
               icon={Brain}
               accent="violet"
             />
           ) : !ai && aiError ? (
             <PanelErrorState
-              title="Falha ao carregar configuracoes da IA"
+              title="Falha ao carregar configuracoes da Lume"
               description={aiError}
               onRetry={() => void loadAI()}
             />

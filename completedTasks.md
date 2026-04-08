@@ -1,4 +1,72 @@
 # Completed Tasks
+## Atualizacao extra - 2026-04-08 (Landing React do zero)
+- [x] Fluxo de geracao de landing passou a salvar um `landingCodeBundleJson` como origem principal da pagina, com bundle React/TSX orientado a `shadcn + Radix + Tailwind`.
+- [x] Sessoes de criacao agora mantem `codeBundleDraftJson`, permitindo que o chat, o preview e o publish compartilhem a mesma versao do bundle gerado pela IA.
+- [x] Preview da landing foi adaptado para priorizar o bundle React em um host isolado por `iframe`, com compilacao de TSX no cliente e fallback automatico para o renderer legado.
+- [x] Backend passou a validar imports permitidos, bloquear APIs inseguras e cair em bundle fallback controlado quando a resposta da IA vier invalida para o runtime novo.
+- [x] Drawer de edicao manual deixou de tratar `Builder v1` como origem principal e agora mostra resumo do bundle, arquivos gerados, componentes usados e origem da versao.
+- [x] Publicacao da landing e artefato do bucket foram ampliados para incluir tambem o `landingCodeBundleJson`, mantendo compatibilidade com `builderDocumentJson` e `sectionsJson`.
+- [x] Terceiro icone da barra central do preview agora abre um viewer de codigo com os arquivos React gerados pela IA, usando o bundle salvo na sessao/preview.
+- [x] Viewer de codigo foi redesenhado para um layout tipo IDE, com busca, explorer por pastas, abas de arquivos e editor escuro com linhas numeradas.
+- [x] Viewer de codigo deixou de abrir em modal e agora substitui a coluna de preview do workspace, alternando entre `Preview` e `Code` pela barra central.
+- [x] Painel `Code` ganhou uma coluna de inspeção com todos os arquivos criados, todos os componentes usados, imports usados, tokens do tema e metadados completos do bundle.
+- [x] Fluxo de criacao da landing passou a coletar `Cores`, `Tipografia` e `Layout` como preferencias reais do draft, tanto no chat quanto no painel lateral.
+- [x] Chat de criacao ganhou fallback de discovery guiado: quando faltam detalhes visuais ou de conteudo, a assistente pede respostas curtas no estilo `Cores: ...`, `Tipografia: ...`, `Layout: ...` e `Pontos principais: ...`.
+- [x] Gerador React da landing agora recebe essas preferencias de design no prompt, em vez de depender so de um `visualTheme` generico.
+- [x] Workspace de criacao ganhou um questionario guiado no proprio chat, com perguntas objetivas, opcoes rapidas e envio estruturado das respostas para a IA antes da proxima geracao.
+- [x] Resize horizontal do chat foi corrigido para continuar funcionando mesmo sobre o preview em `iframe`, com captura de ponteiro e overlay temporario durante o drag.
+
+## Atualizacao extra - 2026-04-07 (Builder Lovable-like v1)
+- [x] Fluxo de landing ganhou documento estruturado `builderDocumentJson` para representar a pagina em arvore de componentes tipados, em paralelo ao `sectionsJson` legado.
+- [x] Sessoes de criacao agora mantem `builderDraftJson`, permitindo preservar a estrutura da pagina gerada pela IA ao longo do chat, preview e publish.
+- [x] `LandingPreviewCanvas` foi adaptado para renderizar a landing a partir do builder v1 quando disponivel, com fallback automatico para o formato legado.
+- [x] Drawer de edicao manual passou a exibir a estrutura de blocos da pagina gerada pela IA, deixando a V1 do builder mais transparente durante o refinamento.
+- [x] Publish da landing foi ligado ao bucket Cloudflare R2 configurado no `.env`, enviando um artefato JSON da pagina publicada para armazenamento externo.
+- [x] Envio de prompt no chat agora aciona geracao automatica de preview logo apos a IA atualizar o draft, sem depender do clique manual em `Gerar preview`.
+- [x] Painel de preview passou a exibir o `artifactUrl` publicado no bucket quando a landing e publicada com sucesso.
+- [x] Trigger compacto de `Chats recentes` agora usa a logo vermelha dos assets e mostra um botao hamburguer no hover para reabrir a sidebar de chats.
+
+## Atualizacao extra - 2026-04-07 (Workspace mais justo)
+- [x] Workspace de landings foi comprimido com menos borda visual ao redor, gaps menores entre colunas e paddings internos reduzidos na topbar, chat e preview.
+
+## Atualizacao extra - 2026-04-07 (Separacao cromatica do workspace)
+- [x] Workspace de landings recebeu hierarquia de cor mais clara, com topbar neutra, sidebar em violeta frio, chat em azul-noturno e preview em ciano-petroleo.
+
+## Atualizacao extra - 2026-04-07 (Estrutura sem bordas divisorias)
+- [x] Bordas estruturais do workspace de landings foram removidas dos wrappers principais, deixando a separacao visual concentrada apenas nos elementos internos, como na referencia.
+
+## Atualizacao extra - 2026-04-07 (Topbar inspirada na referencia)
+- [x] Header do workspace de landings foi refeito como uma topbar unica inspirada na referencia visual, com bloco de identidade da sessao na esquerda, trilha de controles no centro e acoes do fluxo na direita.
+
+## Atualizacao extra - 2026-04-07 (Workspace mais compacto)
+- [x] Workspace de criacao da landing ficou mais compacto, com menos bordas pesadas, menos padding estrutural e mais area util para chat e preview.
+
+## Atualizacao extra - 2026-04-07 (Dropdown no topo para chats com historico)
+- [x] Workspace de criacao da landing agora esconde a sidebar assim que um chat selecionado ja possui historico, exibindo no topo um dropdown com os chats recentes mesmo quando o tema visual ainda nao foi definido.
+
+## Atualizacao extra - 2026-04-07 (Regra de skill para componentes)
+- [x] Regras de agente atualizadas em `AGENTS.md` e `claude.md` para tornar obrigatoria a prioridade maxima de componentes shadcn e primitivas do Radix UI em qualquer nova adicao de UI.
+
+## Atualizacao extra - 2026-04-07 (Porta livre para frontend local)
+- [x] Frontend Vite configurado para iniciar preferencialmente em `8080`, com fallback automatico para a proxima porta livre quando houver conflito.
+- [x] Proxy local do frontend corrigido para apontar para a API em `http://localhost:3000`, alinhando o ambiente de desenvolvimento com o backend atual.
+- [x] Fallback de `ALLOWED_ORIGINS` do backend e `.env.example` alinhados para aceitar `http://localhost:8080` e `http://localhost:8081` sem ajuste manual.
+- [x] `deploy_and_push.sh` ampliado para continuar procurando portas de frontend acima da base preferida, evitando falha quando `8080` e `8081` ja estiverem ocupadas.
+- [x] Removida a animacao de saida ao excluir um chat/rascunho no historico da area de landings.
+- [x] Removido o card-resumo "Exploracao da landing" do header do workspace fullscreen.
+- [x] Barra visual estilo "Preview" movida para o topo do header do workspace, substituindo a copia interna do painel de preview.
+- [x] Removido o arredondamento externo do canvas principal da landing preview.
+- [x] Animacao de troca entre chats no workspace foi simplificada para fade curto, removendo springs/layouts que causavam bug visual na mudanca de sessao.
+- [x] Painel "IA em acao" adicionado ao workspace de landing, exibindo em tempo real o status atual da IA e os ultimos eventos persistidos da sessao selecionada.
+- [x] Status da "IA em acao" foi redesenhado como uma resposta visual da propria Lume, trocando texto e cor conforme chat, preview, publicacao ou salvamento.
+- [x] Resposta visual da Lume foi refinada para imitar o comportamento de IA em execucao, com texto sendo escrito aos poucos e linha "Thinking" abrindo com animacao do Radix.
+
+## Atualizacao extra - 2026-04-07 (Deploy bash + Compose)
+- [x] Criado `deploy_and_push.sh` em bash, espelhando o fluxo do `.bat`, com leitura de portas pelo `.env`, deploy via Docker Compose e push opcional.
+- [x] Criado `docker-compose.yml` para `api` e `web`, reutilizando o `.env` atual, `DATABASE_URL` principal e proxy interno de frontend para `/api` e `/ws`.
+- [x] Ajustado `.gitignore` para parar de ocultar `deploy_and_push.sh` e `docker-compose.yml`, deixando os arquivos visiveis no diff local.
+- [x] Deploy bash reforcado com fallback automatico de portas em uso, evitando falha quando `8080` ou a porta principal da API ja estiverem ocupadas na maquina.
+
 ## Refactor - Modularizacao do server.ts (Mar 2026)
 - [x] Extracao dos prompts de IA para modulo dedicado.
 - [x] Extracao das rotas de auth, system e settings para arquivos proprios.
@@ -206,3 +274,40 @@ Atualizado em: 2026-03-20
 - [x] Adicionado **Menu de Contexto (Clique Direito)** nos itens do histórico de chats. Agora é possível excluir rascunhos diretamente pela barra lateral de forma rápida.
 - [x] Corrigido bug de duplicação de inputs no painel de rascunhos.
 - [x] Design de workspace extremamente modernizado com *framer-motion*: introdução de glassmorphism avançado (backdrop-blur), micro-interações intensas com efeito `spring` e layouts fluídos, implementando a experiência exigida de visual deslumbrante e interatividade máxima.
+
+## Atualizacao extra - 2026-04-07 (Historico condensado no topo do chat)
+
+- [x] Historico lateral do workspace de criacao foi removido no modo de chat e substituido por um dropdown no topo esquerdo, ocupando o lugar do antigo botao de voltar.
+- [x] Novo trigger do dropdown passou a exibir o chat atual com contexto rapido do tema salvo ou da ultima atualizacao, seguindo a referencia visual solicitada.
+- [x] Dropdown do chat agora lista ate 3 chats recentes, oferece atalho para novo rascunho, opcao de excluir o chat atual e a acao de voltar para a lista principal.
+- [x] Adicionado wrapper `DropdownMenu` em `web/src/components/ui/dropdown-menu.tsx`, alinhando a implementacao ao stack Tailwind + shadcn/Radix usado no projeto.
+- [x] Build de `web` validado com sucesso em `bun run build` apos a refatoracao do historico do chat.
+
+## Atualizacao extra - 2026-04-07 (Workspace dividido em recentes, chat e preview)
+
+- [x] Workspace de criacao da landing foi reorganizado em 3 areas persistentes: coluna de recentes, coluna de chat e coluna de preview, seguindo a divisao visual solicitada.
+- [x] Adicionado botao para colapsar e reabrir a coluna do chat, liberando mais espaco para o preview sem perder o contexto da sessao.
+- [x] Preview passou a permanecer sempre visivel como painel dedicado, com estado vazio orientado quando ainda nao existe landing gerada.
+- [x] Lista de recentes ganhou navegacao direta entre sessoes, destaque visual da sessao ativa e atalho de exclusao no proprio card.
+- [x] Build de `web` validado com sucesso em `bun run build` apos a nova divisao da interface.
+
+## Atualizacao extra - 2026-04-07 (Ajustes finais do workspace e nome da IA)
+
+- [x] Workspace de criacao voltou ao formato anterior com dropdown superior para chats recentes, removendo novamente a coluna fixa de recentes.
+- [x] Nome visivel da IA foi padronizado para `Lume` no frontend, incluindo chat de landings, configuracoes, automacao e resumo de lead.
+- [x] Build de `web` validado com sucesso em `bun run build` apos o ajuste de nomenclatura para `Lume` e o retorno do dropdown superior.
+- [x] Dropdown superior do historico agora aparece apenas quando a sessao ja esta em conversa e com tema definido; antes disso, o workspace volta a exibir a sidebar de chats.
+
+- [x] Trigger compacto de chats foi simplificado de novo para ficar como a referencia: apenas a logo vermelha visivel, com hamburguer no hover abrindo a sidebar.
+
+- [x] Dropdown superior acima do chat foi restaurado no workspace compacto, substituindo novamente a versao de logo isolada.
+
+- [x] Logo vermelha no header compacto passou a abrir a sidebar principal em overlay dentro do modo imersivo de landings.
+
+- [x] Selecionar um rascunho com historico pela sidebar ou por `Continuar rascunho` agora abre direto no modo compacto, exibindo a barra superior sem clique extra.
+
+- [x] Seta ao lado do titulo no header compacto foi removida e o botao de colapsar agora realmente esconde a coluna do chat quando ha preview.
+
+- [x] Colapso do chat no modo compacto foi ajustado para recolher na propria coluna, evitando que o preview desça para baixo durante a transicao.
+
+- [x] Coluna do chat ganhou controle manual de largura por alca de resize, com limite maximo fixo de 600px.

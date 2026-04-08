@@ -47,10 +47,21 @@ export const LANDING_GENERATION_SYSTEM_PROMPT = [
   "Nao escreva HTML, markdown, comentarios ou texto fora do JSON."
 ].join("\n");
 
+export const LANDING_CODE_GENERATION_SYSTEM_PROMPT = [
+  "Voce e um designer e engenheiro frontend da Santos Tech especializado em landing pages de alta conversao.",
+  "Sua tarefa e gerar apenas um JSON valido contendo um bundle React para uma landing page.",
+  "Use exclusivamente React, Tailwind e componentes baseados em shadcn/Radix permitidos.",
+  "Nao use bibliotecas externas de UI, nao use HTML puro como base principal da interface e nao use APIs de rede ou browser sensiveis.",
+  "Nao invente preco, certificacao, vagas, datas, duracao, resultados ou promessas.",
+  "Nao escreva markdown, comentarios ou texto fora do JSON."
+].join("\n");
+
 export const LANDING_CREATION_SYSTEM_PROMPT = [
   "Voce e um consultor de criacao de ofertas e landing pages da Santos Tech.",
   "Sua tarefa e conduzir uma conversa curta com o operador e atualizar um draft estruturado da oferta.",
   "Voce pode sugerir titulo, slug, beneficios e CTA quando isso estiver claro no contexto.",
+  "Quando faltarem definicoes visuais ou estruturais, faca perguntas curtas e objetivas para evitar que a landing fique generica.",
+  "Priorize descobrir cores, tipografia, layout e os pontos principais do conteudo antes de assumir um visual padrao.",
   "Nao invente preco, datas, carga horaria exata, certificacao, promessas irreais ou URLs definitivas quando nao forem informadas.",
   "Quando nao souber um campo, deixe vazio e peca o dado faltante de forma objetiva.",
   "Responda apenas com JSON valido."
@@ -271,6 +282,114 @@ export function buildLandingGenerationPrompt(input: {
   ].join("\n");
 }
 
+export function buildLandingCodeGenerationPrompt(input: {
+  offerTitle: string;
+  offerSlug: string;
+  shortDescription?: string | null;
+  durationLabel?: string | null;
+  modality?: string | null;
+  visualTheme?: string | null;
+  colorPalette?: string | null;
+  typographyStyle?: string | null;
+  layoutStyle?: string | null;
+  approvedFacts: string[];
+  prompt: {
+    systemPrompt: string;
+    toneGuidelines?: string | null;
+    requiredRules: string[];
+    ctaRules: string[];
+  };
+  leadContext?: {
+    interestedCourse?: string | null;
+    courseMode?: string | null;
+    objective?: string | null;
+    level?: string | null;
+    summary?: string | null;
+  } | null;
+}): string {
+  return [
+    "Crie uma landing page do zero em React/TSX para a oferta abaixo.",
+    "A landing deve ser um bundle React valido, pronto para preview em sandbox e publicacao pelo app atual.",
+    "",
+    "--- Oferta oficial ---",
+    `Titulo: ${input.offerTitle}`,
+    `Slug: ${input.offerSlug}`,
+    `Descricao curta: ${input.shortDescription || "Nao informado"}`,
+    `Duracao: ${input.durationLabel || "Nao informado"}`,
+    `Modalidade: ${input.modality || "Nao informado"}`,
+    `Direcao visual desejada: ${input.visualTheme || "Nao informado"}`,
+    `Paleta de cores: ${input.colorPalette || "Nao informado"}`,
+    `Tipografia: ${input.typographyStyle || "Nao informado"}`,
+    `Layout preferido: ${input.layoutStyle || "Nao informado"}`,
+    "Fatos aprovados:",
+    ...input.approvedFacts.map((fact, index) => `${index + 1}. ${fact}`),
+    "",
+    "--- Diretrizes de tom ---",
+    input.prompt.toneGuidelines || "Sem diretriz adicional.",
+    "",
+    "--- Regras obrigatorias ---",
+    ...input.prompt.requiredRules.map((rule, index) => `${index + 1}. ${rule}`),
+    "",
+    "--- Regras de CTA ---",
+    ...input.prompt.ctaRules.map((rule, index) => `${index + 1}. ${rule}`),
+    "",
+    "--- Contexto complementar do lead ---",
+    `Interesse detectado: ${input.leadContext?.interestedCourse || "Nao informado"}`,
+    `Modalidade preferida: ${input.leadContext?.courseMode || "Nao informado"}`,
+    `Objetivo: ${input.leadContext?.objective || "Nao informado"}`,
+    `Nivel: ${input.leadContext?.level || "Nao informado"}`,
+    `Resumo: ${input.leadContext?.summary || "Nao informado"}`,
+    "",
+    "--- Runtime e restricoes ---",
+    "A exportacao principal deve ser um componente React default export.",
+    "O componente pode receber props com onPrimaryAction para o CTA principal.",
+    "Use imports somente desta allowlist:",
+    '1. "react"',
+    '2. "@/components/ui/button"',
+    '3. "@/components/ui/badge"',
+    '4. "@/components/ui/card"',
+    '5. "@/components/ui/dialog"',
+    '6. "@/components/ui/dropdown-menu"',
+    '7. "@/components/ui/sheet"',
+    '8. "@/components/ui/tooltip"',
+    '9. "lucide-react"',
+    "Arquivos locais relativos tambem sao permitidos.",
+    "Nao use fetch, XMLHttpRequest, WebSocket, eval, new Function, document.cookie, localStorage, sessionStorage ou scripts externos.",
+    "Prefira construir a interface com Button, Badge, Card e demais componentes permitidos em vez de divs estilizadas como componente principal.",
+    "",
+    "--- Formato de resposta ---",
+    "{",
+    '  "kind": "landing-code-bundle-v1",',
+    '  "framework": "vite-react",',
+    '  "entryFile": "App.tsx",',
+    '  "metadata": {',
+    '    "title": "Titulo da landing",',
+    '    "slug": "slug-da-landing",',
+    '    "description": "Descricao curta",',
+    '    "summary": "Resumo curto da versao gerada",',
+    '    "visualTheme": "Direcao visual usada"',
+    "  },",
+    '  "themeTokens": {',
+    '    "accent": "#22d3ee",',
+    '    "surface": "#0f172a",',
+    '    "canvas": "#08111f",',
+    '    "text": "#f8fafc",',
+    '    "muted": "#94a3b8"',
+    "  },",
+    '  "usedComponents": ["Button", "Card", "Badge"],',
+    '  "files": [',
+    '    {',
+    '      "path": "App.tsx",',
+    '      "summary": "Arquivo principal da landing",',
+    '      "code": "codigo TSX completo aqui"',
+    "    }",
+    "  ]",
+    "}",
+    "",
+    "Responda apenas com JSON valido."
+  ].join("\n");
+}
+
 export function buildLandingGenerationPromptInput(input: Parameters<typeof buildLandingGenerationPrompt>[0]): PromptInputMessage[] {
   return [
     {
@@ -294,6 +413,29 @@ export function buildLandingGenerationPromptInput(input: Parameters<typeof build
   ];
 }
 
+export function buildLandingCodeGenerationPromptInput(input: Parameters<typeof buildLandingCodeGenerationPrompt>[0]): PromptInputMessage[] {
+  return [
+    {
+      role: "system",
+      content: [
+        {
+          type: "input_text",
+          text: [LANDING_CODE_GENERATION_SYSTEM_PROMPT, input.prompt.systemPrompt].filter(Boolean).join("\n\n")
+        }
+      ]
+    },
+    {
+      role: "user",
+      content: [
+        {
+          type: "input_text",
+          text: buildLandingCodeGenerationPrompt(input)
+        }
+      ]
+    }
+  ];
+}
+
 export function buildLandingCreationPrompt(input: {
   currentDraft: {
     title: string;
@@ -306,6 +448,9 @@ export function buildLandingCreationPrompt(input: {
     ctaLabel: string;
     ctaUrl: string;
     visualTheme: string;
+    colorPalette: string;
+    typographyStyle: string;
+    layoutStyle: string;
     isActive: boolean;
   };
   history: ReplyHistoryMessage[];
@@ -343,9 +488,18 @@ export function buildLandingCreationPrompt(input: {
     '    "ctaLabel": "Texto do CTA",',
     '    "ctaUrl": "URL final ou vazio",',
     '    "visualTheme": "Direcao visual opcional",',
+    '    "colorPalette": "Paleta de cores opcional",',
+    '    "typographyStyle": "Estilo tipografico opcional",',
+    '    "layoutStyle": "Estrutura/layout opcional",',
     '    "isActive": true',
     "  }",
     "}",
+    "",
+    'Se faltarem detalhes de visual ou estrutura, use assistantMessage para pedir respostas curtas no formato:',
+    '"Cores: ..."',
+    '"Tipografia: ..."',
+    '"Layout: ..."',
+    'Se faltarem detalhes de conteudo, peca tambem "Pontos principais: ..." com 3 a 5 itens.',
     "",
     "Responda apenas com JSON valido."
   ].join("\n");

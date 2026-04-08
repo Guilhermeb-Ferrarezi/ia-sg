@@ -5,6 +5,7 @@ import dotenv from "dotenv";
 import { PrismaClient } from "@prisma/client";
 import { WebSocketServer, WebSocket } from "ws";
 import {
+  buildLandingCodeGenerationPromptInput,
   buildLandingCreationPromptInput,
   buildLandingGenerationPromptInput,
   buildLeadEnrichmentPromptInput,
@@ -55,6 +56,9 @@ type LandingCreationDraftValues = {
   ctaLabel: string;
   ctaUrl: string;
   visualTheme: string;
+  colorPalette: string;
+  typographyStyle: string;
+  layoutStyle: string;
   isActive: boolean;
 };
 
@@ -63,6 +67,136 @@ type LandingCreationHistoryMessage = {
   content: string;
   createdAt: string;
 };
+
+type LandingCreationSessionRecord = {
+  id: number;
+  title: string | null;
+  status: string;
+  offerDraftJson: unknown;
+  promptDraftJson: unknown;
+  chatHistoryJson: unknown;
+  builderDraftJson?: unknown;
+  codeBundleDraftJson?: unknown;
+  previewSectionsJson: unknown;
+  publishedOfferId: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+type LandingBuilderNode =
+  | {
+    id: string;
+    type: "hero";
+    props: {
+      eyebrow?: string;
+      headline?: string;
+      subheadline?: string;
+      highlights?: string[];
+      ctaLabel?: string;
+    };
+  }
+  | {
+    id: string;
+    type: "info-panel";
+    props: {
+      title?: string;
+      items?: Array<{ label: string; value: string }>;
+      helper?: string;
+    };
+  }
+  | {
+    id: string;
+    type: "feature-grid";
+    props: {
+      title?: string;
+      items?: Array<{ title: string; description: string }>;
+    };
+  }
+  | {
+    id: string;
+    type: "proof-list";
+    props: {
+      title?: string;
+      items?: string[];
+    };
+  }
+  | {
+    id: string;
+    type: "faq-list";
+    props: {
+      title?: string;
+      items?: Array<{ question: string; answer: string }>;
+    };
+  }
+  | {
+    id: string;
+    type: "cta-band";
+    props: {
+      eyebrow?: string;
+      label?: string;
+      helper?: string;
+    };
+  };
+
+type LandingBuilderDocument = {
+  version: number;
+  kind: "landing-builder-v1";
+  metadata: {
+    title: string;
+    slug: string;
+    description?: string;
+  };
+  theme: {
+    accent: string;
+    surface: string;
+    canvas: string;
+  };
+  nodes: LandingBuilderNode[];
+};
+
+type LandingCodeFile = {
+  path: string;
+  code: string;
+  summary?: string;
+};
+
+type LandingCodeBundle = {
+  version: number;
+  kind: "landing-code-bundle-v1";
+  framework: "vite-react";
+  source: "ai" | "fallback";
+  entryFile: string;
+  files: LandingCodeFile[];
+  metadata: {
+    title: string;
+    slug: string;
+    description?: string;
+    summary: string;
+    generatedAt: string;
+    visualTheme?: string;
+  };
+  themeTokens: {
+    accent: string;
+    surface: string;
+    canvas: string;
+    text: string;
+    muted: string;
+  };
+  usedComponents: string[];
+  usedImports: string[];
+};
+
+const LANDING_CODE_ALLOWED_IMPORTS = new Set([
+  "react",
+  "@/components/ui/button",
+  "@/components/ui/badge",
+  "@/components/ui/card",
+  "@/components/ui/dialog",
+  "@/components/ui/dropdown-menu",
+  "@/components/ui/sheet",
+  "@/components/ui/tooltip",
+  "lucide-react"
+]);
 
 const PORT = Number(process.env.PORT || "3000");
 const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || "";
@@ -98,6 +232,11 @@ const LOG_SKIP_GET_PATH_PREFIXES = (process.env.LOG_SKIP_GET_PATH_PREFIXES || "/
   .split(",")
   .map((entry) => entry.trim())
   .filter(Boolean);
+const CLOUDFLARE_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID || "";
+const CLOUDFLARE_ACCESS_KEY_ID = process.env.CLOUDFLARE_ACCESS_KEY_ID || "";
+const CLOUDFLARE_SECRET_ACCESS_KEY = process.env.CLOUDFLARE_SECRET_ACCESS_KEY || "";
+const CLOUDFLARE_BUCKET_NAME = process.env.CLOUDFLARE_BUCKET_NAME || "";
+const CLOUDFLARE_PUBLIC_URL = (process.env.CLOUDFLARE_PUBLIC_URL || "").replace(/\/+$/, "");
 
 const requiredEnv = [
   "DATABASE_URL",
@@ -125,7 +264,7 @@ if (!Number.isFinite(HISTORY_LIMIT) || HISTORY_LIMIT <= 0) {
   throw new Error("Invalid HISTORY_LIMIT env var.");
 }
 
-const allowedOrigins = (process.env.ALLOWED_ORIGINS || "http://localhost:5173")
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || "http://localhost:8080,http://localhost:8081")
   .split(",")
   .map((origin) => origin.trim())
   .filter(Boolean);
@@ -1681,7 +1820,7 @@ app.post("/api/landings/preview", requireSession, async (req, res) => {
     const offer = normalizeOfferPreviewPayload(req.body?.offer);
     const prompt = mergeLandingPromptPayload(await getGlobalLandingPromptSettings(), req.body?.prompt);
     const leadContext = normalizeLandingLeadContext(req.body?.leadContext);
-    const sectionsJson = await generateLandingSectionsForOfferData({
+    const landingCodeBundle = await generateLandingCodeBundleForOfferData({
       offer,
       promptConfig: prompt,
       leadContext,
@@ -1689,6 +1828,13 @@ app.post("/api/landings/preview", requireSession, async (req, res) => {
         eventPrefix: "landing.preview",
         offerId: null,
         slug: offer.slug
+      }
+    });
+    const sectionsJson = buildFallbackLandingSectionsFromOffer({
+      offer: {
+        ...offer,
+        ctaLabel: offer.ctaLabel,
+        visualTheme: null
       }
     });
 
@@ -1716,6 +1862,19 @@ app.post("/api/landings/preview", requireSession, async (req, res) => {
         version: 0,
         status: "preview",
         sectionsJson,
+        builderDocumentJson: buildLandingBuilderDocument({
+          offer: {
+            title: offer.title,
+            slug: offer.slug,
+            shortDescription: offer.shortDescription,
+            durationLabel: offer.durationLabel,
+            modality: offer.modality,
+            approvedFacts: offer.approvedFacts,
+            ctaLabel: offer.ctaLabel
+          },
+          sections: sectionsJson as Record<string, unknown>
+        }),
+        landingCodeBundleJson: landingCodeBundle,
         promptSnapshot: prompt,
         sourceFactsSnapshot: offer,
         publishedAt: null,
@@ -1820,12 +1979,28 @@ app.patch("/api/landing-creation/sessions/:id", requireSession, async (req, res)
   try {
     const session = await getLandingCreationSessionOrThrow(sessionId);
     const updates: any = {};
+    let nextDraft = normalizeLandingCreationDraft(session.offerDraftJson);
 
     if (req.body.offerDraft) {
-      updates.offerDraftJson = normalizeLandingCreationDraft(
+      nextDraft = normalizeLandingCreationDraft(
         req.body.offerDraft,
-        normalizeLandingCreationDraft(session.offerDraftJson)
+        nextDraft
       );
+      updates.offerDraftJson = nextDraft;
+      updates.builderDraftJson = buildLandingBuilderDraftFromDraft(nextDraft) as unknown as object;
+      updates.codeBundleDraftJson = buildDefaultLandingCodeBundleFromOffer({
+        offer: {
+          ...buildPreviewOfferFromDraft(nextDraft),
+          approvedFacts: buildPreviewOfferFromDraft(nextDraft).approvedFacts,
+          ctaLabel: buildPreviewOfferFromDraft(nextDraft).ctaLabel,
+          visualTheme: buildPreviewOfferFromDraft(nextDraft).visualTheme,
+          colorPalette: nextDraft.colorPalette,
+          typographyStyle: nextDraft.typographyStyle,
+          layoutStyle: nextDraft.layoutStyle
+        },
+        summary: "Bundle atualizado automaticamente a partir das alteracoes manuais do draft.",
+        source: "fallback"
+      }) as unknown as object;
     }
 
     if (req.body.promptDraft) {
@@ -2801,6 +2976,9 @@ function buildDefaultLandingCreationDraft(): LandingCreationDraftValues {
     ctaLabel: "",
     ctaUrl: "",
     visualTheme: "",
+    colorPalette: "",
+    typographyStyle: "",
+    layoutStyle: "",
     isActive: true
   };
 }
@@ -2819,6 +2997,9 @@ function normalizeLandingCreationDraft(payload: unknown, fallback?: LandingCreat
   if (typeof body.ctaLabel === "string") base.ctaLabel = utf8Text(body.ctaLabel).trim();
   if (typeof body.ctaUrl === "string") base.ctaUrl = utf8Text(body.ctaUrl).trim();
   if (typeof body.visualTheme === "string") base.visualTheme = utf8Text(body.visualTheme).trim();
+  if (typeof body.colorPalette === "string") base.colorPalette = utf8Text(body.colorPalette).trim();
+  if (typeof body.typographyStyle === "string") base.typographyStyle = utf8Text(body.typographyStyle).trim();
+  if (typeof body.layoutStyle === "string") base.layoutStyle = utf8Text(body.layoutStyle).trim();
   if (typeof body.isActive === "boolean") base.isActive = body.isActive;
 
   if (!base.slug && base.title) {
@@ -2826,6 +3007,58 @@ function normalizeLandingCreationDraft(payload: unknown, fallback?: LandingCreat
   }
 
   return base;
+}
+
+function buildLandingDesignSummary(input: {
+  visualTheme?: string | null;
+  colorPalette?: string | null;
+  typographyStyle?: string | null;
+  layoutStyle?: string | null;
+}): string {
+  const parts = [
+    input.visualTheme?.trim() || "",
+    input.colorPalette?.trim() ? `Cores: ${input.colorPalette.trim()}` : "",
+    input.typographyStyle?.trim() ? `Tipografia: ${input.typographyStyle.trim()}` : "",
+    input.layoutStyle?.trim() ? `Layout: ${input.layoutStyle.trim()}` : "",
+  ].filter(Boolean);
+
+  return parts.join(" | ");
+}
+
+function buildLandingCreationFollowUpMessage(draft: LandingCreationDraftValues, fallbackMessage: string): string {
+  const missingLines: string[] = [];
+
+  if (!draft.colorPalette.trim()) {
+    missingLines.push("Cores: ex. verde profissional, azul premium, laranja vibrante");
+  }
+  if (!draft.typographyStyle.trim()) {
+    missingLines.push("Tipografia: ex. elegante, tecnica, forte, editorial");
+  }
+  if (!draft.layoutStyle.trim()) {
+    missingLines.push("Layout: ex. hero + grid, editorial, cards, comparativo");
+  }
+  if (!draft.shortDescription.trim() && draft.approvedFacts.length === 0) {
+    missingLines.push("Pontos principais: 3 a 5 coisas que o aluno vai aprender ou receber");
+  }
+
+  if (!missingLines.length) {
+    return fallbackMessage;
+  }
+
+  const alreadyAsksDiscovery = ["Cores:", "Tipografia:", "Layout:", "Pontos principais:"].some((marker) =>
+    fallbackMessage.includes(marker)
+  );
+
+  if (alreadyAsksDiscovery) {
+    return fallbackMessage;
+  }
+
+  return [
+    fallbackMessage,
+    "",
+    `Para eu fugir do template e deixar a landing${draft.title ? ` de ${draft.title}` : ""} com mais personalidade, me responde assim:`,
+    ...missingLines,
+  ].join("\n");
 }
 
 function normalizeLandingCreationHistory(payload: unknown): LandingCreationHistoryMessage[] {
@@ -2865,6 +3098,8 @@ function computeLandingDraftReadiness(draft: LandingCreationDraftValues) {
 }
 
 function buildPreviewOfferFromDraft(draft: LandingCreationDraftValues) {
+  const visualDirection = buildLandingDesignSummary(draft);
+
   return {
     title: draft.title || "Nova oferta",
     slug: draft.slug || normalizeSlug(draft.title || "nova-oferta"),
@@ -2874,9 +3109,489 @@ function buildPreviewOfferFromDraft(draft: LandingCreationDraftValues) {
     approvedFacts: draft.approvedFacts.length ? draft.approvedFacts : [draft.shortDescription || draft.title || "Oferta em criacao"],
     ctaLabel: draft.ctaLabel || "Quero saber mais",
     ctaUrl: draft.ctaUrl || "https://wa.me/",
-    visualTheme: draft.visualTheme || null,
+    visualTheme: visualDirection || null,
     isActive: draft.isActive
   };
+}
+
+function buildFallbackLandingSectionsFromOffer(params: {
+  offer: {
+    title: string;
+    slug: string;
+    shortDescription: string | null;
+    durationLabel: string | null;
+    modality: string | null;
+    approvedFacts: string[];
+    ctaLabel: string;
+    visualTheme?: string | null;
+  };
+}) {
+  const approvedFacts = params.offer.approvedFacts.length
+    ? params.offer.approvedFacts
+    : [params.offer.shortDescription || params.offer.title];
+
+  return {
+    hero: {
+      eyebrow: params.offer.visualTheme || "Landing criada com IA",
+      headline: params.offer.title,
+      subheadline: params.offer.shortDescription || "Construa uma versao pronta para conversao em poucos minutos.",
+      highlights: approvedFacts.slice(0, 4)
+    },
+    benefits: approvedFacts.slice(0, 3).map((fact, index) => ({
+      title: fact,
+      description: index === 0
+        ? "Bloco principal construido a partir dos fatos aprovados da oferta."
+        : "Conteudo inicial pronto para ser refinado no chat ou no painel lateral."
+    })),
+    proof: {
+      title: "O que voce vai encontrar",
+      items: approvedFacts
+    },
+    faq: [],
+    cta: {
+      label: params.offer.ctaLabel,
+      helper: params.offer.shortDescription || "Fale com nossa equipe e veja a proxima etapa."
+    }
+  };
+}
+
+function normalizeLandingCodeFile(value: unknown): LandingCodeFile | null {
+  if (!value || typeof value !== "object") return null;
+  const file = value as Record<string, unknown>;
+  const path = typeof file.path === "string" ? utf8Text(file.path).trim() : "";
+  const code = typeof file.code === "string" ? file.code.trim() : "";
+  if (!path || !code) return null;
+
+  return {
+    path,
+    code,
+    summary: typeof file.summary === "string" ? utf8Text(file.summary).trim() : undefined
+  };
+}
+
+function extractImportSources(code: string): string[] {
+  const sources = new Set<string>();
+  const importPattern = /\b(?:import|export)\s+[^"'`]+?\s+from\s+["'`]([^"'`]+)["'`]/g;
+  const sideEffectImportPattern = /\bimport\s+["'`]([^"'`]+)["'`]/g;
+  const requirePattern = /\brequire\(\s*["'`]([^"'`]+)["'`]\s*\)/g;
+
+  for (const pattern of [importPattern, sideEffectImportPattern, requirePattern]) {
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(code)) !== null) {
+      if (match[1]) {
+        sources.add(match[1].trim());
+      }
+    }
+  }
+
+  return [...sources];
+}
+
+function normalizeLandingCodeBundle(value: unknown, fallback?: {
+  title: string;
+  slug: string;
+  shortDescription: string | null;
+  visualTheme?: string | null;
+}): LandingCodeBundle | null {
+  if (!value || typeof value !== "object") return null;
+  const bundle = value as Record<string, unknown>;
+  const files = Array.isArray(bundle.files)
+    ? bundle.files.map(normalizeLandingCodeFile).filter((file): file is LandingCodeFile => Boolean(file))
+    : [];
+  const entryFile = typeof bundle.entryFile === "string" ? utf8Text(bundle.entryFile).trim() : "";
+
+  if (
+    bundle.kind !== "landing-code-bundle-v1" ||
+    bundle.framework !== "vite-react" ||
+    !entryFile ||
+    !files.length ||
+    !files.some((file) => file.path === entryFile)
+  ) {
+    return null;
+  }
+
+  const metadata = bundle.metadata && typeof bundle.metadata === "object" ? bundle.metadata as Record<string, unknown> : {};
+  const themeTokens = bundle.themeTokens && typeof bundle.themeTokens === "object"
+    ? bundle.themeTokens as Record<string, unknown>
+    : {};
+  const usedImports = [...new Set(files.flatMap((file) => extractImportSources(file.code)))];
+
+  return {
+    version: typeof bundle.version === "number" ? bundle.version : 1,
+    kind: "landing-code-bundle-v1",
+    framework: "vite-react",
+    source: bundle.source === "fallback" ? "fallback" : "ai",
+    entryFile,
+    files,
+    metadata: {
+      title: typeof metadata.title === "string" ? utf8Text(metadata.title).trim() : fallback?.title || "Landing",
+      slug: typeof metadata.slug === "string" ? normalizeSlug(metadata.slug) : fallback?.slug || "landing",
+      description: typeof metadata.description === "string" ? utf8Text(metadata.description).trim() : fallback?.shortDescription || undefined,
+      summary: typeof metadata.summary === "string" ? utf8Text(metadata.summary).trim() : "Bundle React gerado para esta landing.",
+      generatedAt: typeof metadata.generatedAt === "string" ? metadata.generatedAt : new Date().toISOString(),
+      visualTheme: typeof metadata.visualTheme === "string" ? utf8Text(metadata.visualTheme).trim() : fallback?.visualTheme || undefined
+    },
+    themeTokens: {
+      accent: typeof themeTokens.accent === "string" ? themeTokens.accent : "#22d3ee",
+      surface: typeof themeTokens.surface === "string" ? themeTokens.surface : "#0f172a",
+      canvas: typeof themeTokens.canvas === "string" ? themeTokens.canvas : "#08111f",
+      text: typeof themeTokens.text === "string" ? themeTokens.text : "#f8fafc",
+      muted: typeof themeTokens.muted === "string" ? themeTokens.muted : "#94a3b8"
+    },
+    usedComponents: Array.isArray(bundle.usedComponents)
+      ? bundle.usedComponents
+        .map((entry) => (typeof entry === "string" ? utf8Text(entry).trim() : ""))
+        .filter(Boolean)
+      : [],
+    usedImports
+  };
+}
+
+function validateLandingCodeBundle(bundle: LandingCodeBundle): string[] {
+  const issues: string[] = [];
+  const normalizedPaths = new Set(bundle.files.map((file) => file.path));
+
+  for (const file of bundle.files) {
+    const imports = extractImportSources(file.code);
+    for (const source of imports) {
+      if (source.startsWith("./") || source.startsWith("../")) {
+        const base = file.path.split("/").slice(0, -1).join("/");
+        const normalized = normalizePathSegments([base, source].filter(Boolean).join("/"));
+        if (!normalizedPaths.has(normalized)) {
+          issues.push(`Import relativo ausente: ${source} em ${file.path}`);
+        }
+        continue;
+      }
+
+      if (!LANDING_CODE_ALLOWED_IMPORTS.has(source)) {
+        issues.push(`Import nao permitido: ${source}`);
+      }
+    }
+
+    const bannedPatterns: Array<[RegExp, string]> = [
+      [/\beval\s*\(/, "eval"],
+      [/\bnew Function\s*\(/, "new Function"],
+      [/\bfetch\s*\(/, "fetch"],
+      [/\bXMLHttpRequest\b/, "XMLHttpRequest"],
+      [/\bWebSocket\b/, "WebSocket"],
+      [/\bdocument\.cookie\b/, "document.cookie"],
+      [/\blocalStorage\b/, "localStorage"],
+      [/\bsessionStorage\b/, "sessionStorage"],
+      [/\bimport\s*\(/, "import dinamico"]
+    ];
+
+    for (const [pattern, label] of bannedPatterns) {
+      if (pattern.test(file.code)) {
+        issues.push(`Uso nao permitido de ${label} em ${file.path}`);
+      }
+    }
+  }
+
+  if (!bundle.usedImports.some((item) => item.startsWith("@/components/ui/"))) {
+    issues.push("O bundle precisa usar componentes shadcn/Radix da allowlist.");
+  }
+
+  return issues;
+}
+
+function normalizePathSegments(value: string): string {
+  const segments = value.split("/").filter(Boolean);
+  const output: string[] = [];
+  for (const segment of segments) {
+    if (segment === ".") continue;
+    if (segment === "..") {
+      output.pop();
+      continue;
+    }
+    output.push(segment);
+  }
+  return output.join("/");
+}
+
+function buildDefaultLandingCodeBundleFromOffer(params: {
+  offer: {
+    title: string;
+    slug: string;
+    shortDescription: string | null;
+    durationLabel: string | null;
+    modality: string | null;
+    approvedFacts: string[];
+    ctaLabel: string;
+    visualTheme?: string | null;
+    colorPalette?: string | null;
+    typographyStyle?: string | null;
+    layoutStyle?: string | null;
+  };
+  summary: string;
+  source?: "ai" | "fallback";
+}): LandingCodeBundle {
+  const approvedFacts = params.offer.approvedFacts.length
+    ? params.offer.approvedFacts
+    : [params.offer.shortDescription || params.offer.title];
+  const payload = {
+    title: params.offer.title,
+    description: params.offer.shortDescription || "Landing criada com IA para esta oferta.",
+    durationLabel: params.offer.durationLabel || "Consulte disponibilidade",
+    modality: params.offer.modality || "A combinar",
+    facts: approvedFacts.slice(0, 6),
+    ctaLabel: params.offer.ctaLabel,
+    visualTheme: params.offer.visualTheme || "direcao cinematica com foco em conversao"
+  };
+  const payloadLiteral = JSON.stringify(payload, null, 2);
+  const code = [
+    'import * as React from "react";',
+    'import { Button } from "@/components/ui/button";',
+    'import { Badge } from "@/components/ui/badge";',
+    'import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";',
+    'import { ArrowRight, CheckCircle2, Sparkles } from "lucide-react";',
+    "",
+    `const content = ${payloadLiteral};`,
+    "",
+    "export default function LandingPage({ onPrimaryAction }: { onPrimaryAction?: () => void }) {",
+    "  return (",
+    '    <main className="min-h-screen bg-[#020617] text-slate-50">', 
+    '      <section className="relative overflow-hidden border-b border-white/6 bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.18),_transparent_28%),radial-gradient(circle_at_82%_18%,_rgba(251,191,36,0.12),_transparent_24%),linear-gradient(150deg,_#020617,_#0f172a_46%,_#082f49)]">', 
+    '        <div className="mx-auto flex max-w-7xl flex-col gap-10 px-6 py-16 lg:grid lg:grid-cols-[minmax(0,1.08fr)_340px] lg:items-center lg:px-10">', 
+    '          <div className="flex flex-col gap-8">', 
+    '            <div className="flex flex-wrap items-center gap-3">', 
+    '              <Badge><Sparkles data-icon="inline-start" />Landing criada com IA</Badge>', 
+    '              <Badge variant="secondary">{content.visualTheme}</Badge>', 
+    "            </div>",
+    '            <div className="flex flex-col gap-5">', 
+    '              <h1 className="max-w-4xl text-5xl font-black tracking-tight text-white md:text-7xl">{content.title}</h1>', 
+    '              <p className="max-w-3xl text-lg leading-8 text-slate-200 md:text-xl">{content.description}</p>', 
+    "            </div>",
+    '            <div className="flex flex-wrap gap-3">', 
+    '              {content.facts.slice(0, 4).map((fact) => (<Badge key={fact} variant="secondary">{fact}</Badge>))}', 
+    "            </div>",
+    '            <div className="flex flex-wrap items-center gap-4">', 
+    '              <Button size="lg" onClick={onPrimaryAction}><ArrowRight data-icon="inline-end" />{content.ctaLabel}</Button>', 
+    '              <p className="text-sm font-medium text-slate-400">Pronto para receber refinamentos por chat e painel lateral.</p>', 
+    "            </div>",
+    "          </div>",
+    '          <Card className="bg-slate-950/72 backdrop-blur-xl">', 
+    "            <CardHeader>",
+    '              <Badge variant="secondary">Resumo rapido</Badge>',
+    '              <CardTitle>{content.title}</CardTitle>',
+    '              <CardDescription>{content.description}</CardDescription>',
+    "            </CardHeader>",
+    '            <CardContent className="flex flex-col gap-4">', 
+    '              <div className="grid gap-3 text-sm text-slate-200">', 
+    '                <div className="flex items-center justify-between gap-3 rounded-2xl border border-white/8 bg-white/5 px-4 py-3"><span className="text-xs font-bold uppercase tracking-[0.24em] text-slate-500">Duracao</span><span>{content.durationLabel}</span></div>', 
+    '                <div className="flex items-center justify-between gap-3 rounded-2xl border border-white/8 bg-white/5 px-4 py-3"><span className="text-xs font-bold uppercase tracking-[0.24em] text-slate-500">Modalidade</span><span>{content.modality}</span></div>', 
+    "              </div>",
+    '              <div className="flex flex-col gap-3 rounded-3xl border border-emerald-400/12 bg-emerald-500/10 p-5">', 
+    '                {content.facts.slice(0, 3).map((fact) => (<div key={fact} className="flex items-start gap-3 text-sm leading-7 text-emerald-50"><CheckCircle2 className="mt-1 size-4 shrink-0 text-emerald-300" /><span>{fact}</span></div>))}', 
+    "              </div>",
+    "            </CardContent>",
+    "          </Card>",
+    "        </div>",
+    "      </section>",
+    "",
+    '      <section className="mx-auto grid max-w-7xl gap-5 px-6 py-16 md:grid-cols-3 lg:px-10">', 
+    '        {content.facts.slice(0, 3).map((fact, index) => (', 
+    '          <Card key={fact} className="h-full">', 
+    "            <CardHeader>",
+    '              <Badge variant="secondary">Bloco {index + 1}</Badge>',
+    '              <CardTitle className="text-xl">{fact}</CardTitle>',
+    '              <CardDescription>Secao inicial criada com base nos fatos aprovados da oferta.</CardDescription>',
+    "            </CardHeader>",
+    "          </Card>",
+    "        ))}",
+    "      </section>",
+    "    </main>",
+    "  );",
+    "}"
+  ].join("\n");
+
+  return {
+    version: 1,
+    kind: "landing-code-bundle-v1",
+    framework: "vite-react",
+    source: params.source || "fallback",
+    entryFile: "App.tsx",
+    files: [
+      {
+        path: "App.tsx",
+        summary: "Arquivo principal da landing gerada no runtime controlado.",
+        code
+      }
+    ],
+    metadata: {
+      title: params.offer.title,
+      slug: params.offer.slug,
+      description: params.offer.shortDescription || undefined,
+      summary: params.summary,
+      generatedAt: new Date().toISOString(),
+      visualTheme: params.offer.visualTheme || undefined
+    },
+    themeTokens: {
+      accent: "#22d3ee",
+      surface: "#0f172a",
+      canvas: "#020617",
+      text: "#f8fafc",
+      muted: "#94a3b8"
+    },
+    usedComponents: ["Button", "Badge", "Card", "CardHeader", "CardTitle", "CardDescription", "CardContent"],
+    usedImports: [
+      "react",
+      "@/components/ui/button",
+      "@/components/ui/badge",
+      "@/components/ui/card",
+      "lucide-react"
+    ]
+  };
+}
+
+function buildLandingBuilderDocument(params: {
+  offer: {
+    title: string;
+    slug: string;
+    shortDescription: string | null;
+    durationLabel: string | null;
+    modality: string | null;
+    approvedFacts: string[];
+    ctaLabel: string;
+  };
+  sections: Record<string, unknown>;
+  version?: number;
+}): LandingBuilderDocument {
+  const sections = params.sections;
+  const hero = typeof sections.hero === "object" && sections.hero !== null ? sections.hero as Record<string, unknown> : {};
+  const benefits = Array.isArray(sections.benefits) ? sections.benefits : [];
+  const proof = typeof sections.proof === "object" && sections.proof !== null ? sections.proof as Record<string, unknown> : {};
+  const faq = Array.isArray(sections.faq) ? sections.faq : [];
+  const cta = typeof sections.cta === "object" && sections.cta !== null ? sections.cta as Record<string, unknown> : {};
+
+  const benefitItems = benefits
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") return null;
+      const item = entry as Record<string, unknown>;
+      const title = typeof item.title === "string" ? utf8Text(item.title).trim() : "";
+      const description = typeof item.description === "string" ? utf8Text(item.description).trim() : "";
+      return title && description ? { title, description } : null;
+    })
+    .filter((entry): entry is { title: string; description: string } => Boolean(entry));
+
+  const faqItems = faq
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") return null;
+      const item = entry as Record<string, unknown>;
+      const question = typeof item.question === "string" ? utf8Text(item.question).trim() : "";
+      const answer = typeof item.answer === "string" ? utf8Text(item.answer).trim() : "";
+      return question && answer ? { question, answer } : null;
+    })
+    .filter((entry): entry is { question: string; answer: string } => Boolean(entry));
+
+  return {
+    version: params.version || 1,
+    kind: "landing-builder-v1",
+    metadata: {
+      title: params.offer.title,
+      slug: params.offer.slug,
+      description: params.offer.shortDescription || undefined
+    },
+    theme: {
+      accent: "#22d3ee",
+      surface: "#0f172a",
+      canvas: "#08111f"
+    },
+    nodes: [
+      {
+        id: "hero",
+        type: "hero",
+        props: {
+          eyebrow: typeof hero.eyebrow === "string" ? utf8Text(hero.eyebrow).trim() : "Transforme sua carreira",
+          headline: typeof hero.headline === "string" ? utf8Text(hero.headline).trim() : params.offer.title,
+          subheadline: typeof hero.subheadline === "string" ? utf8Text(hero.subheadline).trim() : (params.offer.shortDescription || ""),
+          highlights: parseStringArray(hero.highlights).length ? parseStringArray(hero.highlights) : params.offer.approvedFacts,
+          ctaLabel: typeof cta.label === "string" ? utf8Text(cta.label).trim() : params.offer.ctaLabel
+        }
+      },
+      {
+        id: "summary",
+        type: "info-panel",
+        props: {
+          title: params.offer.title,
+          items: [
+            { label: "Duracao", value: params.offer.durationLabel || "Consulte disponibilidade" },
+            { label: "Modalidade", value: params.offer.modality || "A combinar" },
+            { label: "Versao", value: `Landing v${params.version || 1}` }
+          ],
+          helper: typeof cta.helper === "string" ? utf8Text(cta.helper).trim() : "Fale com a equipe e veja a melhor forma de entrar agora."
+        }
+      },
+      {
+        id: "benefits",
+        type: "feature-grid",
+        props: {
+          title: "Destaques",
+          items: benefitItems
+        }
+      },
+      {
+        id: "proof",
+        type: "proof-list",
+        props: {
+          title: typeof proof.title === "string" ? utf8Text(proof.title).trim() : "Diferenciais",
+          items: parseStringArray(proof.items).length ? parseStringArray(proof.items) : params.offer.approvedFacts
+        }
+      },
+      {
+        id: "faq",
+        type: "faq-list",
+        props: {
+          title: "FAQ rapido",
+          items: faqItems
+        }
+      },
+      {
+        id: "cta",
+        type: "cta-band",
+        props: {
+          eyebrow: "Pronto para avancar",
+          label: typeof cta.label === "string" ? utf8Text(cta.label).trim() : params.offer.ctaLabel,
+          helper: typeof cta.helper === "string" ? utf8Text(cta.helper).trim() : (params.offer.shortDescription || "")
+        }
+      }
+    ]
+  };
+}
+
+function buildLandingBuilderDraftFromDraft(draft: LandingCreationDraftValues): LandingBuilderDocument {
+  return buildLandingBuilderDocument({
+    offer: {
+      title: draft.title || "Nova oferta",
+      slug: draft.slug || normalizeSlug(draft.title || "nova-oferta"),
+      shortDescription: draft.shortDescription || draft.title || "Oferta em criacao",
+      durationLabel: draft.durationLabel || null,
+      modality: draft.modality || null,
+      approvedFacts: draft.approvedFacts.length ? draft.approvedFacts : [draft.shortDescription || draft.title || "Oferta em criacao"],
+      ctaLabel: draft.ctaLabel || "Quero saber mais"
+    },
+    sections: {
+      hero: {
+        eyebrow: "Construa sua landing com IA",
+        headline: draft.title || "Nova landing",
+        subheadline: draft.shortDescription || "Descreva a oferta e refine a pagina em tempo real.",
+        highlights: draft.approvedFacts
+      },
+      benefits: draft.approvedFacts.slice(0, 3).map((fact) => ({
+        title: fact,
+        description: "Bloco inicial gerado a partir dos fatos aprovados."
+      })),
+      proof: {
+        title: "Pontos aprovados",
+        items: draft.approvedFacts
+      },
+      faq: [],
+      cta: {
+        label: draft.ctaLabel || "Quero saber mais",
+        helper: draft.shortDescription || "Continue refinando no chat ou publique quando estiver pronto."
+      }
+    },
+    version: 1
+  });
 }
 
 function parseStringArray(value: unknown): string[] {
@@ -2896,6 +3611,110 @@ function parseStringArray(value: unknown): string[] {
 
 function serializeOfferJsonList(value: unknown): string[] {
   return parseStringArray(value);
+}
+
+function sha256Hex(input: string): string {
+  return crypto.createHash("sha256").update(input, "utf8").digest("hex");
+}
+
+function hmacSha256(key: Buffer | string, value: string, encoding?: crypto.BinaryToTextEncoding): Buffer | string {
+  const digest = crypto.createHmac("sha256", key).update(value, "utf8").digest();
+  return encoding ? digest.toString(encoding) : digest;
+}
+
+function buildR2CanonicalUri(bucket: string, key: string): string {
+  return `/${[bucket, ...key.split("/").filter(Boolean)].map((segment) => encodeURIComponent(segment)).join("/")}`;
+}
+
+function buildR2PublicAssetUrl(key: string): string | null {
+  if (!CLOUDFLARE_PUBLIC_URL || !CLOUDFLARE_BUCKET_NAME) return null;
+  return `${CLOUDFLARE_PUBLIC_URL}/${CLOUDFLARE_BUCKET_NAME}/${key.split("/").map((segment) => encodeURIComponent(segment)).join("/")}`;
+}
+
+function getLandingArtifactMetaFromPage(page: {
+  id: number;
+  version: number;
+  sourceFactsSnapshot?: unknown;
+}): { key: string; url: string | null } | null {
+  const snapshot = typeof page.sourceFactsSnapshot === "object" && page.sourceFactsSnapshot !== null
+    ? page.sourceFactsSnapshot as Record<string, unknown>
+    : {};
+  const slug = typeof snapshot.slug === "string" ? normalizeSlug(snapshot.slug) : "";
+  if (!slug || !CLOUDFLARE_BUCKET_NAME) return null;
+  const key = `landings/${slug}/v${page.version}-page-${page.id}.json`;
+  return {
+    key,
+    url: buildR2PublicAssetUrl(key)
+  };
+}
+
+async function uploadLandingArtifactToR2(params: {
+  offerId: number;
+  landingPageId: number;
+  slug: string;
+  version: number;
+  payload: Record<string, unknown>;
+}): Promise<{ key: string; url: string | null } | null> {
+  if (!CLOUDFLARE_ACCOUNT_ID || !CLOUDFLARE_ACCESS_KEY_ID || !CLOUDFLARE_SECRET_ACCESS_KEY || !CLOUDFLARE_BUCKET_NAME) {
+    return null;
+  }
+
+  const key = `landings/${normalizeSlug(params.slug || `offer-${params.offerId}`)}/v${params.version}-page-${params.landingPageId}.json`;
+  const endpoint = `https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com`;
+  const method = "PUT";
+  const contentType = "application/json; charset=utf-8";
+  const body = JSON.stringify(params.payload, null, 2);
+  const hashedPayload = sha256Hex(body);
+  const now = new Date();
+  const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, "");
+  const dateStamp = amzDate.slice(0, 8);
+  const host = `${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com`;
+  const canonicalUri = buildR2CanonicalUri(CLOUDFLARE_BUCKET_NAME, key);
+  const canonicalHeaders = `content-type:${contentType}\nhost:${host}\nx-amz-content-sha256:${hashedPayload}\nx-amz-date:${amzDate}\n`;
+  const signedHeaders = "content-type;host;x-amz-content-sha256;x-amz-date";
+  const canonicalRequest = [
+    method,
+    canonicalUri,
+    "",
+    canonicalHeaders,
+    signedHeaders,
+    hashedPayload
+  ].join("\n");
+  const credentialScope = `${dateStamp}/auto/s3/aws4_request`;
+  const stringToSign = [
+    "AWS4-HMAC-SHA256",
+    amzDate,
+    credentialScope,
+    sha256Hex(canonicalRequest)
+  ].join("\n");
+  const kDate = hmacSha256(`AWS4${CLOUDFLARE_SECRET_ACCESS_KEY}`, dateStamp) as Buffer;
+  const kRegion = hmacSha256(kDate, "auto") as Buffer;
+  const kService = hmacSha256(kRegion, "s3") as Buffer;
+  const kSigning = hmacSha256(kService, "aws4_request") as Buffer;
+  const signature = hmacSha256(kSigning, stringToSign, "hex") as string;
+  const authorization = `AWS4-HMAC-SHA256 Credential=${CLOUDFLARE_ACCESS_KEY_ID}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+
+  const response = await fetch(`${endpoint}${canonicalUri}`, {
+    method,
+    headers: {
+      Authorization: authorization,
+      "Content-Type": contentType,
+      Host: host,
+      "x-amz-content-sha256": hashedPayload,
+      "x-amz-date": amzDate
+    },
+    body
+  });
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(`Falha ao enviar artefato ao R2 (${response.status}): ${detail || "sem detalhes"}`);
+  }
+
+  return {
+    key,
+    url: buildR2PublicAssetUrl(key)
+  };
 }
 
 function mapOffer(offer: {
@@ -2948,18 +3767,25 @@ function mapLandingPageSummary(page: {
   version: number;
   status: string;
   sectionsJson: unknown;
+  builderDocumentJson?: unknown;
+  landingCodeBundleJson?: unknown;
   promptSnapshot: unknown;
   sourceFactsSnapshot: unknown;
   publishedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }): Record<string, unknown> {
+  const artifact = getLandingArtifactMetaFromPage(page);
   return {
     id: page.id,
     offerId: page.offerId,
     version: page.version,
     status: page.status,
     sectionsJson: page.sectionsJson,
+    builderDocumentJson: page.builderDocumentJson ?? null,
+    landingCodeBundleJson: page.landingCodeBundleJson ?? null,
+    artifactKey: artifact?.key || null,
+    artifactUrl: artifact?.url || null,
     promptSnapshot: page.promptSnapshot,
     sourceFactsSnapshot: page.sourceFactsSnapshot,
     publishedAt: page.publishedAt,
@@ -2975,6 +3801,8 @@ function mapLandingCreationSession(session: {
   offerDraftJson: unknown;
   promptDraftJson: unknown;
   chatHistoryJson: unknown;
+  builderDraftJson?: unknown;
+  codeBundleDraftJson?: unknown;
   previewSectionsJson: unknown;
   publishedOfferId: number | null;
   createdAt: Date;
@@ -2985,8 +3813,39 @@ function mapLandingCreationSession(session: {
   const chatHistory = normalizeLandingCreationHistory(session.chatHistoryJson);
   const readiness = computeLandingDraftReadiness(draft);
   const previewOffer = buildPreviewOfferFromDraft(draft);
-  const previewSections = session.previewSectionsJson && typeof session.previewSectionsJson === "object"
-    ? session.previewSectionsJson
+  const hasStoredPreview = session.previewSectionsJson && typeof session.previewSectionsJson === "object";
+  const previewSections = hasStoredPreview ? session.previewSectionsJson : null;
+  const builderDraft = session.builderDraftJson && typeof session.builderDraftJson === "object"
+    ? session.builderDraftJson
+    : buildLandingBuilderDraftFromDraft(draft);
+  const codeBundleDraft = session.codeBundleDraftJson && typeof session.codeBundleDraftJson === "object"
+    ? session.codeBundleDraftJson
+    : buildDefaultLandingCodeBundleFromOffer({
+      offer: {
+        ...previewOffer,
+        approvedFacts: previewOffer.approvedFacts,
+        ctaLabel: previewOffer.ctaLabel,
+        visualTheme: previewOffer.visualTheme,
+        colorPalette: draft.colorPalette,
+        typographyStyle: draft.typographyStyle,
+        layoutStyle: draft.layoutStyle
+      },
+      summary: "Bundle inicial criado a partir do draft da oferta.",
+      source: "fallback"
+    });
+  const previewBuilder = previewSections
+    ? buildLandingBuilderDocument({
+        offer: {
+          title: previewOffer.title,
+          slug: previewOffer.slug,
+          shortDescription: previewOffer.shortDescription,
+          durationLabel: previewOffer.durationLabel,
+          modality: previewOffer.modality,
+          approvedFacts: previewOffer.approvedFacts,
+          ctaLabel: previewOffer.ctaLabel
+        },
+        sections: previewSections as Record<string, unknown>
+      })
     : null;
 
   return {
@@ -2997,6 +3856,8 @@ function mapLandingCreationSession(session: {
     promptDraft,
     chatHistory,
     readiness,
+    builderDraft,
+    codeBundleDraft,
     preview: previewSections
       ? {
           offer: {
@@ -3022,6 +3883,8 @@ function mapLandingCreationSession(session: {
             version: 0,
             status: "preview",
             sectionsJson: previewSections,
+            builderDocumentJson: previewBuilder,
+            landingCodeBundleJson: codeBundleDraft,
             promptSnapshot: promptDraft,
             sourceFactsSnapshot: draft,
             publishedAt: null,
@@ -3125,14 +3988,28 @@ async function generateLandingPageForOffer(offerId: number, leadContext?: {
   if (!offer) throw new Error("Oferta nao encontrada.");
   const promptConfig = await getOfferLandingPromptSettings(offerId);
   const approvedFacts = serializeOfferJsonList(offer.approvedFacts);
-  const sectionsJson = await generateLandingSectionsForOfferData({
+  const fallbackSections = buildFallbackLandingSectionsFromOffer({
     offer: {
       title: offer.title,
       slug: offer.slug,
       shortDescription: offer.shortDescription,
       durationLabel: offer.durationLabel,
       modality: offer.modality,
-      approvedFacts
+      approvedFacts,
+      ctaLabel: offer.ctaLabel,
+      visualTheme: offer.visualTheme
+    }
+  });
+  const landingCodeBundle = await generateLandingCodeBundleForOfferData({
+    offer: {
+      title: offer.title,
+      slug: offer.slug,
+      shortDescription: offer.shortDescription,
+      durationLabel: offer.durationLabel,
+      modality: offer.modality,
+      approvedFacts,
+      ctaLabel: offer.ctaLabel,
+      visualTheme: offer.visualTheme
     },
     promptConfig,
     leadContext,
@@ -3152,7 +4029,21 @@ async function generateLandingPageForOffer(offerId: number, leadContext?: {
       offerId,
       version: (latest?.version || 0) + 1,
       status: "draft",
-      sectionsJson: sectionsJson as object,
+      sectionsJson: fallbackSections as object,
+      builderDocumentJson: buildLandingBuilderDocument({
+        offer: {
+          title: offer.title,
+          slug: offer.slug,
+          shortDescription: offer.shortDescription,
+          durationLabel: offer.durationLabel,
+          modality: offer.modality,
+          approvedFacts,
+          ctaLabel: offer.ctaLabel
+        },
+        sections: fallbackSections as Record<string, unknown>,
+        version: (latest?.version || 0) + 1
+      }) as unknown as object,
+      landingCodeBundleJson: landingCodeBundle as unknown as object,
       promptSnapshot: {
         ...promptConfig,
         scope: promptConfig.scope,
@@ -3166,7 +4057,7 @@ async function generateLandingPageForOffer(offerId: number, leadContext?: {
         shortDescription: offer.shortDescription,
         approvedFacts
       }
-    }
+    } as any
   });
   logEvent("info", "landing.generate.succeeded", { offerId, landingPageId: page.id, version: page.version, slug: offer.slug });
   return page;
@@ -3198,6 +4089,7 @@ async function generateLandingSectionsForOfferData(params: {
     eventPrefix: string;
     offerId?: number | null;
     slug: string;
+    sessionId?: number | null;
   };
 }) {
   const approvedFacts = params.offer.approvedFacts.length
@@ -3220,6 +4112,7 @@ async function generateLandingSectionsForOfferData(params: {
   });
 
   logEvent("info", `${params.eventMeta.eventPrefix}.started`, {
+    sessionId: params.eventMeta.sessionId ?? null,
     offerId: params.eventMeta.offerId,
     slug: params.eventMeta.slug
   });
@@ -3240,6 +4133,7 @@ async function generateLandingSectionsForOfferData(params: {
   if (!resp.ok) {
     const detail = await resp.text().catch(() => "");
     logEvent("error", `${params.eventMeta.eventPrefix}.failed`, {
+      sessionId: params.eventMeta.sessionId ?? null,
       offerId: params.eventMeta.offerId,
       slug: params.eventMeta.slug,
       statusCode: resp.status,
@@ -3252,6 +4146,7 @@ async function generateLandingSectionsForOfferData(params: {
   const sectionsJson = extractFirstJsonObject(parseResponseOutputText(data));
   if (!sectionsJson) {
     logEvent("error", `${params.eventMeta.eventPrefix}.failed`, {
+      sessionId: params.eventMeta.sessionId ?? null,
       offerId: params.eventMeta.offerId,
       slug: params.eventMeta.slug,
       message: "json_invalido"
@@ -3262,25 +4157,206 @@ async function generateLandingSectionsForOfferData(params: {
   return sectionsJson;
 }
 
+async function generateLandingCodeBundleForOfferData(params: {
+  offer: {
+    title: string;
+    slug: string;
+    shortDescription: string | null;
+    durationLabel: string | null;
+    modality: string | null;
+    approvedFacts: string[];
+    ctaLabel: string;
+    visualTheme?: string | null;
+    colorPalette?: string | null;
+    typographyStyle?: string | null;
+    layoutStyle?: string | null;
+  };
+  promptConfig: {
+    systemPrompt: string;
+    toneGuidelines: string;
+    requiredRules: string[];
+    ctaRules: string[];
+  };
+  leadContext?: {
+    interestedCourse?: string | null;
+    courseMode?: string | null;
+    objective?: string | null;
+    level?: string | null;
+    summary?: string | null;
+  };
+  eventMeta: {
+    eventPrefix: string;
+    offerId?: number | null;
+    slug: string;
+    sessionId?: number | null;
+  };
+}): Promise<LandingCodeBundle> {
+  const approvedFacts = params.offer.approvedFacts.length
+    ? params.offer.approvedFacts
+    : [params.offer.shortDescription || params.offer.title];
+  const fallbackBundle = buildDefaultLandingCodeBundleFromOffer({
+    offer: {
+      ...params.offer,
+      approvedFacts
+    },
+    summary: "Bundle fallback gerado a partir dos dados estruturados da oferta.",
+    source: "fallback"
+  });
+
+  logEvent("info", `${params.eventMeta.eventPrefix}.started`, {
+    sessionId: params.eventMeta.sessionId ?? null,
+    offerId: params.eventMeta.offerId,
+    slug: params.eventMeta.slug,
+    mode: "react_bundle"
+  });
+
+  const aiConfig = await syncRuntimeAIConfigFromDatabase();
+  const resp = await fetchWithRetry(`${aiConfig.baseUrl}/responses`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${OPENAI_API_KEY}`
+    },
+    body: JSON.stringify({
+      model: aiConfig.model,
+      input: buildLandingCodeGenerationPromptInput({
+        offerTitle: params.offer.title,
+        offerSlug: params.offer.slug,
+        shortDescription: params.offer.shortDescription,
+        durationLabel: params.offer.durationLabel,
+        modality: params.offer.modality,
+        visualTheme: params.offer.visualTheme,
+        colorPalette: params.offer.colorPalette,
+        typographyStyle: params.offer.typographyStyle,
+        layoutStyle: params.offer.layoutStyle,
+        approvedFacts,
+        prompt: {
+          systemPrompt: params.promptConfig.systemPrompt,
+          toneGuidelines: params.promptConfig.toneGuidelines,
+          requiredRules: params.promptConfig.requiredRules,
+          ctaRules: params.promptConfig.ctaRules
+        },
+        leadContext: params.leadContext
+      }),
+      max_output_tokens: 2200
+    })
+  }).catch((err) => {
+    logEvent("error", `${params.eventMeta.eventPrefix}.failed`, {
+      sessionId: params.eventMeta.sessionId ?? null,
+      offerId: params.eventMeta.offerId,
+      slug: params.eventMeta.slug,
+      mode: "react_bundle",
+      message: formatError(err)
+    });
+    return null;
+  });
+
+  if (!resp) {
+    return fallbackBundle;
+  }
+
+  if (!resp.ok) {
+    const detail = await resp.text().catch(() => "");
+    logEvent("error", `${params.eventMeta.eventPrefix}.failed`, {
+      sessionId: params.eventMeta.sessionId ?? null,
+      offerId: params.eventMeta.offerId,
+      slug: params.eventMeta.slug,
+      mode: "react_bundle",
+      statusCode: resp.status,
+      message: detail
+    });
+    return fallbackBundle;
+  }
+
+  const data = await resp.json();
+  const parsed = extractFirstJsonObject(parseResponseOutputText(data));
+  const normalizedBundle = normalizeLandingCodeBundle(parsed, {
+    title: params.offer.title,
+    slug: params.offer.slug,
+    shortDescription: params.offer.shortDescription,
+    visualTheme: params.offer.visualTheme
+  });
+
+  if (!normalizedBundle) {
+    logEvent("warn", `${params.eventMeta.eventPrefix}.fallback_used`, {
+      sessionId: params.eventMeta.sessionId ?? null,
+      offerId: params.eventMeta.offerId,
+      slug: params.eventMeta.slug,
+      mode: "react_bundle",
+      message: "bundle_invalido"
+    });
+    return fallbackBundle;
+  }
+
+  const validationIssues = validateLandingCodeBundle(normalizedBundle);
+  if (validationIssues.length > 0) {
+    logEvent("warn", `${params.eventMeta.eventPrefix}.fallback_used`, {
+      sessionId: params.eventMeta.sessionId ?? null,
+      offerId: params.eventMeta.offerId,
+      slug: params.eventMeta.slug,
+      mode: "react_bundle",
+      issues: validationIssues
+    });
+    return fallbackBundle;
+  }
+
+  const nextBundle: LandingCodeBundle = {
+    ...normalizedBundle,
+    source: "ai",
+    metadata: {
+      ...normalizedBundle.metadata,
+      generatedAt: new Date().toISOString()
+    }
+  };
+
+  logEvent("info", `${params.eventMeta.eventPrefix}.succeeded`, {
+    sessionId: params.eventMeta.sessionId ?? null,
+    offerId: params.eventMeta.offerId,
+    slug: params.eventMeta.slug,
+    mode: "react_bundle",
+    entryFile: nextBundle.entryFile,
+    files: nextBundle.files.map((file) => file.path),
+    usedComponents: nextBundle.usedComponents
+  });
+
+  return nextBundle;
+}
+
 async function createLandingCreationSession() {
   const promptDraft = await getGlobalLandingPromptSettings();
+  const defaultDraft = buildDefaultLandingCreationDraft();
+  const previewOffer = buildPreviewOfferFromDraft(defaultDraft);
   const session = await prisma.landingCreationSession.create({
     data: {
       title: "Nova landing",
       status: "draft",
-      offerDraftJson: buildDefaultLandingCreationDraft(),
+      offerDraftJson: defaultDraft,
       promptDraftJson: promptDraft,
+      builderDraftJson: buildLandingBuilderDraftFromDraft(defaultDraft) as unknown as object,
+      codeBundleDraftJson: buildDefaultLandingCodeBundleFromOffer({
+        offer: {
+          ...previewOffer,
+          approvedFacts: previewOffer.approvedFacts,
+          ctaLabel: previewOffer.ctaLabel,
+          visualTheme: previewOffer.visualTheme,
+          colorPalette: defaultDraft.colorPalette,
+          typographyStyle: defaultDraft.typographyStyle,
+          layoutStyle: defaultDraft.layoutStyle
+        },
+        summary: "Bundle inicial criado para uma nova sessao de landing.",
+        source: "fallback"
+      }) as unknown as object,
       chatHistoryJson: []
-    }
+    } as any
   });
   logEvent("info", "landing.creation.session.created", { sessionId: session.id });
   return session;
 }
 
-async function getLandingCreationSessionOrThrow(sessionId: number) {
+async function getLandingCreationSessionOrThrow(sessionId: number): Promise<LandingCreationSessionRecord> {
   const session = await prisma.landingCreationSession.findUnique({
     where: { id: sessionId }
-  });
+  }) as LandingCreationSessionRecord | null;
   if (!session) throw new Error("Sessao de criacao nao encontrada.");
   return session;
 }
@@ -3298,6 +4374,10 @@ async function runLandingCreationChatTurn(sessionId: number, userMessage: string
     }
   ];
 
+  logEvent("info", "landing.creation.chat.started", {
+    sessionId,
+    messageLength: userMessage.length
+  });
   const aiConfig = await syncRuntimeAIConfigFromDatabase();
   const resp = await fetchWithRetry(`${aiConfig.baseUrl}/responses`, {
     method: "POST",
@@ -3336,11 +4416,12 @@ async function runLandingCreationChatTurn(sessionId: number, userMessage: string
       ? utf8Text(parsed.assistantMessage).trim()
       : "Rascunho atualizado. Pode seguir com mais detalhes ou gerar o preview.";
   const nextDraft = normalizeLandingCreationDraft(parsed.draft, draft);
+  const nextAssistantMessage = buildLandingCreationFollowUpMessage(nextDraft, assistantMessage);
   const updatedHistory = [
     ...nextHistory,
     {
       role: "assistant" as const,
-      content: assistantMessage,
+      content: nextAssistantMessage,
       createdAt: new Date().toISOString()
     }
   ];
@@ -3351,8 +4432,22 @@ async function runLandingCreationChatTurn(sessionId: number, userMessage: string
       title: nextDraft.title || session.title || "Nova landing",
       status: "draft",
       offerDraftJson: nextDraft,
+      builderDraftJson: buildLandingBuilderDraftFromDraft(nextDraft) as unknown as object,
+      codeBundleDraftJson: buildDefaultLandingCodeBundleFromOffer({
+        offer: {
+          ...buildPreviewOfferFromDraft(nextDraft),
+          approvedFacts: buildPreviewOfferFromDraft(nextDraft).approvedFacts,
+          ctaLabel: buildPreviewOfferFromDraft(nextDraft).ctaLabel,
+          visualTheme: buildPreviewOfferFromDraft(nextDraft).visualTheme,
+          colorPalette: nextDraft.colorPalette,
+          typographyStyle: nextDraft.typographyStyle,
+          layoutStyle: nextDraft.layoutStyle
+        },
+        summary: "Bundle base recalculado a partir da conversa mais recente.",
+        source: "fallback"
+      }) as unknown as object,
       chatHistoryJson: updatedHistory
-    }
+    } as any
   });
   logEvent("info", "landing.creation.chat.succeeded", { sessionId });
   return updated;
@@ -3372,22 +4467,52 @@ async function generateLandingPreviewForSession(sessionId: number, payload: unkn
     typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>).leadContext : undefined
   );
   const previewOffer = buildPreviewOfferFromDraft(mergedDraft);
-  const sectionsJson = await generateLandingSectionsForOfferData({
+  const landingCodeBundle = await generateLandingCodeBundleForOfferData({
     offer: {
       title: previewOffer.title,
       slug: previewOffer.slug,
       shortDescription: previewOffer.shortDescription,
       durationLabel: previewOffer.durationLabel,
       modality: previewOffer.modality,
-      approvedFacts: previewOffer.approvedFacts
+      approvedFacts: previewOffer.approvedFacts,
+      ctaLabel: previewOffer.ctaLabel,
+      visualTheme: previewOffer.visualTheme,
+      colorPalette: mergedDraft.colorPalette,
+      typographyStyle: mergedDraft.typographyStyle,
+      layoutStyle: mergedDraft.layoutStyle
     },
     promptConfig: promptDraft,
     leadContext,
     eventMeta: {
       eventPrefix: "landing.creation.preview",
+      sessionId,
       offerId: null,
       slug: previewOffer.slug
     }
+  });
+  const sectionsJson = buildFallbackLandingSectionsFromOffer({
+    offer: {
+      title: previewOffer.title,
+      slug: previewOffer.slug,
+      shortDescription: previewOffer.shortDescription,
+      durationLabel: previewOffer.durationLabel,
+      modality: previewOffer.modality,
+      approvedFacts: previewOffer.approvedFacts,
+      ctaLabel: previewOffer.ctaLabel,
+      visualTheme: previewOffer.visualTheme
+    }
+  });
+  const builderDocument = buildLandingBuilderDocument({
+    offer: {
+      title: previewOffer.title,
+      slug: previewOffer.slug,
+      shortDescription: previewOffer.shortDescription,
+      durationLabel: previewOffer.durationLabel,
+      modality: previewOffer.modality,
+      approvedFacts: previewOffer.approvedFacts,
+      ctaLabel: previewOffer.ctaLabel
+    },
+    sections: sectionsJson as Record<string, unknown>
   });
 
   const updated = await prisma.landingCreationSession.update({
@@ -3397,8 +4522,10 @@ async function generateLandingPreviewForSession(sessionId: number, payload: unkn
       status: "preview_ready",
       offerDraftJson: mergedDraft,
       promptDraftJson: promptDraft,
+      builderDraftJson: builderDocument as unknown as object,
+      codeBundleDraftJson: landingCodeBundle as unknown as object,
       previewSectionsJson: sectionsJson as object
-    }
+    } as any
   });
   logEvent("info", "landing.creation.preview.generated", { sessionId });
   return updated;
@@ -3443,7 +4570,7 @@ async function publishLandingCreationSession(sessionId: number, payload: unknown
     approvedFacts: draft.approvedFacts,
     ctaLabel: draft.ctaLabel,
     ctaUrl: draft.ctaUrl,
-    visualTheme: draft.visualTheme || null,
+    visualTheme: buildLandingDesignSummary(draft) || null,
     isActive: draft.isActive
   };
 
@@ -3455,23 +4582,54 @@ async function publishLandingCreationSession(sessionId: number, payload: unknown
     });
   } else {
     const createdOffer = await prisma.offer.create({ data: offerData });
-    offerId = createdOffer.id;
+      offerId = createdOffer.id;
   }
 
-  const sectionsJson = session.previewSectionsJson && typeof session.previewSectionsJson === "object"
+  const hasStoredPreview = session.previewSectionsJson && typeof session.previewSectionsJson === "object";
+  const hasStoredBundle = session.codeBundleDraftJson && typeof session.codeBundleDraftJson === "object";
+  if (hasStoredPreview) {
+    logEvent("info", "landing.creation.publish.started", {
+      sessionId,
+      offerId,
+      slug: offerData.slug,
+      source: "cached_preview"
+    });
+  }
+
+  const sectionsJson = hasStoredPreview
     ? session.previewSectionsJson
-    : await generateLandingSectionsForOfferData({
+    : buildFallbackLandingSectionsFromOffer({
         offer: {
           title: offerData.title,
           slug: offerData.slug,
           shortDescription: offerData.shortDescription,
           durationLabel: offerData.durationLabel,
           modality: offerData.modality,
-          approvedFacts: offerData.approvedFacts
+          approvedFacts: offerData.approvedFacts,
+          ctaLabel: offerData.ctaLabel,
+          visualTheme: offerData.visualTheme
+        }
+      });
+  const landingCodeBundle = hasStoredBundle
+    ? session.codeBundleDraftJson
+    : await generateLandingCodeBundleForOfferData({
+        offer: {
+          title: offerData.title,
+          slug: offerData.slug,
+          shortDescription: offerData.shortDescription,
+          durationLabel: offerData.durationLabel,
+          modality: offerData.modality,
+          approvedFacts: offerData.approvedFacts,
+          ctaLabel: offerData.ctaLabel,
+          visualTheme: offerData.visualTheme,
+          colorPalette: draft.colorPalette,
+          typographyStyle: draft.typographyStyle,
+          layoutStyle: draft.layoutStyle
         },
         promptConfig: promptDraft,
         eventMeta: {
           eventPrefix: "landing.creation.publish",
+          sessionId,
           offerId,
           slug: offerData.slug
         }
@@ -3492,11 +4650,73 @@ async function publishLandingCreationSession(sessionId: number, payload: unknown
       version: (latest?.version || 0) + 1,
       status: "published",
       sectionsJson: sectionsJson as object,
+      builderDocumentJson: buildLandingBuilderDocument({
+        offer: {
+          title: offerData.title,
+          slug: offerData.slug,
+          shortDescription: offerData.shortDescription,
+          durationLabel: offerData.durationLabel,
+          modality: offerData.modality,
+          approvedFacts: offerData.approvedFacts,
+          ctaLabel: offerData.ctaLabel
+        },
+        sections: sectionsJson as Record<string, unknown>,
+        version: (latest?.version || 0) + 1
+      }) as unknown as object,
+      landingCodeBundleJson: landingCodeBundle as object,
       promptSnapshot: promptDraft,
       sourceFactsSnapshot: draft,
       publishedAt: new Date()
-    }
+    } as any
   });
+  let artifactMeta: { key: string; url: string | null } | null = null;
+  try {
+    artifactMeta = await uploadLandingArtifactToR2({
+      offerId,
+      landingPageId: landingPage.id,
+      slug: offerData.slug,
+      version: landingPage.version,
+      payload: {
+        kind: "landing-published-artifact-v1",
+        publishedAt: new Date().toISOString(),
+        offer: offerData,
+        landing: {
+          id: landingPage.id,
+          version: landingPage.version,
+          status: landingPage.status,
+          sectionsJson,
+          landingCodeBundleJson: landingCodeBundle,
+          builderDocumentJson: buildLandingBuilderDocument({
+            offer: {
+              title: offerData.title,
+              slug: offerData.slug,
+              shortDescription: offerData.shortDescription,
+              durationLabel: offerData.durationLabel,
+              modality: offerData.modality,
+              approvedFacts: offerData.approvedFacts,
+              ctaLabel: offerData.ctaLabel
+            },
+            sections: sectionsJson as Record<string, unknown>,
+            version: landingPage.version
+          })
+        }
+      }
+    });
+    logEvent("info", "landing.creation.artifact_uploaded", {
+      sessionId,
+      offerId,
+      landingPageId: landingPage.id,
+      assetKey: artifactMeta?.key || null,
+      assetUrl: artifactMeta?.url || null
+    });
+  } catch (err) {
+    logEvent("error", "landing.creation.artifact_upload_failed", {
+      sessionId,
+      offerId,
+      landingPageId: landingPage.id,
+      message: formatError(err)
+    });
+  }
 
   const updatedSession = await prisma.landingCreationSession.update({
     where: { id: sessionId },
@@ -3505,11 +4725,31 @@ async function publishLandingCreationSession(sessionId: number, payload: unknown
       status: "published",
       offerDraftJson: draft,
       promptDraftJson: promptDraft,
+      builderDraftJson: buildLandingBuilderDocument({
+        offer: {
+          title: offerData.title,
+          slug: offerData.slug,
+          shortDescription: offerData.shortDescription,
+          durationLabel: offerData.durationLabel,
+          modality: offerData.modality,
+          approvedFacts: offerData.approvedFacts,
+          ctaLabel: offerData.ctaLabel
+        },
+        sections: sectionsJson as Record<string, unknown>,
+        version: (latest?.version || 0) + 1
+      }) as unknown as object,
+      codeBundleDraftJson: landingCodeBundle as object,
       previewSectionsJson: sectionsJson as object,
       publishedOfferId: offerId
-    }
+    } as any
   });
-  logEvent("info", "landing.creation.published", { sessionId, offerId, landingPageId: landingPage.id });
+  logEvent("info", "landing.creation.published", {
+    sessionId,
+    offerId,
+    landingPageId: landingPage.id,
+    assetKey: artifactMeta?.key || null,
+    assetUrl: artifactMeta?.url || null
+  });
   return { session: updatedSession, landingPage };
 }
 
@@ -3541,6 +4781,39 @@ async function publishLandingPage(offerId: number, landingPageId?: number) {
       publishedAt: new Date()
     }
   });
+  try {
+    const artifact = await uploadLandingArtifactToR2({
+      offerId,
+      landingPageId: published.id,
+      slug: String((target.sourceFactsSnapshot as Record<string, unknown> | null)?.slug || `offer-${offerId}`),
+      version: published.version,
+      payload: {
+        kind: "landing-published-artifact-v1",
+        publishedAt: new Date().toISOString(),
+        offerId,
+        landing: {
+          id: published.id,
+          version: published.version,
+          status: published.status,
+          sectionsJson: target.sectionsJson,
+          builderDocumentJson: (target as Record<string, unknown>).builderDocumentJson || null,
+          landingCodeBundleJson: (target as Record<string, unknown>).landingCodeBundleJson || null
+        }
+      }
+    });
+    logEvent("info", "landing.publish.artifact_uploaded", {
+      offerId,
+      landingPageId: published.id,
+      assetKey: artifact?.key || null,
+      assetUrl: artifact?.url || null
+    });
+  } catch (err) {
+    logEvent("error", "landing.publish.artifact_upload_failed", {
+      offerId,
+      landingPageId: published.id,
+      message: formatError(err)
+    });
+  }
   return published;
 }
 
@@ -5323,8 +6596,3 @@ httpServer.listen(PORT, () => {
     void processWebhookQueueTick();
   })();
 });
-
-
-
-
-
