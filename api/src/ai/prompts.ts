@@ -50,10 +50,14 @@ export const LANDING_GENERATION_SYSTEM_PROMPT = [
 export const LANDING_CODE_GENERATION_SYSTEM_PROMPT = [
   "Voce e um designer e engenheiro frontend da Santos Tech especializado em landing pages para despertar interesse em cursos.",
   "Sua tarefa e gerar apenas um JSON valido contendo um bundle React para uma landing page.",
+  "Voce sempre parte de uma arvore de arquivos vazia. Nao existe template base, hero padrao, seed de JSX ou estrutura previa para copiar.",
   "Use React, Tailwind e os componentes permitidos como base tecnica, mas tenha liberdade criativa real para compor a interface.",
+  "Priorize fortemente o catalogo shadcn/Radix ja liberado no runtime. Quando um bloco puder ser resolvido por uma primitive permitida, prefira a primitive a markup customizada.",
+  "Busque o maximo coerente de variedade com os componentes permitidos. Explore navegacao, disclosure, feedback, overlays, selecao, comparacao e ritmo visual com as primitives disponiveis antes de cair em divs genericas.",
+  "Para cores proprietarias, gradientes, sombras e tipografia muito especifica, prefira constantes locais e style props em vez de depender de classes arbitrarias do Tailwind.",
   "Busque uma direcao visual forte, menos generica, com hierarquia clara, ritmo entre secoes e escolhas de layout menos engessadas.",
   "Voce nao precisa transformar tudo em cards padrao. Pode usar estrutura livre com sections, grids, colunas, overlays, bandas, blocos editoriais e composicoes mais autorais.",
-  "Pode usar HTML semantico dentro do componente React quando isso melhorar o resultado. Os componentes shadcn/Radix permitidos devem apoiar a interface, nao engessar o desenho.",
+  "Pode usar HTML semantico dentro do componente React quando isso melhorar o resultado, mas so depois de esgotar as primitives shadcn/Radix que ja cobrem o mesmo papel. Os componentes permitidos devem dirigir a composicao, nao ficar restritos a um unico Button perdido na pagina.",
   "Nao use bibliotecas externas de UI e nao use APIs de rede ou browser sensiveis.",
   "Nao invente preco, certificacao, vagas, datas, duracao, resultados ou promessas.",
   "Nao escreva markdown, comentarios ou texto fora do JSON."
@@ -65,12 +69,46 @@ export const LANDING_CREATION_SYSTEM_PROMPT = [
   "Voce pode sugerir titulo, slug, beneficios, CTA, visualTheme e estrutura quando isso estiver claro no contexto.",
   "Considere por padrao que a landing serve para atrair interessados em cursos e orientar o interesse, nao para vender como ecommerce ou pagina de checkout.",
   "Nao faca perguntas por padrao. Primeiro extraia o maximo possivel do prompt e monte um plano curto de execucao.",
-  "So gere asks curtos quando o prompt estiver raso demais para orientar o visual ou o conteudo.",
+  "Se der para identificar um unico curso ou oferta e uma direcao plausivel de pagina, prefira seguir para geracao visual.",
+  "So gere asks curtos quando o prompt estiver amplo, meta ou raso demais para orientar uma landing unica de curso.",
   "Quando o prompt for suficiente, siga sem ask obrigatorio.",
   "Nao invente preco, datas, carga horaria exata, certificacao, promessas irreais ou URLs definitivas quando nao forem informadas.",
   "Quando nao souber um campo, deixe vazio e peca o dado faltante de forma objetiva.",
   "Responda apenas com JSON valido."
 ].join("\n");
+
+const LANDING_CODE_ALLOWED_UI_IMPORTS = [
+  "@/components/ui/accordion",
+  "@/components/ui/alert-dialog",
+  "@/components/ui/aspect-ratio",
+  "@/components/ui/avatar",
+  "@/components/ui/badge",
+  "@/components/ui/button",
+  "@/components/ui/card",
+  "@/components/ui/checkbox",
+  "@/components/ui/collapsible",
+  "@/components/ui/context-menu",
+  "@/components/ui/direction",
+  "@/components/ui/dialog",
+  "@/components/ui/dropdown-menu",
+  "@/components/ui/hover-card",
+  "@/components/ui/label",
+  "@/components/ui/menubar",
+  "@/components/ui/navigation-menu",
+  "@/components/ui/popover",
+  "@/components/ui/progress",
+  "@/components/ui/radio-group",
+  "@/components/ui/scroll-area",
+  "@/components/ui/select",
+  "@/components/ui/separator",
+  "@/components/ui/sheet",
+  "@/components/ui/slider",
+  "@/components/ui/switch",
+  "@/components/ui/tabs",
+  "@/components/ui/toggle",
+  "@/components/ui/toggle-group",
+  "@/components/ui/tooltip"
+] as const;
 
 export function buildFaqSystemPrompt(faqContext: string): string {
   if (faqContext.trim().length > 0) {
@@ -348,6 +386,7 @@ export function buildLandingCodeGenerationPrompt(input: {
     "--- Runtime e restricoes ---",
     "A exportacao principal deve ser um componente React default export.",
     "O componente pode receber props com onPrimaryAction para o CTA principal.",
+    "Gere arquivos como se estivesse criando a landing do zero a partir do prompt atual. Nao assuma a existencia de um App anterior, seed visual ou template escondido.",
     "Ao construir o preview, trabalhe em modo lovable editorial imersivo. Priorize uma composicao memoravel, sensorial e autoral em vez de seguir um template rigido.",
     "Se o contexto visual estiver incompleto, infira uma direcao plausivel e elegante em vez de cair em layout generico.",
     "Varie estrutura, densidade, contraste, alinhamento, escala e ritmo entre secoes quando isso melhorar a narrativa da landing.",
@@ -356,6 +395,7 @@ export function buildLandingCodeGenerationPrompt(input: {
     "Converta fatos do briefing em promessa de aprendizado, momentos de descoberta, aplicacoes praticas e atmosfera visual ligada ao tema. Nao exponha o processo de planejamento para o visitante final.",
     "A pagina precisa ter atmosfera visual perceptivel. Use fundo com cor, gradiente, glow, contraste entre secoes, formas abstratas, linhas, superficies sobrepostas ou composicao cromatica clara. Evite tela chapada ou sem presenca de background.",
     "Quando houver paleta sugerida, reflita isso visualmente no background, nas superficies e nos destaques, nao apenas em badges ou botoes.",
+    "Para paletas com hex especifico, gradientes personalizados, box-shadow customizado e ajustes tipograficos finos, prefira constantes e style={{ ... }} no JSX em vez de classes Tailwind arbitrarias como bg-[#185ABD], text-[#185ABD], shadow-[...] ou tracking-[...].",
     "Nao trate duracao, modalidade, lista de fatos, badge, card, painel lateral, grade de beneficios ou CTA fixo como estrutura obrigatoria. Use apenas o que realmente melhorar a landing.",
     "Se algum dado como duracao ou modalidade estiver fraco, generico ou placeholder, prefira omitir em vez de renderizar um bloco so para preencher layout.",
     "Nao use sempre hero com coluna de texto + card informativo. Nao use a lista de approvedFacts como grade principal da pagina. Varie a composicao quando isso deixar a pagina mais forte.",
@@ -364,20 +404,20 @@ export function buildLandingCodeGenerationPrompt(input: {
     "Prefira compor uma narrativa de pagina com contraste entre secoes, ancoras editoriais, variacao de escala e blocos assimetricos, em vez de repetir a mesma caixa informativa varias vezes.",
     "Evite tratar a pagina como checkout, oferta agressiva, promocao relampago ou fechamento de venda imediata. O foco principal deve ser apresentar o curso, despertar interesse e convidar o visitante a saber mais.",
     "Evite metacopy e placeholders como 'experiencia guiada', 'visao geral', 'proximo passo', 'direcao editorial montada a partir do briefing' ou frases equivalentes.",
+    "A landing deve terminar no ultimo bloco util de conteudo ou CTA. Nao adicione footer institucional, barra inferior, strip final, ticker, copyright, assinatura da marca ou mini-rodape com nome da escola e titulo do curso.",
     "Escolha uma entre poucas composicoes fortes: manifesto imersivo, trilha visual de aprendizado, narrativa assimetrica em camadas ou cena tecnica dramatica. Nao misture tudo.",
     "Use imports somente desta allowlist:",
     '1. "react"',
-    '2. "@/components/ui/button"',
-    '3. "@/components/ui/badge"',
-    '4. "@/components/ui/card"',
-    '5. "@/components/ui/dialog"',
-    '6. "@/components/ui/dropdown-menu"',
-    '7. "@/components/ui/sheet"',
-    '8. "@/components/ui/tooltip"',
-    '9. "lucide-react"',
+    ...LANDING_CODE_ALLOWED_UI_IMPORTS.map((item, index) => `${index + 2}. "${item}"`),
+    `${LANDING_CODE_ALLOWED_UI_IMPORTS.length + 2}. "lucide-react"`,
     "Arquivos locais relativos tambem sao permitidos.",
+    'O bundle precisa importar e usar explicitamente componentes `@/components/ui/*`. O caminho minimo seguro e `@/components/ui/button` com `<Button>` em um CTA visivel, mas o objetivo aqui e ir muito alem do minimo.',
+    "Use o maior numero coerente de componentes da allowlist. Em uma landing rica, tente combinar pelo menos 6 componentes distintos quando houver secoes suficientes, sempre sem criar elementos mortos.",
+    "Mapeie componentes a papeis reais da pagina. Exemplos: `Accordion` ou `Collapsible` no FAQ; `Tabs` ou `ToggleGroup` para trilhas e modulos; `ScrollArea` para paines densos; `HoverCard`, `Tooltip` ou `Popover` para detalhes; `Separator` para ritmo; `Card`, `AspectRatio`, `Avatar` e `Badge` para cenas e prova; `Progress`, `Slider`, `Switch`, `RadioGroup` ou `Select` quando ajudarem a explicar niveis, filtros, comparacoes ou percursos.",
+    "Se houver cabecalho, menu contextual ou CTA complementar, prefira `NavigationMenu`, `Menubar`, `DropdownMenu`, `Sheet`, `Dialog` ou `AlertDialog` quando fizer sentido de UX.",
+    "Nao use um componente apenas para preencher checklist. Mas, antes de recorrer a blocos customizados, esgote as opcoes do catalogo shadcn/Radix ja permitido.",
     "Nao use fetch, XMLHttpRequest, WebSocket, eval, new Function, document.cookie, localStorage, sessionStorage ou scripts externos.",
-    "Use Button, Badge, Card e demais componentes permitidos quando fizer sentido, mas nao force esses componentes em todas as secoes. Se a pagina ficar melhor quase toda em HTML semantico com um unico Button, prefira isso.",
+    "Prefira compor secoes inteiras com componentes da allowlist em vez de usar HTML semantico quase puro. So recue para markup customizada quando a primitive nao cobrir bem a interacao ou a estrutura.",
     "Voce pode construir secoes com div, section, article, header e grid livremente dentro do TSX.",
     "Evite repeticao mecanica de blocos iguais. O preview deve parecer pensado, nao montado por molde.",
     "",
@@ -400,7 +440,7 @@ export function buildLandingCodeGenerationPrompt(input: {
     '    "text": "#f8fafc",',
     '    "muted": "#94a3b8"',
     "  },",
-    '  "usedComponents": ["Button"],',
+    '  "usedComponents": ["Button", "Badge", "Accordion", "Tabs", "Separator", "ScrollArea"],',
     '  "files": [',
     '    {',
     '      "path": "App.tsx",',
@@ -502,8 +542,10 @@ export function buildLandingCreationPrompt(input: {
     "Preserve informacoes uteis ja capturadas, melhore a organizacao do draft e defina um plano curto de execucao.",
     "Se um campo nao estiver claro, mantenha vazio ou faca uma inferencia conservadora quando houver base suficiente.",
     "Classifique a profundidade do prompt como shallow, medium ou deep.",
-    "Use shallow apenas quando o pedido estiver raso demais para orientar o visual e o conteudo.",
+    "Use shallow apenas quando o pedido estiver amplo, meta ou raso demais para orientar uma landing unica de curso.",
     "Quando for medium ou deep, evite transformar a conversa em interrogatorio.",
+    "Se houver um curso, oferta ou tema principal identificavel, prefira readyForVisualGeneration como true mesmo sem todos os detalhes finos.",
+    "Se o draft final ja tiver titulo claro, descricao ou fatos suficientes e alguma direcao de estrutura/CTA, nao bloqueie o preview com askQueue. Nessa situacao, retorne shouldAsk false e readyForVisualGeneration true.",
     "A mensagem do assistente deve ser curta, pratica e focada no proximo passo.",
     "Economize raciocinio e texto. Nao escreva plano longo.",
     "",
@@ -583,15 +625,19 @@ export function buildLandingCreationPromptInput(input: Parameters<typeof buildLa
 }
 
 export function parseResponseOutputText(payload: unknown): string {
+  if (typeof payload === "string" && payload.trim()) {
+    return payload.trim();
+  }
+
   const body = (payload || {}) as OpenAIResponseBody;
   if (typeof body.output_text === "string" && body.output_text.trim()) {
     return body.output_text.trim();
   }
 
   const parts: string[] = [];
-  for (const item of body.output || []) {
-    for (const content of item.content || []) {
-      if (content.type === "output_text" && typeof content.text === "string" && content.text.trim()) {
+  for (const item of Array.isArray(body.output) ? body.output : []) {
+    for (const content of Array.isArray(item.content) ? item.content : []) {
+      if (typeof content.text === "string" && content.text.trim()) {
         parts.push(content.text.trim());
       }
     }
@@ -600,32 +646,115 @@ export function parseResponseOutputText(payload: unknown): string {
   return parts.join("\n").trim();
 }
 
-export function extractFirstJsonObject(raw: string): Record<string, unknown> | null {
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function extractObjectFromParsedValue(value: unknown): Record<string, unknown> | null {
+  if (isPlainObject(value)) return value;
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      if (isPlainObject(entry)) {
+        return entry;
+      }
+    }
+  }
+  return null;
+}
+
+function stripCodeFence(raw: string): string {
   const trimmed = raw.trim();
-  if (!trimmed) return null;
+  const match = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  return match ? match[1].trim() : trimmed;
+}
 
-  try {
-    const parsed = JSON.parse(trimmed) as unknown;
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
+function findFirstBalancedJsonObject(raw: string): string | null {
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escapeNext = false;
+
+  for (let index = 0; index < raw.length; index += 1) {
+    const char = raw[index];
+
+    if (escapeNext) {
+      escapeNext = false;
+      continue;
     }
-  } catch {
-    // fallback below
+
+    if (char === "\\") {
+      if (inString) escapeNext = true;
+      continue;
+    }
+
+    if (char === "\"") {
+      inString = !inString;
+      continue;
+    }
+
+    if (inString) continue;
+
+    if (char === "{") {
+      if (depth === 0) {
+        start = index;
+      }
+      depth += 1;
+      continue;
+    }
+
+    if (char === "}" && depth > 0) {
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        return raw.slice(start, index + 1).trim();
+      }
+    }
   }
 
-  const start = trimmed.indexOf("{");
-  const end = trimmed.lastIndexOf("}");
-  if (start === -1 || end === -1 || end <= start) {
-    return null;
-  }
+  return null;
+}
 
-  try {
-    const parsed = JSON.parse(trimmed.slice(start, end + 1)) as unknown;
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
+export function extractFirstJsonObject(raw: string): Record<string, unknown> | null {
+  const initial = raw.replace(/^\uFEFF/, "").trim();
+  if (!initial) return null;
+
+  const queue = [initial];
+  const seen = new Set<string>();
+
+  while (queue.length > 0) {
+    const candidate = queue.shift()?.trim() || "";
+    if (!candidate || seen.has(candidate)) continue;
+    seen.add(candidate);
+
+    try {
+      const parsed = JSON.parse(candidate) as unknown;
+      const objectValue = extractObjectFromParsedValue(parsed);
+      if (objectValue) {
+        return objectValue;
+      }
+
+      if (typeof parsed === "string" && parsed.trim()) {
+        queue.push(parsed.trim());
+      }
+    } catch {
+      // try alternative extractions below
     }
-  } catch {
-    return null;
+
+    const withoutFence = stripCodeFence(candidate);
+    if (withoutFence !== candidate) {
+      queue.push(withoutFence);
+    }
+
+    if (
+      (candidate.startsWith("\"") && candidate.endsWith("\"")) ||
+      (candidate.startsWith("'") && candidate.endsWith("'"))
+    ) {
+      queue.push(candidate.slice(1, -1).trim());
+    }
+
+    const balancedObject = findFirstBalancedJsonObject(candidate);
+    if (balancedObject && balancedObject !== candidate) {
+      queue.push(balancedObject);
+    }
   }
 
   return null;

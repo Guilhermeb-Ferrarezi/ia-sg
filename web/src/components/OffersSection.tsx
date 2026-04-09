@@ -384,13 +384,14 @@ export default function OffersSection({
         activeQuestionId: null,
         stageSummary: "",
       },
-      builderDraft: null,
       codeBundleDraft: null,
       preview: null,
       publishedOfferId: null,
       createdAt: now,
       updatedAt: now,
     };
+    setForceHistorySidebar(true);
+    setChatCollapsed(false);
     setPendingSession(local as LandingCreationSession);
     setSelectedSessionId(0);
   };
@@ -780,7 +781,6 @@ export default function OffersSection({
                       <DropdownMenuGroup className="flex flex-col gap-0.5">
                         <DropdownMenuItem
                           onSelect={() => {
-                            setForceHistorySidebar(true);
                             void createSession();
                           }}
                           className="rounded-lg px-2 py-2 focus:bg-violet-500/15 focus:text-white"
@@ -1001,15 +1001,14 @@ export default function OffersSection({
                     </span>
                   </div>
 
-                  <motion.button
-                    whileHover={{ scale: 1.01 }}
-                    whileTap={{ scale: 0.99 }}
-                    type="button"
-                    onClick={() => {
-                      setForceHistorySidebar(true);
-                      void createSession();
-                    }}
-                    className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-[18px] border border-dashed border-violet-500/25 bg-violet-500/8 px-3.5 py-2.5 text-sm font-bold text-violet-100 transition-colors hover:border-violet-400/45 hover:bg-violet-500/12"
+                    <motion.button
+                      whileHover={{ scale: 1.01 }}
+                      whileTap={{ scale: 0.99 }}
+                      type="button"
+                      onClick={() => {
+                        void createSession();
+                      }}
+                      className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-[18px] border border-dashed border-violet-500/25 bg-violet-500/8 px-3.5 py-2.5 text-sm font-bold text-violet-100 transition-colors hover:border-violet-400/45 hover:bg-violet-500/12"
                   >
                     <Plus className="h-4 w-4" />
                     Novo chat
@@ -1626,29 +1625,22 @@ export default function OffersSection({
                           </div>
                         </div>
                       </div>
-                    ) : selectedSession?.builderDraft?.nodes?.length ? (
-                      <div className="rounded-3xl border border-cyan-400/15 bg-cyan-500/8 p-5 shadow-[0_18px_55px_rgba(8,145,178,0.12)]">
+                    ) : (
+                      <div className="rounded-3xl border border-amber-400/15 bg-amber-500/8 p-5 shadow-[0_18px_55px_rgba(245,158,11,0.12)]">
                         <div className="mb-3 flex items-center gap-3">
-                          <div className="rounded-2xl border border-cyan-400/20 bg-cyan-500/10 p-2 text-cyan-200">
-                            <PanelsTopLeft className="h-4 w-4" />
+                          <div className="rounded-2xl border border-amber-400/20 bg-amber-500/10 p-2 text-amber-200">
+                            <CodeXml className="h-4 w-4" />
                           </div>
                           <div>
-                            <p className="text-[11px] font-black uppercase tracking-[0.22em] text-cyan-200/80">Builder legado</p>
-                            <p className="text-sm font-semibold text-white">Fallback estrutural para landings antigas</p>
+                            <p className="text-[11px] font-black uppercase tracking-[0.22em] text-amber-200/80">Sem bundle gerado</p>
+                            <p className="text-sm font-semibold text-white">Esta sessao ainda nao tem arquivos React persistidos.</p>
                           </div>
                         </div>
-                        <div className="flex flex-wrap gap-2">
-                          {selectedSession.builderDraft.nodes.map((node) => (
-                            <span
-                              key={node.id}
-                              className="rounded-full border border-white/10 bg-slate-900/70 px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.18em] text-slate-200"
-                            >
-                              {node.type}
-                            </span>
-                          ))}
-                        </div>
+                        <p className="text-sm leading-7 text-amber-50/80">
+                          Envie um prompt mais especifico ou use o botao de preview para gerar a landing do zero.
+                        </p>
                       </div>
-                    ) : null}
+                    )}
                     <div className="space-y-5">
                       <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
                         <label className="mb-2 block text-xs font-black uppercase tracking-[0.15em] text-violet-300">Titulo da Oferta</label>

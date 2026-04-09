@@ -199,9 +199,7 @@ model LandingPage {
   offer               Offer             @relation(fields: [offerId], references: [id], onDelete: Cascade)
   version             Int
   status              String            @default("draft")
-  sectionsJson        Json
-  builderDocumentJson Json?
-  landingCodeBundleJson Json?
+  landingCodeBundleJson Json
   promptSnapshot      Json?
   sourceFactsSnapshot Json?
   publishedAt         DateTime?
@@ -258,9 +256,7 @@ model LandingCreationSession {
   offerDraftJson    Json?
   promptDraftJson   Json?
   chatHistoryJson   Json?
-  builderDraftJson  Json?
   codeBundleDraftJson Json?
-  previewSectionsJson Json?
   publishedOfferId  Int?
   publishedOffer    Offer?   @relation("PublishedOfferSessions", fields: [publishedOfferId], references: [id], onDelete: SetNull)
   createdAt         DateTime @default(now())

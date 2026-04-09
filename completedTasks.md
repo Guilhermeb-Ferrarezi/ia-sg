@@ -1,4 +1,22 @@
 # Completed Tasks
+## Atualizacao extra - 2026-04-08 (Preview React com erro visivel)
+- [x] Host do preview passou a expor todo o namespace de icones do `lucide-react`, corrigindo bundles que quebravam por icones nao registrados no iframe.
+- [x] Preview React agora mostra loading e mensagem de erro no canvas em vez de deixar a area preta quando o runtime do iframe falha.
+
+## Atualizacao extra - 2026-04-08 (Parser resiliente para JSON da IA)
+- [x] Parser compartilhado das respostas da IA ficou mais tolerante a cercas de markdown, arrays com objeto, JSON serializado como string e blobs com texto antes/depois do objeto.
+- [x] Fluxo do planner agora registra um trecho cru da resposta quando a IA sai do formato esperado e faz uma segunda tentativa automatica pedindo somente o JSON valido.
+- [x] Tasks pesadas de bundle React passaram a usar timeout maior e sem repeticao automatica redundante, evitando abortar a geracao visual antes de a OpenAI devolver o bundle.
+
+## Atualizacao extra - 2026-04-08 (Lovable-like real sem template)
+- [x] Fluxo de criacao de landing passou a nascer sem `App.tsx` fallback ou bundle inicial fake; a sessao comeca sem preview persistido.
+- [x] Chat/planner foi ajustado para priorizar geracao visual assim que houver um curso ou oferta identificavel, pedindo contexto extra apenas quando o prompt vier amplo ou meta demais.
+- [x] Prompt de geracao React agora deixa explicito que a IA parte de uma arvore de arquivos vazia, sem template base, sem hero padrao e sem seed escondido.
+- [x] Toda mudanca de draft ou prompt invalida o bundle atual, forcando a proxima geracao React a sair do zero novamente.
+- [x] `landingCodeBundleJson` virou a unica fonte de verdade da landing no backend, no preview interno, na publicacao e na pagina publica.
+- [x] Colunas legadas `sectionsJson`, `builderDocumentJson`, `builderDraftJson` e `previewSectionsJson` foram removidas do schema Prisma e da serializacao da API.
+- [x] Pipeline de deploy da API foi corrigido para usar `prisma migrate deploy` no container, evitando falha com drop de colunas em `db push`.
+
 ## Atualizacao extra - 2026-04-08 (Redesign do Ask card estilo Claude Code)
 - [x] Ask do planner redesenhado como card flutuante acima do composer, separado visualmente.
 - [x] Opcoes numeradas em rows full-width com badge numerado e highlight violet ao selecionar.
@@ -440,3 +458,45 @@ Atualizado em: 2026-03-20
 
 - [x] Botao de envio do composer passou a virar um controle de parar geracao durante o processamento, usando o icone quadrado solicitado em vez de manter o chat apenas bloqueado.
 - [x] Clique em parar agora aborta a requisicao ativa do chat e o auto preview encadeado, restaurando o rascunho anterior quando a interrupcao acontece antes da resposta da sessao voltar.
+
+## Atualizacao extra - 2026-04-08 (Preview com classes arbitrarias da IA)
+
+- [x] Host do preview React passou a detectar classes Tailwind arbitrarias realmente usadas no DOM do iframe e gerar CSS sob demanda para cores, sombras, tracking, line-height e outros ajustes finos que a IA colocar no bundle.
+- [x] Preview e landing publica agora conseguem respeitar classes como `bg-[#185ABD]`, `text-[#185ABD]`, `shadow-[...]` e `tracking-[...]` sem depender de template precompilado do app.
+- [x] Prompt de geracao do bundle foi endurecido para preferir constantes locais e `style={{ ... }}` em cores, gradientes, sombras e tipografia customizada, reduzindo dependencia futura de classes arbitrarias para branding.
+
+## Atualizacao extra - 2026-04-08 (Novo chat com sidebar aberta)
+
+- [x] Criacao de novo chat no workspace de landings agora abre sempre com a sidebar de chats recentes visivel, inclusive quando o gatilho vem do dropdown compacto do header.
+- [x] Fluxo de novo rascunho tambem reexpande o painel de conversa, evitando cair em um estado mais isolado logo apos iniciar um novo chat.
+
+## Atualizacao extra - 2026-04-08 (Catalogo Radix expandido para a Lume)
+
+- [x] Projeto recebeu um lote grande de wrappers oficiais `shadcn` base `radix`, incluindo `accordion`, `alert-dialog`, `aspect-ratio`, `avatar`, `checkbox`, `collapsible`, `context-menu`, `direction`, `hover-card`, `label`, `menubar`, `navigation-menu`, `popover`, `progress`, `radio-group`, `scroll-area`, `select`, `separator`, `slider`, `switch`, `tabs`, `toggle` e `toggle-group`.
+- [x] Host do preview React passou a expor esse catalogo ampliado de componentes para os bundles gerados pela Lume, em vez de limitar o runtime aos poucos imports antigos.
+- [x] Backend e prompt de geracao foram atualizados para aceitar essa allowlist expandida de imports `@/components/ui/*`, liberando mais primitives Radix oficiais na geracao de landings.
+
+## Atualizacao extra - 2026-04-08 (Faixa inferior removida da landing)
+
+- [x] Bundle publicado da landing `Automacao com n8n: do zero ao primeiro fluxo` foi corrigido para remover o rodape/faixa inferior institucional que sobrava abaixo do CTA final.
+- [x] Prompt de geracao da Lume foi endurecido para impedir novos bundles com footer, barra inferior, ticker ou mini-rodape residual no fim da landing.
+
+## Atualizacao extra - 2026-04-08 (Auto-preview coerente no primeiro prompt)
+
+- [x] Planner de landings agora promove automaticamente para geracao visual quando o draft ja traz tema identificavel, conteudo minimo e direcao suficiente, mesmo que a IA tente ficar em `shallow`.
+- [x] `stageSummary` do chat foi sincronizado com o estado real do planner: quando ainda houver asks, a Lume para de prometer preview imediato; quando o draft estiver pronto, a mensagem passa a disparar o fluxo visual corretamente.
+- [x] Geracao do bundle React passou a fazer uma segunda tentativa automatica quando a IA devolve JSON invalido ou bundle fora da allowlist `shadcn/Radix`, em vez de falhar de primeira no preview.
+
+## Atualizacao extra - 2026-04-08 (Prompt com uso maximo de Radix UI)
+
+- [x] Prompt de geracao de bundle React foi reforcado para priorizar fortemente o catalogo `shadcn/Radix` ja liberado no runtime, esgotando primitives antes de recorrer a markup customizada.
+- [x] Contrato da Lume agora pede combinacoes mais ricas de componentes da allowlist em landings com varias secoes, incluindo metas de variedade coerente e exemplos de mapeamento por papel de UX.
+- [x] Prompt de reparo do bundle invalido tambem passou a exigir reaproveitamento agressivo de primitives `shadcn/Radix`, em vez de aceitar correcoes que voltem para HTML cru.
+- [x] Orcamento de saida do bundle React via OpenAI foi ampliado para `9000` tokens, evitando truncar JSONs mais ricos depois que a Lume passou a usar mais componentes Radix na mesma landing.
+
+## Atualizacao extra - 2026-04-08 (Perguntas contextuais restauradas no planner)
+
+- [x] Planner de landings voltou a exibir perguntas contextuais tambem em briefs `medium`, sem perder a capacidade de gerar preview automatico quando ja houver base suficiente.
+- [x] Fast path de prompts curtos deixou de pular os asks: agora ele abre uma mensagem de planner mutavel com pergunta real e fila de refinamento, em vez de responder so com um plano fechado.
+- [x] `stageSummary` passou a distinguir o caso em que a Lume ja consegue montar preview, mas ainda quer alinhar alguns detalhes para refinar a pagina com o operador.
+- [x] Regra de auto-promocao para preview deixou de tratar `ctaLabel` e placeholders similares como direcao suficiente, evitando limpar a fila de perguntas cedo demais em briefs simples.

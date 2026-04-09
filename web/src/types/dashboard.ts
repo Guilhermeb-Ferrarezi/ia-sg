@@ -351,96 +351,6 @@ export type LandingPromptConfig = {
   offerId?: number | null;
 };
 
-export type LandingSections = {
-  hero?: {
-    eyebrow?: string;
-    headline?: string;
-    subheadline?: string;
-    highlights?: string[];
-  };
-  benefits?: Array<{ title: string; description: string }>;
-  proof?: {
-    title?: string;
-    items?: string[];
-  };
-  faq?: Array<{ question: string; answer: string }>;
-  cta?: {
-    label?: string;
-    helper?: string;
-  };
-};
-
-export type LandingBuilderNode =
-  | {
-    id: string;
-    type: "hero";
-    props: {
-      eyebrow?: string;
-      headline?: string;
-      subheadline?: string;
-      highlights?: string[];
-      ctaLabel?: string;
-    };
-  }
-  | {
-    id: string;
-    type: "info-panel";
-    props: {
-      title?: string;
-      items?: Array<{ label: string; value: string }>;
-      helper?: string;
-    };
-  }
-  | {
-    id: string;
-    type: "feature-grid";
-    props: {
-      title?: string;
-      items?: Array<{ title: string; description: string }>;
-    };
-  }
-  | {
-    id: string;
-    type: "proof-list";
-    props: {
-      title?: string;
-      items?: string[];
-    };
-  }
-  | {
-    id: string;
-    type: "faq-list";
-    props: {
-      title?: string;
-      items?: Array<{ question: string; answer: string }>;
-    };
-  }
-  | {
-    id: string;
-    type: "cta-band";
-    props: {
-      eyebrow?: string;
-      label?: string;
-      helper?: string;
-    };
-  };
-
-export type LandingBuilderDocument = {
-  version: number;
-  kind: "landing-builder-v1";
-  metadata: {
-    title: string;
-    slug: string;
-    description?: string;
-  };
-  theme: {
-    accent: string;
-    surface: string;
-    canvas: string;
-  };
-  nodes: LandingBuilderNode[];
-};
-
 export type LandingCodeFile = {
   path: string;
   code: string;
@@ -478,9 +388,7 @@ export type LandingPageSummary = {
   offerId: number;
   version: number;
   status: string;
-  sectionsJson: LandingSections;
-  builderDocumentJson?: LandingBuilderDocument | null;
-  landingCodeBundleJson?: LandingCodeBundle | null;
+  landingCodeBundleJson: LandingCodeBundle | null;
   artifactKey?: string | null;
   artifactUrl?: string | null;
   promptSnapshot?: unknown;
@@ -576,7 +484,6 @@ export type LandingCreationSession = {
   chatHistory: LandingCreationMessage[];
   readiness: LandingCreationReadiness;
   planner: LandingCreationPlannerState;
-  builderDraft?: LandingBuilderDocument | null;
   codeBundleDraft?: LandingCodeBundle | null;
   preview: LandingPreviewResponse | null;
   publishedOfferId: number | null;

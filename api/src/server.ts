@@ -2,12 +2,11 @@
 import http from "http";
 import express from "express";
 import dotenv from "dotenv";
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 import { WebSocketServer, WebSocket } from "ws";
 import {
   buildLandingCodeGenerationPrompt,
   buildLandingCreationPromptInput,
-  buildLandingGenerationPromptInput,
   LANDING_CODE_GENERATION_SYSTEM_PROMPT,
   buildLeadEnrichmentPromptInput,
   buildReplyPromptInput,
@@ -140,83 +139,10 @@ type LandingCreationSessionRecord = {
   offerDraftJson: unknown;
   promptDraftJson: unknown;
   chatHistoryJson: unknown;
-  builderDraftJson?: unknown;
   codeBundleDraftJson?: unknown;
-  previewSectionsJson: unknown;
   publishedOfferId: number | null;
   createdAt: Date;
   updatedAt: Date;
-};
-
-type LandingBuilderNode =
-  | {
-    id: string;
-    type: "hero";
-    props: {
-      eyebrow?: string;
-      headline?: string;
-      subheadline?: string;
-      highlights?: string[];
-      ctaLabel?: string;
-    };
-  }
-  | {
-    id: string;
-    type: "info-panel";
-    props: {
-      title?: string;
-      items?: Array<{ label: string; value: string }>;
-      helper?: string;
-    };
-  }
-  | {
-    id: string;
-    type: "feature-grid";
-    props: {
-      title?: string;
-      items?: Array<{ title: string; description: string }>;
-    };
-  }
-  | {
-    id: string;
-    type: "proof-list";
-    props: {
-      title?: string;
-      items?: string[];
-    };
-  }
-  | {
-    id: string;
-    type: "faq-list";
-    props: {
-      title?: string;
-      items?: Array<{ question: string; answer: string }>;
-    };
-  }
-  | {
-    id: string;
-    type: "cta-band";
-    props: {
-      eyebrow?: string;
-      label?: string;
-      helper?: string;
-    };
-  };
-
-type LandingBuilderDocument = {
-  version: number;
-  kind: "landing-builder-v1";
-  metadata: {
-    title: string;
-    slug: string;
-    description?: string;
-  };
-  theme: {
-    accent: string;
-    surface: string;
-    canvas: string;
-  };
-  nodes: LandingBuilderNode[];
 };
 
 type LandingCodeFile = {
@@ -251,15 +177,42 @@ type LandingCodeBundle = {
   usedImports: string[];
 };
 
-const LANDING_CODE_ALLOWED_IMPORTS = new Set([
-  "react",
-  "@/components/ui/button",
+const LANDING_CODE_ALLOWED_UI_IMPORTS = [
+  "@/components/ui/accordion",
+  "@/components/ui/alert-dialog",
+  "@/components/ui/aspect-ratio",
+  "@/components/ui/avatar",
   "@/components/ui/badge",
+  "@/components/ui/button",
   "@/components/ui/card",
+  "@/components/ui/checkbox",
+  "@/components/ui/collapsible",
+  "@/components/ui/context-menu",
+  "@/components/ui/direction",
   "@/components/ui/dialog",
   "@/components/ui/dropdown-menu",
+  "@/components/ui/hover-card",
+  "@/components/ui/label",
+  "@/components/ui/menubar",
+  "@/components/ui/navigation-menu",
+  "@/components/ui/popover",
+  "@/components/ui/progress",
+  "@/components/ui/radio-group",
+  "@/components/ui/scroll-area",
+  "@/components/ui/select",
+  "@/components/ui/separator",
   "@/components/ui/sheet",
-  "@/components/ui/tooltip",
+  "@/components/ui/slider",
+  "@/components/ui/switch",
+  "@/components/ui/tabs",
+  "@/components/ui/toggle",
+  "@/components/ui/toggle-group",
+  "@/components/ui/tooltip"
+] as const;
+
+const LANDING_CODE_ALLOWED_IMPORTS = new Set([
+  "react",
+  ...LANDING_CODE_ALLOWED_UI_IMPORTS,
   "lucide-react"
 ]);
 
@@ -1899,14 +1852,6 @@ app.post("/api/landings/preview", requireSession, async (req, res) => {
         slug: offer.slug
       }
     });
-    const sectionsJson = buildFallbackLandingSectionsFromOffer({
-      offer: {
-        ...offer,
-        ctaLabel: offer.ctaLabel,
-        visualTheme: null
-      }
-    });
-
     res.json({
       offer: {
         id: 0,
@@ -1930,19 +1875,6 @@ app.post("/api/landings/preview", requireSession, async (req, res) => {
         offerId: 0,
         version: 0,
         status: "preview",
-        sectionsJson,
-        builderDocumentJson: buildLandingBuilderDocument({
-          offer: {
-            title: offer.title,
-            slug: offer.slug,
-            shortDescription: offer.shortDescription,
-            durationLabel: offer.durationLabel,
-            modality: offer.modality,
-            approvedFacts: offer.approvedFacts,
-            ctaLabel: offer.ctaLabel
-          },
-          sections: sectionsJson as Record<string, unknown>
-        }),
         landingCodeBundleJson: landingCodeBundle,
         promptSnapshot: prompt,
         sourceFactsSnapshot: offer,
@@ -2065,24 +1997,14 @@ app.patch("/api/landing-creation/sessions/:id", requireSession, async (req, res)
         nextDraft
       );
       updates.offerDraftJson = nextDraft;
-      updates.builderDraftJson = buildLandingBuilderDraftFromDraft(nextDraft) as unknown as object;
-      updates.codeBundleDraftJson = buildDefaultLandingCodeBundleFromOffer({
-        offer: {
-          ...buildPreviewOfferFromDraft(nextDraft),
-          approvedFacts: buildPreviewOfferFromDraft(nextDraft).approvedFacts,
-          ctaLabel: buildPreviewOfferFromDraft(nextDraft).ctaLabel,
-          visualTheme: buildPreviewOfferFromDraft(nextDraft).visualTheme,
-          colorPalette: nextDraft.colorPalette,
-          typographyStyle: nextDraft.typographyStyle,
-          layoutStyle: nextDraft.layoutStyle
-        },
-        summary: "Bundle atualizado automaticamente a partir das alteracoes manuais do draft.",
-        source: "fallback"
-      }) as unknown as object;
+      updates.codeBundleDraftJson = Prisma.DbNull;
+      updates.status = "draft";
     }
 
     if (req.body.promptDraft) {
       updates.promptDraftJson = req.body.promptDraft;
+      updates.codeBundleDraftJson = Prisma.DbNull;
+      updates.status = "draft";
     }
 
     const updated = await prisma.landingCreationSession.update({
@@ -3496,20 +3418,31 @@ function buildLandingPlannerAskQueue(draft: LandingCreationDraftValues, depth: L
     });
   }
 
-  return depth === "medium" ? asks.slice(0, 1) : asks;
+  return depth === "medium" ? asks.slice(0, 2) : asks;
 }
 
 function buildFallbackLandingPlannerState(draft: LandingCreationDraftValues, previous?: LandingPlannerState): LandingPlannerState {
   const promptDepth = inferLandingPromptDepth(draft);
   const askQueue = buildLandingPlannerAskQueue(draft, promptDepth);
   const readyForVisualGeneration = promptDepth !== "shallow" || askQueue.length === 0;
-  const shouldAsk = promptDepth === "shallow" && askQueue.length > 0;
+  const shouldAsk = promptDepth !== "deep" && askQueue.length > 0;
   const planSummary = previous?.planSummary?.trim() || [
     `Vou estruturar a landing${draft.title ? ` de ${draft.title}` : ""} em blocos de conversao,`,
     readyForVisualGeneration
       ? "passar essa direcao para a geracao visual e montar um preview inicial."
       : "mas antes preciso de um pouco mais de contexto para guiar melhor o visual."
   ].join(" ");
+  const stageSummary = buildLandingPlannerStageSummary(draft, {
+    ...buildDefaultLandingPlannerState(),
+    ...(previous || {}),
+    planSummary,
+    promptDepth,
+    shouldAsk,
+    askQueue,
+    readyForVisualGeneration,
+    activeMessageId: previous?.activeMessageId || null,
+    activeQuestionId: askQueue[0]?.id || null
+  });
 
   return {
     planSummary,
@@ -3519,7 +3452,102 @@ function buildFallbackLandingPlannerState(draft: LandingCreationDraftValues, pre
     readyForVisualGeneration,
     activeMessageId: previous?.activeMessageId || null,
     activeQuestionId: askQueue[0]?.id || null,
-    stageSummary: previous?.stageSummary?.trim() || planSummary
+    stageSummary
+  };
+}
+
+function buildLandingPlannerStageSummary(draft: LandingCreationDraftValues, planner: LandingPlannerState): string {
+  const title = draft.title.trim();
+  const label = title ? ` de ${title}` : "";
+
+  if (planner.readyForVisualGeneration && planner.shouldAsk && planner.askQueue[0]) {
+    const ask = planner.askQueue[0];
+    const askLabel = ask.label?.trim().toLowerCase() || "alguns detalhes";
+    return [
+      `Vou estruturar a landing${label} em blocos de conversao,`,
+      `ja consigo montar um preview inicial e ainda quero alinhar ${askLabel} para refinar melhor a pagina.`
+    ].join(" ");
+  }
+
+  if (planner.readyForVisualGeneration && !planner.shouldAsk) {
+    return [
+      `Vou estruturar a landing${label} em blocos de conversao,`,
+      "passar essa direcao para a geracao visual e montar um preview inicial."
+    ].join(" ");
+  }
+
+  if (planner.shouldAsk && planner.askQueue[0]) {
+    const ask = planner.askQueue[0];
+    const askLabel = ask.label?.trim().toLowerCase() || "alguns detalhes";
+    return [
+      `Vou estruturar a landing${label} em blocos de conversao,`,
+      `mas antes preciso alinhar ${askLabel} para gerar um preview mais forte.`
+    ].join(" ");
+  }
+
+  return [
+    `Vou estruturar a landing${label} em blocos de conversao,`,
+    "organizar a direcao da pagina e preparar o preview em seguida."
+  ].join(" ");
+}
+
+function isDraftConcreteEnoughForAutoPreview(draft: LandingCreationDraftValues): boolean {
+  const hasTopic = Boolean(draft.title.trim() || draft.slug.trim());
+  const hasNarrative = draft.shortDescription.trim().length >= 40 || draft.approvedFacts.length >= 2;
+  const hasDirection = Boolean(
+    draft.visualTheme.trim()
+    || draft.colorPalette.trim()
+    || draft.typographyStyle.trim()
+    || draft.layoutStyle.trim()
+  );
+  return hasTopic && hasNarrative && hasDirection;
+}
+
+function enrichDraftForAutoPreview(draft: LandingCreationDraftValues): LandingCreationDraftValues {
+  const nextDraft = normalizeLandingCreationDraft(draft, draft);
+  const context = inferLandingTopicContext(nextDraft);
+  if (!nextDraft.colorPalette.trim()) nextDraft.colorPalette = context.paletteOptions[0] || "";
+  if (!nextDraft.typographyStyle.trim()) nextDraft.typographyStyle = context.typographyOptions[0] || "";
+  if (!nextDraft.layoutStyle.trim()) nextDraft.layoutStyle = context.layoutOptions[0] || "";
+  if (!nextDraft.ctaLabel.trim()) nextDraft.ctaLabel = "Quero saber mais";
+  return nextDraft;
+}
+
+function finalizeLandingPlannerState(draft: LandingCreationDraftValues, planner: LandingPlannerState): {
+  draft: LandingCreationDraftValues;
+  planner: LandingPlannerState;
+} {
+  if (isDraftConcreteEnoughForAutoPreview(draft)) {
+    const nextDraft = enrichDraftForAutoPreview(draft);
+    const normalizedPlanner: LandingPlannerState = {
+      ...planner,
+      promptDepth: planner.promptDepth === "shallow" ? "medium" : planner.promptDepth,
+      shouldAsk: false,
+      askQueue: [],
+      readyForVisualGeneration: true,
+      activeMessageId: null,
+      activeQuestionId: null
+    };
+    const stageSummary = buildLandingPlannerStageSummary(nextDraft, normalizedPlanner);
+    return {
+      draft: nextDraft,
+      planner: {
+        ...normalizedPlanner,
+        planSummary: normalizedPlanner.planSummary.trim() || stageSummary,
+        stageSummary
+      }
+    };
+  }
+
+  const normalizedPlanner: LandingPlannerState = {
+    ...planner,
+    activeMessageId: planner.shouldAsk ? planner.activeMessageId : null,
+    activeQuestionId: planner.shouldAsk ? planner.askQueue[0]?.id || planner.activeQuestionId : null,
+    stageSummary: buildLandingPlannerStageSummary(draft, planner)
+  };
+  return {
+    draft,
+    planner: normalizedPlanner
   };
 }
 
@@ -3543,7 +3571,7 @@ function buildLandingPlannerStateFromAiResponse(parsed: Record<string, unknown>,
   return {
     planSummary: normalized.planSummary || fallback.planSummary,
     promptDepth: normalized.promptDepth,
-    shouldAsk: normalized.promptDepth === "shallow" ? normalized.shouldAsk || fallback.shouldAsk : false,
+    shouldAsk: normalized.promptDepth !== "deep" ? normalized.shouldAsk || fallback.shouldAsk : false,
     askQueue: normalized.askQueue.length ? normalized.askQueue : fallback.askQueue,
     readyForVisualGeneration: normalized.promptDepth === "shallow"
       ? normalizeBoolean(normalized.readyForVisualGeneration, fallback.readyForVisualGeneration)
@@ -3621,27 +3649,7 @@ function buildFastLandingDraftFromTopic(topic: string, fallback: LandingCreation
         ]
   }, fallback);
 
-  const topicContext = inferLandingTopicContext(nextDraft);
-  if (!nextDraft.colorPalette.trim()) nextDraft.colorPalette = topicContext.paletteOptions[0] || "";
-  if (!nextDraft.typographyStyle.trim()) nextDraft.typographyStyle = topicContext.typographyOptions[0] || "";
-  if (!nextDraft.layoutStyle.trim()) nextDraft.layoutStyle = topicContext.layoutOptions[0] || "";
   if (!nextDraft.ctaLabel.trim()) nextDraft.ctaLabel = "Quero saber mais";
-
-  const planSummary = [
-    `Vou estruturar a landing de ${normalizedTopic} com hero principal, proposta do curso, beneficios praticos e CTA final.`,
-    `A direcao inicial fica em ${nextDraft.colorPalette}, com tipografia ${nextDraft.typographyStyle} e layout ${nextDraft.layoutStyle}.`
-  ].join(" ");
-
-  nextDraft.planner = {
-    planSummary,
-    promptDepth: "deep",
-    shouldAsk: false,
-    askQueue: [],
-    readyForVisualGeneration: false,
-    activeMessageId: null,
-    activeQuestionId: null,
-    stageSummary: planSummary
-  };
 
   return nextDraft;
 }
@@ -3753,47 +3761,6 @@ function buildPreviewOfferFromDraft(draft: LandingCreationDraftValues) {
     ctaUrl: draft.ctaUrl || "https://wa.me/",
     visualTheme: visualDirection || null,
     isActive: draft.isActive
-  };
-}
-
-function buildFallbackLandingSectionsFromOffer(params: {
-  offer: {
-    title: string;
-    slug: string;
-    shortDescription: string | null;
-    durationLabel: string | null;
-    modality: string | null;
-    approvedFacts: string[];
-    ctaLabel: string;
-    visualTheme?: string | null;
-  };
-}) {
-  const approvedFacts = params.offer.approvedFacts.length
-    ? params.offer.approvedFacts
-    : [params.offer.shortDescription || params.offer.title];
-
-  return {
-    hero: {
-      eyebrow: params.offer.visualTheme || "Landing criada com IA",
-      headline: params.offer.title,
-      subheadline: params.offer.shortDescription || "Construa uma versao pronta para conversao em poucos minutos.",
-      highlights: approvedFacts.slice(0, 4)
-    },
-    benefits: approvedFacts.slice(0, 3).map((fact, index) => ({
-      title: fact,
-      description: index === 0
-        ? "Bloco principal construido a partir dos fatos aprovados da oferta."
-        : "Conteudo inicial pronto para ser refinado no chat ou no painel lateral."
-    })),
-    proof: {
-      title: "O que voce vai encontrar",
-      items: approvedFacts
-    },
-    faq: [],
-    cta: {
-      label: params.offer.ctaLabel,
-      helper: params.offer.shortDescription || "Fale com nossa equipe e veja a proxima etapa."
-    }
   };
 }
 
@@ -3948,243 +3915,6 @@ function normalizePathSegments(value: string): string {
     output.push(segment);
   }
   return output.join("/");
-}
-
-function buildDefaultLandingCodeBundleFromOffer(params: {
-  offer: {
-    title: string;
-    slug: string;
-    shortDescription: string | null;
-    durationLabel: string | null;
-    modality: string | null;
-    approvedFacts: string[];
-    ctaLabel: string;
-    visualTheme?: string | null;
-    colorPalette?: string | null;
-    typographyStyle?: string | null;
-    layoutStyle?: string | null;
-  };
-  summary: string;
-  source?: "ai" | "fallback";
-}): LandingCodeBundle {
-  const themeTokens = resolveFallbackThemeTokens({
-    colorPalette: params.offer.colorPalette,
-    visualTheme: params.offer.visualTheme
-  });
-  const payload = {
-    title: params.offer.title,
-    description: params.offer.shortDescription || "A IA vai montar o preview visual completo a partir do briefing da landing.",
-    ctaLabel: params.offer.ctaLabel,
-    visualTheme: params.offer.visualTheme || "",
-    colorPalette: params.offer.colorPalette || ""
-  };
-  const payloadLiteral = JSON.stringify(payload, null, 2);
-  const code = [
-    'import * as React from "react";',
-    'import { Button } from "@/components/ui/button";',
-    'import { ArrowRight } from "lucide-react";',
-    "",
-    `const content = ${payloadLiteral};`,
-    `const theme = ${JSON.stringify(themeTokens, null, 2)};`,
-    "",
-    "export default function LandingPage({ onPrimaryAction }: { onPrimaryAction?: () => void }) {",
-    "  return (",
-    '    <main className="min-h-screen overflow-hidden" style={{ color: theme.text, background: `radial-gradient(circle at 20% 18%, ${theme.accent}16, transparent 18%), linear-gradient(180deg, ${theme.canvas} 0%, ${theme.surface} 48%, ${theme.canvas} 100%)` }}>',
-    '      <section className="mx-auto flex min-h-screen max-w-5xl flex-col items-center justify-center gap-8 px-6 py-20 text-center">',
-    '        <div className="space-y-4">',
-    '          <p className="text-sm uppercase tracking-[0.28em]" style={{ color: theme.muted }}>{content.colorPalette || content.visualTheme || "aguardando geracao visual"}</p>',
-    '          <h1 className="text-4xl font-black text-white md:text-6xl">{content.title}</h1>',
-    '          <p className="mx-auto max-w-2xl text-lg leading-8" style={{ color: theme.text }}>{content.description}</p>',
-    '        </div>',
-    '        <div className="rounded-[32px] border px-6 py-6" style={{ borderColor: `${theme.accent}18`, backgroundColor: `${theme.canvas}b8` }}>',
-    '          <p className="max-w-xl text-base leading-7" style={{ color: theme.muted }}>Preview inicial montado para acelerar o fluxo. Agora e so refinar o design, a copy e os blocos principais da pagina.</p>',
-    '        </div>',
-    '        <Button size="lg" onClick={onPrimaryAction}><ArrowRight data-icon="inline-end" />{content.ctaLabel}</Button>',
-    '      </section>',
-    '    </main>',
-    '  );',
-    '}'
-  ].join("\n");
-
-  return {
-    version: 1,
-    kind: "landing-code-bundle-v1",
-    framework: "vite-react",
-    source: params.source || "fallback",
-    entryFile: "App.tsx",
-    files: [
-      {
-        path: "App.tsx",
-        summary: "Arquivo principal da landing gerada no runtime controlado.",
-        code
-      }
-    ],
-    metadata: {
-      title: params.offer.title,
-      slug: params.offer.slug,
-      description: params.offer.shortDescription || undefined,
-      summary: params.summary,
-      generatedAt: new Date().toISOString()
-    },
-    themeTokens,
-    usedComponents: ["Button"],
-    usedImports: [
-      "react",
-      "@/components/ui/button",
-      "lucide-react"
-    ]
-  };
-}
-
-function buildLandingBuilderDocument(params: {
-  offer: {
-    title: string;
-    slug: string;
-    shortDescription: string | null;
-    durationLabel: string | null;
-    modality: string | null;
-    approvedFacts: string[];
-    ctaLabel: string;
-  };
-  sections: Record<string, unknown>;
-  version?: number;
-}): LandingBuilderDocument {
-  const sections = params.sections;
-  const hero = typeof sections.hero === "object" && sections.hero !== null ? sections.hero as Record<string, unknown> : {};
-  const benefits = Array.isArray(sections.benefits) ? sections.benefits : [];
-  const proof = typeof sections.proof === "object" && sections.proof !== null ? sections.proof as Record<string, unknown> : {};
-  const faq = Array.isArray(sections.faq) ? sections.faq : [];
-  const cta = typeof sections.cta === "object" && sections.cta !== null ? sections.cta as Record<string, unknown> : {};
-
-  const benefitItems = benefits
-    .map((entry) => {
-      if (!entry || typeof entry !== "object") return null;
-      const item = entry as Record<string, unknown>;
-      const title = typeof item.title === "string" ? utf8Text(item.title).trim() : "";
-      const description = typeof item.description === "string" ? utf8Text(item.description).trim() : "";
-      return title && description ? { title, description } : null;
-    })
-    .filter((entry): entry is { title: string; description: string } => Boolean(entry));
-
-  const faqItems = faq
-    .map((entry) => {
-      if (!entry || typeof entry !== "object") return null;
-      const item = entry as Record<string, unknown>;
-      const question = typeof item.question === "string" ? utf8Text(item.question).trim() : "";
-      const answer = typeof item.answer === "string" ? utf8Text(item.answer).trim() : "";
-      return question && answer ? { question, answer } : null;
-    })
-    .filter((entry): entry is { question: string; answer: string } => Boolean(entry));
-
-  return {
-    version: params.version || 1,
-    kind: "landing-builder-v1",
-    metadata: {
-      title: params.offer.title,
-      slug: params.offer.slug,
-      description: params.offer.shortDescription || undefined
-    },
-    theme: {
-      accent: "#22d3ee",
-      surface: "#0f172a",
-      canvas: "#08111f"
-    },
-    nodes: [
-      {
-        id: "hero",
-        type: "hero",
-        props: {
-          eyebrow: typeof hero.eyebrow === "string" ? utf8Text(hero.eyebrow).trim() : "Transforme sua carreira",
-          headline: typeof hero.headline === "string" ? utf8Text(hero.headline).trim() : params.offer.title,
-          subheadline: typeof hero.subheadline === "string" ? utf8Text(hero.subheadline).trim() : (params.offer.shortDescription || ""),
-          highlights: parseStringArray(hero.highlights).length ? parseStringArray(hero.highlights) : params.offer.approvedFacts,
-          ctaLabel: typeof cta.label === "string" ? utf8Text(cta.label).trim() : params.offer.ctaLabel
-        }
-      },
-      {
-        id: "summary",
-        type: "info-panel",
-        props: {
-          title: params.offer.title,
-          items: [
-            { label: "Duracao", value: params.offer.durationLabel || "Consulte disponibilidade" },
-            { label: "Modalidade", value: params.offer.modality || "A combinar" },
-            { label: "Versao", value: `Landing v${params.version || 1}` }
-          ],
-          helper: typeof cta.helper === "string" ? utf8Text(cta.helper).trim() : "Fale com a equipe e veja a melhor forma de entrar agora."
-        }
-      },
-      {
-        id: "benefits",
-        type: "feature-grid",
-        props: {
-          title: "Destaques",
-          items: benefitItems
-        }
-      },
-      {
-        id: "proof",
-        type: "proof-list",
-        props: {
-          title: typeof proof.title === "string" ? utf8Text(proof.title).trim() : "Diferenciais",
-          items: parseStringArray(proof.items).length ? parseStringArray(proof.items) : params.offer.approvedFacts
-        }
-      },
-      {
-        id: "faq",
-        type: "faq-list",
-        props: {
-          title: "FAQ rapido",
-          items: faqItems
-        }
-      },
-      {
-        id: "cta",
-        type: "cta-band",
-        props: {
-          eyebrow: "Pronto para avancar",
-          label: typeof cta.label === "string" ? utf8Text(cta.label).trim() : params.offer.ctaLabel,
-          helper: typeof cta.helper === "string" ? utf8Text(cta.helper).trim() : (params.offer.shortDescription || "")
-        }
-      }
-    ]
-  };
-}
-
-function buildLandingBuilderDraftFromDraft(draft: LandingCreationDraftValues): LandingBuilderDocument {
-  return buildLandingBuilderDocument({
-    offer: {
-      title: draft.title || "Nova oferta",
-      slug: draft.slug || normalizeSlug(draft.title || "nova-oferta"),
-      shortDescription: draft.shortDescription || draft.title || "Oferta em criacao",
-      durationLabel: draft.durationLabel || null,
-      modality: draft.modality || null,
-      approvedFacts: draft.approvedFacts.length ? draft.approvedFacts : [draft.shortDescription || draft.title || "Oferta em criacao"],
-      ctaLabel: draft.ctaLabel || "Quero saber mais"
-    },
-    sections: {
-      hero: {
-        eyebrow: "Construa sua landing com IA",
-        headline: draft.title || "Nova landing",
-        subheadline: draft.shortDescription || "Descreva a oferta e refine a pagina em tempo real.",
-        highlights: draft.approvedFacts
-      },
-      benefits: draft.approvedFacts.slice(0, 3).map((fact) => ({
-        title: fact,
-        description: "Bloco inicial gerado a partir dos fatos aprovados."
-      })),
-      proof: {
-        title: "Pontos aprovados",
-        items: draft.approvedFacts
-      },
-      faq: [],
-      cta: {
-        label: draft.ctaLabel || "Quero saber mais",
-        helper: draft.shortDescription || "Continue refinando no chat ou publique quando estiver pronto."
-      }
-    },
-    version: 1
-  });
 }
 
 function parseStringArray(value: unknown): string[] {
@@ -4359,9 +4089,7 @@ function mapLandingPageSummary(page: {
   offerId: number;
   version: number;
   status: string;
-  sectionsJson: unknown;
-  builderDocumentJson?: unknown;
-  landingCodeBundleJson?: unknown;
+  landingCodeBundleJson: unknown;
   promptSnapshot: unknown;
   sourceFactsSnapshot: unknown;
   publishedAt: Date | null;
@@ -4374,9 +4102,7 @@ function mapLandingPageSummary(page: {
     offerId: page.offerId,
     version: page.version,
     status: page.status,
-    sectionsJson: page.sectionsJson,
-    builderDocumentJson: page.builderDocumentJson ?? null,
-    landingCodeBundleJson: page.landingCodeBundleJson ?? null,
+    landingCodeBundleJson: page.landingCodeBundleJson,
     artifactKey: artifact?.key || null,
     artifactUrl: artifact?.url || null,
     promptSnapshot: page.promptSnapshot,
@@ -4394,9 +4120,7 @@ function mapLandingCreationSession(session: {
   offerDraftJson: unknown;
   promptDraftJson: unknown;
   chatHistoryJson: unknown;
-  builderDraftJson?: unknown;
   codeBundleDraftJson?: unknown;
-  previewSectionsJson: unknown;
   publishedOfferId: number | null;
   createdAt: Date;
   updatedAt: Date;
@@ -4407,39 +4131,8 @@ function mapLandingCreationSession(session: {
   const chatHistory = normalizeLandingCreationHistory(session.chatHistoryJson);
   const readiness = computeLandingDraftReadiness(draft);
   const previewOffer = buildPreviewOfferFromDraft(draft);
-  const hasStoredPreview = session.previewSectionsJson && typeof session.previewSectionsJson === "object";
-  const previewSections = hasStoredPreview ? session.previewSectionsJson : null;
-  const builderDraft = session.builderDraftJson && typeof session.builderDraftJson === "object"
-    ? session.builderDraftJson
-    : buildLandingBuilderDraftFromDraft(draft);
   const codeBundleDraft = session.codeBundleDraftJson && typeof session.codeBundleDraftJson === "object"
     ? session.codeBundleDraftJson
-    : buildDefaultLandingCodeBundleFromOffer({
-      offer: {
-        ...previewOffer,
-        approvedFacts: previewOffer.approvedFacts,
-        ctaLabel: previewOffer.ctaLabel,
-        visualTheme: previewOffer.visualTheme,
-        colorPalette: draft.colorPalette,
-        typographyStyle: draft.typographyStyle,
-        layoutStyle: draft.layoutStyle
-      },
-      summary: "Bundle inicial criado a partir do draft da oferta.",
-      source: "fallback"
-    });
-  const previewBuilder = previewSections
-    ? buildLandingBuilderDocument({
-        offer: {
-          title: previewOffer.title,
-          slug: previewOffer.slug,
-          shortDescription: previewOffer.shortDescription,
-          durationLabel: previewOffer.durationLabel,
-          modality: previewOffer.modality,
-          approvedFacts: previewOffer.approvedFacts,
-          ctaLabel: previewOffer.ctaLabel
-        },
-        sections: previewSections as Record<string, unknown>
-      })
     : null;
 
   return {
@@ -4451,9 +4144,8 @@ function mapLandingCreationSession(session: {
     chatHistory,
     readiness,
     planner,
-    builderDraft,
     codeBundleDraft,
-    preview: previewSections
+    preview: codeBundleDraft
       ? {
           offer: {
             id: session.publishedOfferId || 0,
@@ -4477,8 +4169,6 @@ function mapLandingCreationSession(session: {
             offerId: session.publishedOfferId || 0,
             version: 0,
             status: "preview",
-            sectionsJson: previewSections,
-            builderDocumentJson: previewBuilder,
             landingCodeBundleJson: codeBundleDraft,
             promptSnapshot: promptDraft,
             sourceFactsSnapshot: draft,
@@ -4583,18 +4273,6 @@ async function generateLandingPageForOffer(offerId: number, leadContext?: {
   if (!offer) throw new Error("Oferta nao encontrada.");
   const promptConfig = await getOfferLandingPromptSettings(offerId);
   const approvedFacts = serializeOfferJsonList(offer.approvedFacts);
-  const fallbackSections = buildFallbackLandingSectionsFromOffer({
-    offer: {
-      title: offer.title,
-      slug: offer.slug,
-      shortDescription: offer.shortDescription,
-      durationLabel: offer.durationLabel,
-      modality: offer.modality,
-      approvedFacts,
-      ctaLabel: offer.ctaLabel,
-      visualTheme: offer.visualTheme
-    }
-  });
   const landingCodeBundle = await generateLandingCodeBundleForOfferData({
     offer: {
       title: offer.title,
@@ -4624,20 +4302,6 @@ async function generateLandingPageForOffer(offerId: number, leadContext?: {
       offerId,
       version: (latest?.version || 0) + 1,
       status: "draft",
-      sectionsJson: fallbackSections as object,
-      builderDocumentJson: buildLandingBuilderDocument({
-        offer: {
-          title: offer.title,
-          slug: offer.slug,
-          shortDescription: offer.shortDescription,
-          durationLabel: offer.durationLabel,
-          modality: offer.modality,
-          approvedFacts,
-          ctaLabel: offer.ctaLabel
-        },
-        sections: fallbackSections as Record<string, unknown>,
-        version: (latest?.version || 0) + 1
-      }) as unknown as object,
       landingCodeBundleJson: landingCodeBundle as unknown as object,
       promptSnapshot: {
         ...promptConfig,
@@ -4656,99 +4320,6 @@ async function generateLandingPageForOffer(offerId: number, leadContext?: {
   });
   logEvent("info", "landing.generate.succeeded", { offerId, landingPageId: page.id, version: page.version, slug: offer.slug });
   return page;
-}
-
-async function generateLandingSectionsForOfferData(params: {
-  offer: {
-    title: string;
-    slug: string;
-    shortDescription: string | null;
-    durationLabel: string | null;
-    modality: string | null;
-    approvedFacts: string[];
-  };
-  promptConfig: {
-    systemPrompt: string;
-    toneGuidelines: string;
-    requiredRules: string[];
-    ctaRules: string[];
-  };
-  leadContext?: {
-    interestedCourse?: string | null;
-    courseMode?: string | null;
-    objective?: string | null;
-    level?: string | null;
-    summary?: string | null;
-  };
-  eventMeta: {
-    eventPrefix: string;
-    offerId?: number | null;
-    slug: string;
-    sessionId?: number | null;
-  };
-}) {
-  const approvedFacts = params.offer.approvedFacts.length
-    ? params.offer.approvedFacts
-    : [params.offer.shortDescription || params.offer.title];
-  const promptInput = buildLandingGenerationPromptInput({
-    offerTitle: params.offer.title,
-    offerSlug: params.offer.slug,
-    shortDescription: params.offer.shortDescription,
-    durationLabel: params.offer.durationLabel,
-    modality: params.offer.modality,
-    approvedFacts,
-    prompt: {
-      systemPrompt: params.promptConfig.systemPrompt,
-      toneGuidelines: params.promptConfig.toneGuidelines,
-      requiredRules: params.promptConfig.requiredRules,
-      ctaRules: params.promptConfig.ctaRules
-    },
-    leadContext: params.leadContext
-  });
-
-  logEvent("info", `${params.eventMeta.eventPrefix}.started`, {
-    sessionId: params.eventMeta.sessionId ?? null,
-    offerId: params.eventMeta.offerId,
-    slug: params.eventMeta.slug
-  });
-  const { response: resp, selectedModel, fallbackUsed } = await callOpenAIResponsesWithRouting({
-    taskType: "landing_generation",
-    input: promptInput,
-    maxOutputTokens: 900,
-    metadata: {
-      sessionId: params.eventMeta.sessionId ?? null,
-      offerId: params.eventMeta.offerId,
-      slug: params.eventMeta.slug
-    }
-  });
-
-  if (!resp.ok) {
-    const detail = await resp.text().catch(() => "");
-    logEvent("error", `${params.eventMeta.eventPrefix}.failed`, {
-      sessionId: params.eventMeta.sessionId ?? null,
-      offerId: params.eventMeta.offerId,
-      slug: params.eventMeta.slug,
-      selectedModel,
-      fallbackUsed,
-      statusCode: resp.status,
-      message: detail
-    });
-    throw new Error(`Falha ao gerar landing (${resp.status}).`);
-  }
-
-  const data = await resp.json();
-  const sectionsJson = extractFirstJsonObject(parseResponseOutputText(data));
-  if (!sectionsJson) {
-    logEvent("error", `${params.eventMeta.eventPrefix}.failed`, {
-      sessionId: params.eventMeta.sessionId ?? null,
-      offerId: params.eventMeta.offerId,
-      slug: params.eventMeta.slug,
-      message: "json_invalido"
-    });
-    throw new Error("Resposta da IA para landing veio sem JSON valido.");
-  }
-
-  return sectionsJson;
 }
 
 function parseGeminiOutputText(payload: unknown): string {
@@ -5051,98 +4622,180 @@ async function generateLandingCodeBundleWithOpenAI(params: {
   }
 
   const promptText = buildLandingCodeBundlePromptText(params);
-  const responseResult = await callOpenAIResponsesWithRouting({
-    taskType: "landing_code_bundle",
-    input: [
-      {
-        role: "user",
-        content: [
-          {
-            type: "input_text",
-            text: promptText
-          }
-        ]
+  const baseInput = [
+    {
+      role: "user" as const,
+      content: [
+        {
+          type: "input_text" as const,
+          text: promptText
+        }
+      ]
+    }
+  ];
+
+  const runAttempt = async (
+    input: typeof baseInput,
+    repairAttempt: boolean
+  ): Promise<{
+    bundle: LandingCodeBundle | null;
+    rawOutput: string;
+    issues: string[];
+    selectedModel: string;
+    fallbackUsed: boolean;
+  } | null> => {
+    const responseResult = await callOpenAIResponsesWithRouting({
+      taskType: "landing_code_bundle",
+      input,
+      maxOutputTokens: 9000,
+      metadata: {
+        sessionId: params.eventMeta.sessionId ?? null,
+        offerId: params.eventMeta.offerId,
+        slug: params.eventMeta.slug,
+        ...(repairAttempt ? { repairAttempt: true } : {})
       }
-    ],
-    maxOutputTokens: 6000,
-    metadata: {
-      sessionId: params.eventMeta.sessionId ?? null,
-      offerId: params.eventMeta.offerId,
-      slug: params.eventMeta.slug
-    }
-  }).catch((err) => {
-    logEvent("error", `${params.eventMeta.eventPrefix}.failed`, {
-      sessionId: params.eventMeta.sessionId ?? null,
-      offerId: params.eventMeta.offerId,
-      slug: params.eventMeta.slug,
-      mode: "react_bundle",
-      provider: "openai",
-      message: formatError(err)
+    }).catch((err) => {
+      logEvent("error", `${params.eventMeta.eventPrefix}.failed`, {
+        sessionId: params.eventMeta.sessionId ?? null,
+        offerId: params.eventMeta.offerId,
+        slug: params.eventMeta.slug,
+        mode: "react_bundle",
+        provider: "openai",
+        ...(repairAttempt ? { repairAttempt: true } : {}),
+        message: formatError(err)
+      });
+      return null;
     });
-    return null;
-  });
 
-  if (!responseResult) return null;
-  const { response: resp, selectedModel, fallbackUsed } = responseResult;
-  if (!resp.ok) {
-    const detail = await resp.text().catch(() => "");
-    logEvent("error", `${params.eventMeta.eventPrefix}.failed`, {
-      sessionId: params.eventMeta.sessionId ?? null,
-      offerId: params.eventMeta.offerId,
-      slug: params.eventMeta.slug,
-      mode: "react_bundle",
-      provider: "openai",
+    if (!responseResult) return null;
+    const { response: resp, selectedModel, fallbackUsed } = responseResult;
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => "");
+      logEvent("error", `${params.eventMeta.eventPrefix}.failed`, {
+        sessionId: params.eventMeta.sessionId ?? null,
+        offerId: params.eventMeta.offerId,
+        slug: params.eventMeta.slug,
+        mode: "react_bundle",
+        provider: "openai",
+        selectedModel,
+        fallbackUsed,
+        ...(repairAttempt ? { repairAttempt: true } : {}),
+        statusCode: resp.status,
+        message: detail
+      });
+      return null;
+    }
+
+    const payload = await resp.json();
+    const rawOutput = parseResponseOutputText(payload);
+    const parsed = extractFirstJsonObject(rawOutput);
+    const normalizedBundle = normalizeLandingCodeBundle(parsed, {
+      title: params.offer.title,
+      slug: params.offer.slug,
+      shortDescription: params.offer.shortDescription,
+      visualTheme: params.offer.visualTheme
+    });
+
+    if (!normalizedBundle) {
+      return {
+        bundle: null,
+        rawOutput,
+        issues: ["O bundle precisa seguir exatamente o contrato JSON solicitado, com kind/framework/entryFile/files validos."],
+        selectedModel,
+        fallbackUsed
+      };
+    }
+
+    const validationIssues = validateLandingCodeBundle(normalizedBundle);
+    if (validationIssues.length > 0) {
+      return {
+        bundle: null,
+        rawOutput,
+        issues: validationIssues,
+        selectedModel,
+        fallbackUsed
+      };
+    }
+
+    return {
+      bundle: {
+        ...normalizedBundle,
+        source: "ai",
+        metadata: {
+          ...normalizedBundle.metadata,
+          generatedAt: new Date().toISOString()
+        }
+      },
+      rawOutput,
+      issues: [],
       selectedModel,
-      fallbackUsed,
-      statusCode: resp.status,
-      message: detail
-    });
-    return null;
-  }
-
-  const payload = await resp.json();
-  const parsed = extractFirstJsonObject(parseResponseOutputText(payload));
-  const normalizedBundle = normalizeLandingCodeBundle(parsed, {
-    title: params.offer.title,
-    slug: params.offer.slug,
-    shortDescription: params.offer.shortDescription,
-    visualTheme: params.offer.visualTheme
-  });
-
-  if (!normalizedBundle) {
-    logEvent("warn", `${params.eventMeta.eventPrefix}.provider_invalid`, {
-      sessionId: params.eventMeta.sessionId ?? null,
-      offerId: params.eventMeta.offerId,
-      slug: params.eventMeta.slug,
-      mode: "react_bundle",
-      provider: "openai",
-      message: "bundle_invalido",
-      rawPreview: parseResponseOutputText(payload).slice(0, 1200)
-    });
-    return null;
-  }
-
-  const validationIssues = validateLandingCodeBundle(normalizedBundle);
-  if (validationIssues.length > 0) {
-    logEvent("warn", `${params.eventMeta.eventPrefix}.provider_invalid`, {
-      sessionId: params.eventMeta.sessionId ?? null,
-      offerId: params.eventMeta.offerId,
-      slug: params.eventMeta.slug,
-      mode: "react_bundle",
-      provider: "openai",
-      issues: validationIssues
-    });
-    return null;
-  }
-
-  return {
-    ...normalizedBundle,
-    source: "ai",
-    metadata: {
-      ...normalizedBundle.metadata,
-      generatedAt: new Date().toISOString()
-    }
+      fallbackUsed
+    };
   };
+
+  const firstAttempt = await runAttempt(baseInput, false);
+  if (firstAttempt?.bundle) {
+    return firstAttempt.bundle;
+  }
+
+  if (firstAttempt) {
+    logEvent("warn", `${params.eventMeta.eventPrefix}.provider_invalid`, {
+      sessionId: params.eventMeta.sessionId ?? null,
+      offerId: params.eventMeta.offerId,
+      slug: params.eventMeta.slug,
+      mode: "react_bundle",
+      provider: "openai",
+      selectedModel: firstAttempt.selectedModel,
+      fallbackUsed: firstAttempt.fallbackUsed,
+      issues: firstAttempt.issues,
+      rawPreview: firstAttempt.rawOutput.slice(0, 1200)
+    });
+  }
+
+  const repairInput = [
+    ...baseInput,
+    {
+      role: "user" as const,
+      content: [
+        {
+          type: "input_text" as const,
+          text: [
+            "Sua ultima resposta nao passou na validacao do runtime.",
+            "Corrija e reenvie somente um JSON valido no mesmo schema.",
+            "Problemas detectados:",
+            ...(firstAttempt?.issues || ["O bundle veio fora do contrato esperado."]).map((issue, index) => `${index + 1}. ${issue}`),
+            'O arquivo principal precisa importar e usar componentes `@/components/ui/*`. O caminho minimo seguro e `@/components/ui/button` com `<Button>` em um CTA visivel.',
+            "Aproveite o catalogo shadcn/Radix ao maximo no reparo. Se houver secoes suficientes, prefira combinar varios componentes reais da allowlist, como Button, Badge, Accordion, Tabs, Separator, ScrollArea, Tooltip, HoverCard, Card e ToggleGroup, em vez de voltar para HTML cru.",
+            "Nao injete componente morto so para inflar a lista. Cada primitive deve aparecer com papel real na pagina.",
+            "Nao use markdown, cercas de codigo, comentarios fora do JSON ou texto antes/depois do objeto.",
+            "Se o codigo estiver grande demais, simplifique. Prefira um bundle compacto e valido."
+          ].join("\n")
+        }
+      ]
+    }
+  ];
+
+  const repairedAttempt = await runAttempt(repairInput, true);
+  if (repairedAttempt?.bundle) {
+    return repairedAttempt.bundle;
+  }
+
+  if (repairedAttempt) {
+    logEvent("warn", `${params.eventMeta.eventPrefix}.provider_invalid`, {
+      sessionId: params.eventMeta.sessionId ?? null,
+      offerId: params.eventMeta.offerId,
+      slug: params.eventMeta.slug,
+      mode: "react_bundle",
+      provider: "openai",
+      selectedModel: repairedAttempt.selectedModel,
+      fallbackUsed: repairedAttempt.fallbackUsed,
+      repairAttempt: true,
+      issues: repairedAttempt.issues,
+      rawPreview: repairedAttempt.rawOutput.slice(0, 1200)
+    });
+  }
+
+  return null;
 }
 
 async function generateLandingCodeBundleForOfferData(params: {
@@ -5216,27 +4869,13 @@ async function generateLandingCodeBundleForOfferData(params: {
 async function createLandingCreationSession() {
   const promptDraft = await getGlobalLandingPromptSettings();
   const defaultDraft = buildDefaultLandingCreationDraft();
-  const previewOffer = buildPreviewOfferFromDraft(defaultDraft);
   const session = await prisma.landingCreationSession.create({
     data: {
       title: "Nova landing",
       status: "draft",
       offerDraftJson: defaultDraft,
       promptDraftJson: promptDraft,
-      builderDraftJson: buildLandingBuilderDraftFromDraft(defaultDraft) as unknown as object,
-      codeBundleDraftJson: buildDefaultLandingCodeBundleFromOffer({
-        offer: {
-          ...previewOffer,
-          approvedFacts: previewOffer.approvedFacts,
-          ctaLabel: previewOffer.ctaLabel,
-          visualTheme: previewOffer.visualTheme,
-          colorPalette: defaultDraft.colorPalette,
-          typographyStyle: defaultDraft.typographyStyle,
-          layoutStyle: defaultDraft.layoutStyle
-        },
-        summary: "Bundle inicial criado para uma nova sessao de landing.",
-        source: "fallback"
-      }) as unknown as object,
+      codeBundleDraftJson: Prisma.DbNull,
       chatHistoryJson: []
     } as any
   });
@@ -5280,50 +4919,65 @@ async function runLandingCreationChatTurn(sessionId: number, userMessage: string
   ];
   const simpleTopic = !options?.absorbAskAnswer && history.length <= 2 ? extractSimpleLandingTopic(userMessage) : null;
   if (simpleTopic) {
-    const nextDraft = buildFastLandingDraftFromTopic(simpleTopic, requestDraft);
-    const assistantContent = [
-      `Planejamento inicial da landing de ${toTitleCase(simpleTopic)}:`,
-      "1. Hero direto com promessa clara do curso.",
-      "2. Blocos com beneficios e aplicacoes praticas.",
-      `3. Direcao visual base: ${nextDraft.colorPalette}.`,
-      `4. Tipografia: ${nextDraft.typographyStyle}.`,
-      `5. Estrutura: ${nextDraft.layoutStyle}.`,
-      "Se essa base estiver certa, eu sigo para o preview."
-    ].join("\n");
+    let nextDraft = buildFastLandingDraftFromTopic(simpleTopic, requestDraft);
+    const fastPlanSummary = [
+      `Vou estruturar a landing de ${toTitleCase(simpleTopic)} com hero principal, proposta do curso, beneficios praticos e CTA final.`,
+      "Tambem vou abrir algumas perguntas contextuais para refinar a direcao visual e o ritmo da pagina."
+    ].join(" ");
+    const finalizedPlanner = finalizeLandingPlannerState(
+      nextDraft,
+      buildFallbackLandingPlannerState(nextDraft, {
+        ...buildDefaultLandingPlannerState(),
+        planSummary: fastPlanSummary
+      })
+    );
+    nextDraft = finalizedPlanner.draft;
+    const planner = finalizedPlanner.planner;
+    nextDraft.planner = planner;
+    const {
+      content: nextAssistantContent,
+      thinking: nextAssistantThinking,
+      stageSummary
+    } = buildLandingPlannerAssistantMessage(planner, fastPlanSummary);
+    const plannerTurn = planner.shouldAsk;
+    const plannerMessageId = plannerTurn ? `planner-${crypto.randomUUID()}` : null;
     const nextCreatedAt = new Date().toISOString();
-    const updatedHistory = [
-      ...nextHistory,
-      {
-        id: `assistant-${crypto.randomUUID()}`,
-        role: "assistant" as const,
-        kind: "planner" as const,
-        content: assistantContent,
-        thinking: nextDraft.planner?.planSummary || undefined,
-        createdAt: nextCreatedAt
-      }
-    ];
-    const previewOffer = buildPreviewOfferFromDraft(nextDraft);
+    planner.activeMessageId = plannerTurn ? plannerMessageId : null;
+    planner.activeQuestionId = planner.askQueue[0]?.id || null;
+    planner.stageSummary = stageSummary;
+    nextDraft.planner = planner;
+    const updatedHistory = plannerTurn && plannerMessageId
+      ? [
+          ...nextHistory,
+          {
+            id: plannerMessageId,
+            role: "assistant" as const,
+            kind: "planner" as const,
+            plannerMessageId,
+            isMutable: true,
+            content: nextAssistantContent,
+            ...(nextAssistantThinking ? { thinking: nextAssistantThinking } : {}),
+            createdAt: nextCreatedAt
+          }
+        ]
+      : [
+          ...nextHistory,
+          {
+            id: `assistant-${crypto.randomUUID()}`,
+            role: "assistant" as const,
+            kind: "chat" as const,
+            content: nextAssistantContent,
+            ...(nextAssistantThinking ? { thinking: nextAssistantThinking } : {}),
+            createdAt: nextCreatedAt
+          }
+        ];
     const updated = await prisma.landingCreationSession.update({
       where: { id: sessionId },
       data: {
         title: nextDraft.title || session.title || "Nova landing",
         status: "draft",
         offerDraftJson: nextDraft,
-        builderDraftJson: buildLandingBuilderDraftFromDraft(nextDraft) as unknown as object,
-        codeBundleDraftJson: buildDefaultLandingCodeBundleFromOffer({
-          offer: {
-            ...previewOffer,
-            approvedFacts: previewOffer.approvedFacts,
-            ctaLabel: previewOffer.ctaLabel,
-            visualTheme: previewOffer.visualTheme,
-            colorPalette: nextDraft.colorPalette,
-            typographyStyle: nextDraft.typographyStyle,
-            layoutStyle: nextDraft.layoutStyle
-          },
-          summary: `Bundle base criado instantaneamente para ${previewOffer.title}.`,
-          source: "fallback"
-        }) as unknown as object,
-        previewSectionsJson: null,
+        codeBundleDraftJson: Prisma.DbNull,
         chatHistoryJson: updatedHistory
       } as any
     });
@@ -5345,12 +4999,13 @@ async function runLandingCreationChatTurn(sessionId: number, userMessage: string
     sessionId,
     messageLength: userMessage.length
   });
+  const plannerInput = buildLandingCreationPromptInput({
+    currentDraft: requestDraft,
+    history: plannerHistory
+  });
   const { response: resp, selectedModel, fallbackUsed } = await callOpenAIResponsesWithRouting({
     taskType: "landing_planner",
-    input: buildLandingCreationPromptInput({
-      currentDraft: requestDraft,
-      history: plannerHistory
-    }),
+    input: plannerInput,
     maxOutputTokens: 1200,
     metadata: { sessionId }
   });
@@ -5368,18 +5023,103 @@ async function runLandingCreationChatTurn(sessionId: number, userMessage: string
   }
 
   const data = await resp.json();
-  const parsed = extractFirstJsonObject(parseResponseOutputText(data));
+  const plannerResponseStatus =
+    typeof ((data || {}) as { status?: unknown }).status === "string"
+      ? String(((data || {}) as { status?: unknown }).status)
+      : undefined;
+  const plannerIncompleteReason =
+    typeof ((data || {}) as { incomplete_details?: { reason?: unknown } }).incomplete_details?.reason === "string"
+      ? String(((data || {}) as { incomplete_details?: { reason?: unknown } }).incomplete_details?.reason)
+      : undefined;
+  let rawPlannerOutput = parseResponseOutputText(data);
+  let parsed = extractFirstJsonObject(rawPlannerOutput);
   if (!parsed) {
-    logEvent("error", "landing.creation.chat.failed", { sessionId, message: "json_invalido" });
-    throw new Error("A resposta da IA veio sem JSON valido.");
+    logEvent("warn", "landing.creation.chat.invalid_retry", {
+      sessionId,
+      selectedModel,
+      fallbackUsed,
+      responseStatus: plannerResponseStatus,
+      incompleteReason: plannerIncompleteReason,
+      message: "json_invalido_primeira_tentativa",
+      rawPreview: rawPlannerOutput.slice(0, 1500)
+    });
+
+    const { response: retryResp, selectedModel: retryModel, fallbackUsed: retryFallbackUsed } = await callOpenAIResponsesWithRouting({
+      taskType: "landing_planner",
+      input: [
+        ...plannerInput,
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: [
+                "Sua ultima resposta nao veio em JSON valido.",
+                "Reenvie somente um objeto JSON valido no formato solicitado anteriormente.",
+                "Nao use markdown, cercas de codigo, comentarios ou qualquer texto fora do JSON."
+              ].join("\n")
+            }
+          ]
+        }
+      ],
+      maxOutputTokens: 1200,
+      metadata: {
+        sessionId,
+        repairAttempt: true
+      }
+    });
+
+    if (!retryResp.ok) {
+      const retryDetail = await retryResp.text().catch(() => "");
+      logEvent("error", "landing.creation.chat.failed", {
+        sessionId,
+        selectedModel: retryModel,
+        fallbackUsed: retryFallbackUsed,
+        statusCode: retryResp.status,
+        message: retryDetail,
+        repairAttempt: true,
+        rawPreview: rawPlannerOutput.slice(0, 1500)
+      });
+      throw new Error(`Falha ao conversar com a IA (${retryResp.status}).`);
+    }
+
+    const retryData = await retryResp.json();
+    const retryResponseStatus =
+      typeof ((retryData || {}) as { status?: unknown }).status === "string"
+        ? String(((retryData || {}) as { status?: unknown }).status)
+        : undefined;
+    const retryIncompleteReason =
+      typeof ((retryData || {}) as { incomplete_details?: { reason?: unknown } }).incomplete_details?.reason === "string"
+        ? String(((retryData || {}) as { incomplete_details?: { reason?: unknown } }).incomplete_details?.reason)
+        : undefined;
+    rawPlannerOutput = parseResponseOutputText(retryData);
+    parsed = extractFirstJsonObject(rawPlannerOutput);
+    if (!parsed) {
+      logEvent("error", "landing.creation.chat.failed", {
+        sessionId,
+        selectedModel: retryModel,
+        fallbackUsed: retryFallbackUsed,
+        responseStatus: retryResponseStatus,
+        incompleteReason: retryIncompleteReason,
+        message: "json_invalido",
+        repairAttempt: true,
+        rawPreview: rawPlannerOutput.slice(0, 2000)
+      });
+      throw new Error("A resposta da IA veio sem JSON valido.");
+    }
   }
 
   const assistantMessage =
     typeof parsed.assistantMessage === "string" && parsed.assistantMessage.trim()
       ? utf8Text(parsed.assistantMessage).trim()
       : "Rascunho atualizado. Pode seguir com mais detalhes ou gerar o preview.";
-  const nextDraft = normalizeLandingCreationDraft(parsed.draft, requestDraft);
-  const planner = buildLandingPlannerStateFromAiResponse(parsed, nextDraft);
+  let nextDraft = normalizeLandingCreationDraft(parsed.draft, requestDraft);
+  const finalizedPlanner = finalizeLandingPlannerState(
+    nextDraft,
+    buildLandingPlannerStateFromAiResponse(parsed, nextDraft)
+  );
+  nextDraft = finalizedPlanner.draft;
+  const planner = finalizedPlanner.planner;
   nextDraft.planner = planner;
   const {
     content: nextAssistantContent,
@@ -5434,20 +5174,7 @@ async function runLandingCreationChatTurn(sessionId: number, userMessage: string
       title: nextDraft.title || session.title || "Nova landing",
       status: "draft",
       offerDraftJson: nextDraft,
-      builderDraftJson: buildLandingBuilderDraftFromDraft(nextDraft) as unknown as object,
-      codeBundleDraftJson: buildDefaultLandingCodeBundleFromOffer({
-        offer: {
-          ...buildPreviewOfferFromDraft(nextDraft),
-          approvedFacts: buildPreviewOfferFromDraft(nextDraft).approvedFacts,
-          ctaLabel: buildPreviewOfferFromDraft(nextDraft).ctaLabel,
-          visualTheme: buildPreviewOfferFromDraft(nextDraft).visualTheme,
-          colorPalette: nextDraft.colorPalette,
-          typographyStyle: nextDraft.typographyStyle,
-          layoutStyle: nextDraft.layoutStyle
-        },
-        summary: "Bundle base recalculado a partir da conversa mais recente.",
-        source: "fallback"
-      }) as unknown as object,
+      codeBundleDraftJson: Prisma.DbNull,
       chatHistoryJson: updatedHistory
     } as any
   });
@@ -5470,7 +5197,6 @@ async function generateLandingPreviewForSession(sessionId: number, payload: unkn
   const leadContext = normalizeLandingLeadContext(
     typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>).leadContext : undefined
   );
-  const hasStoredPreview = Boolean(session.previewSectionsJson && typeof session.previewSectionsJson === "object");
   const hasStoredBundle = Boolean(session.codeBundleDraftJson && typeof session.codeBundleDraftJson === "object");
   const nextPreviewKey = buildLandingPreviewCacheKey({ draft: mergedDraft, promptDraft, leadContext });
   const currentPreviewKey = buildLandingPreviewCacheKey({
@@ -5479,7 +5205,7 @@ async function generateLandingPreviewForSession(sessionId: number, payload: unkn
     leadContext: undefined
   });
 
-  if (hasStoredPreview && hasStoredBundle && nextPreviewKey === currentPreviewKey) {
+  if (hasStoredBundle && nextPreviewKey === currentPreviewKey) {
     logEvent("info", "landing.creation.preview.reused", { sessionId });
     return session;
   }
@@ -5508,31 +5234,6 @@ async function generateLandingPreviewForSession(sessionId: number, payload: unkn
       slug: previewOffer.slug
     }
   });
-  const sectionsJson = buildFallbackLandingSectionsFromOffer({
-    offer: {
-      title: previewOffer.title,
-      slug: previewOffer.slug,
-      shortDescription: previewOffer.shortDescription,
-      durationLabel: previewOffer.durationLabel,
-      modality: previewOffer.modality,
-      approvedFacts: previewOffer.approvedFacts,
-      ctaLabel: previewOffer.ctaLabel,
-      visualTheme: previewOffer.visualTheme
-    }
-  });
-  const builderDocument = buildLandingBuilderDocument({
-    offer: {
-      title: previewOffer.title,
-      slug: previewOffer.slug,
-      shortDescription: previewOffer.shortDescription,
-      durationLabel: previewOffer.durationLabel,
-      modality: previewOffer.modality,
-      approvedFacts: previewOffer.approvedFacts,
-      ctaLabel: previewOffer.ctaLabel
-    },
-    sections: sectionsJson as Record<string, unknown>
-  });
-
   const updated = await prisma.landingCreationSession.update({
     where: { id: sessionId },
     data: {
@@ -5540,9 +5241,7 @@ async function generateLandingPreviewForSession(sessionId: number, payload: unkn
       status: "preview_ready",
       offerDraftJson: mergedDraft,
       promptDraftJson: promptDraft,
-      builderDraftJson: builderDocument as unknown as object,
-      codeBundleDraftJson: landingCodeBundle as unknown as object,
-      previewSectionsJson: sectionsJson as object
+      codeBundleDraftJson: landingCodeBundle as unknown as object
     } as any
   });
   logEvent("info", "landing.creation.preview.generated", { sessionId });
@@ -5558,7 +5257,9 @@ async function saveLandingCreationPrompt(sessionId: number, payload: unknown) {
   return prisma.landingCreationSession.update({
     where: { id: sessionId },
     data: {
-      promptDraftJson: nextPrompt
+      promptDraftJson: nextPrompt,
+      codeBundleDraftJson: Prisma.DbNull,
+      status: "draft"
     }
   });
 }
@@ -5603,31 +5304,16 @@ async function publishLandingCreationSession(sessionId: number, payload: unknown
       offerId = createdOffer.id;
   }
 
-  const hasStoredPreview = session.previewSectionsJson && typeof session.previewSectionsJson === "object";
   const hasStoredBundle = session.codeBundleDraftJson && typeof session.codeBundleDraftJson === "object";
-  if (hasStoredPreview) {
+  if (hasStoredBundle) {
     logEvent("info", "landing.creation.publish.started", {
       sessionId,
       offerId,
       slug: offerData.slug,
-      source: "cached_preview"
+      source: "cached_bundle"
     });
   }
 
-  const sectionsJson = hasStoredPreview
-    ? session.previewSectionsJson
-    : buildFallbackLandingSectionsFromOffer({
-        offer: {
-          title: offerData.title,
-          slug: offerData.slug,
-          shortDescription: offerData.shortDescription,
-          durationLabel: offerData.durationLabel,
-          modality: offerData.modality,
-          approvedFacts: offerData.approvedFacts,
-          ctaLabel: offerData.ctaLabel,
-          visualTheme: offerData.visualTheme
-        }
-      });
   const landingCodeBundle = hasStoredBundle
     ? session.codeBundleDraftJson
     : await generateLandingCodeBundleForOfferData({
@@ -5667,20 +5353,6 @@ async function publishLandingCreationSession(sessionId: number, payload: unknown
       offerId,
       version: (latest?.version || 0) + 1,
       status: "published",
-      sectionsJson: sectionsJson as object,
-      builderDocumentJson: buildLandingBuilderDocument({
-        offer: {
-          title: offerData.title,
-          slug: offerData.slug,
-          shortDescription: offerData.shortDescription,
-          durationLabel: offerData.durationLabel,
-          modality: offerData.modality,
-          approvedFacts: offerData.approvedFacts,
-          ctaLabel: offerData.ctaLabel
-        },
-        sections: sectionsJson as Record<string, unknown>,
-        version: (latest?.version || 0) + 1
-      }) as unknown as object,
       landingCodeBundleJson: landingCodeBundle as object,
       promptSnapshot: promptDraft,
       sourceFactsSnapshot: draft,
@@ -5702,21 +5374,7 @@ async function publishLandingCreationSession(sessionId: number, payload: unknown
           id: landingPage.id,
           version: landingPage.version,
           status: landingPage.status,
-          sectionsJson,
-          landingCodeBundleJson: landingCodeBundle,
-          builderDocumentJson: buildLandingBuilderDocument({
-            offer: {
-              title: offerData.title,
-              slug: offerData.slug,
-              shortDescription: offerData.shortDescription,
-              durationLabel: offerData.durationLabel,
-              modality: offerData.modality,
-              approvedFacts: offerData.approvedFacts,
-              ctaLabel: offerData.ctaLabel
-            },
-            sections: sectionsJson as Record<string, unknown>,
-            version: landingPage.version
-          })
+          landingCodeBundleJson: landingCodeBundle
         }
       }
     });
@@ -5743,21 +5401,7 @@ async function publishLandingCreationSession(sessionId: number, payload: unknown
       status: "published",
       offerDraftJson: draft,
       promptDraftJson: promptDraft,
-      builderDraftJson: buildLandingBuilderDocument({
-        offer: {
-          title: offerData.title,
-          slug: offerData.slug,
-          shortDescription: offerData.shortDescription,
-          durationLabel: offerData.durationLabel,
-          modality: offerData.modality,
-          approvedFacts: offerData.approvedFacts,
-          ctaLabel: offerData.ctaLabel
-        },
-        sections: sectionsJson as Record<string, unknown>,
-        version: (latest?.version || 0) + 1
-      }) as unknown as object,
       codeBundleDraftJson: landingCodeBundle as object,
-      previewSectionsJson: sectionsJson as object,
       publishedOfferId: offerId
     } as any
   });
@@ -5813,8 +5457,6 @@ async function publishLandingPage(offerId: number, landingPageId?: number) {
           id: published.id,
           version: published.version,
           status: published.status,
-          sectionsJson: target.sectionsJson,
-          builderDocumentJson: (target as Record<string, unknown>).builderDocumentJson || null,
           landingCodeBundleJson: (target as Record<string, unknown>).landingCodeBundleJson || null
         }
       }
@@ -7514,13 +7156,13 @@ function resolveTaskRequestTimeoutMs(taskType: AIModelTaskType): number {
     case "lead_classification":
       return 18000;
     case "landing_planner":
-      return 25000;
+      return 40000;
     case "landing_generation":
     case "landing_refine":
       return 30000;
     case "landing_code_bundle":
     case "landing_visual":
-      return 35000;
+      return 120000;
     default:
       return 20000;
   }
@@ -7534,10 +7176,11 @@ function resolveTaskMaxAttempts(taskType: AIModelTaskType): number {
       return 2;
     case "landing_planner":
     case "landing_generation":
-    case "landing_code_bundle":
     case "landing_refine":
-    case "landing_visual":
       return 2;
+    case "landing_code_bundle":
+    case "landing_visual":
+      return 1;
     default:
       return 3;
   }
@@ -7545,6 +7188,18 @@ function resolveTaskMaxAttempts(taskType: AIModelTaskType): number {
 
 function canRetryWithFallback(resp: Response): boolean {
   return resp.status === 408 || resp.status === 409 || resp.status === 429 || resp.status >= 500;
+}
+
+function isStructuredJsonTask(taskType: AIModelTaskType): boolean {
+  return [
+    "lead_enrichment",
+    "lead_classification",
+    "landing_planner",
+    "landing_generation",
+    "landing_code_bundle",
+    "landing_refine",
+    "landing_visual"
+  ].includes(taskType);
 }
 
 async function callOpenAIResponsesWithRouting(params: {
@@ -7567,22 +7222,30 @@ async function callOpenAIResponsesWithRouting(params: {
     ...params.metadata
   };
 
-  const requestWithModel = (model: string) =>
-    fetchWithRetry(`${aiConfig.baseUrl}/responses`, {
+  const requestWithModel = (model: string) => {
+    const body: Record<string, unknown> = {
+      model,
+      input: params.input,
+      max_output_tokens: params.maxOutputTokens
+    };
+
+    if (/^gpt-5/i.test(model) && isStructuredJsonTask(params.taskType)) {
+      body.reasoning = { effort: "minimal" };
+      body.text = { verbosity: "low" };
+    }
+
+    return fetchWithRetry(`${aiConfig.baseUrl}/responses`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${OPENAI_API_KEY}`
       },
-      body: JSON.stringify({
-        model,
-        input: params.input,
-        max_output_tokens: params.maxOutputTokens
-      })
+      body: JSON.stringify(body)
     }, {
       maxAttempts: resolveTaskMaxAttempts(params.taskType),
       timeoutMs: resolveTaskRequestTimeoutMs(params.taskType)
     });
+  };
 
   logEvent("info", "ai.routing.selected", {
     ...baseLog,
