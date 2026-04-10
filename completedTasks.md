@@ -1,4 +1,17 @@
 # Completed Tasks
+## Atualizacao extra - 2026-04-10 (Geracao de landing com barra visual mais alta)
+- [x] Prompt de geracao React foi endurecido para exigir hero com cena real, copy mais densa, aplicacoes praticas concretas e quebra de ritmo entre secoes.
+- [x] Prompt de reparo automatico agora corrige tambem landings estruturalmente validas, mas ainda genericas, elevando atmosfera visual e densidade editorial.
+- [x] Validator do backend passou a reprovar bundles bland demais, cobrando pelo menos 5 secoes, hero com kicker + cena secundaria, prova/aplicacao pratica, atmosfera visual e repertorio mais rico de componentes shadcn/Radix.
+- [x] Preflight heuristico foi ampliado para detectar cedo hero com cara de template basico, falta de aplicacao pratica e direcao visual generica enquanto o preview ainda carrega.
+- [x] Auto-preview no fim do chat foi religado nos fluxos normal e fast-path, corrigindo a regressao em que a Lume respondia o planner mas nao chegava a gerar a landing.
+- [x] Parser de respostas da IA ficou tolerante a bundles com `code` em template literal com crase, reaproveitando geracoes quase-validas em vez de cair direto no fallback tecnico.
+- [x] Draft rapido para prompt simples passou a nascer com tese visual mais forte, paleta mais autoral, tipografia editorial e layout full-bleed por default.
+- [x] Geracao de `landing_code_bundle` deixou de usar caminho barato por padrao e agora prioriza o modelo forte para sair pagina mais bonita no primeiro preview.
+- [x] Timeout da task `landing_code_bundle` foi ampliado para 90 segundos, evitando derrubar reparos do `gpt-5` quando a landing sai mais rica e extensa.
+- [x] Geracao de landing passou a usar pipeline em 2 etapas: primeiro uma design brief estruturada e depois o bundle React/TSX, para o preview nascer guiado por tese visual, plano de secoes e interacoes mais fortes.
+- [x] Etapa final de bundle foi simplificada para gerar e reparar apenas o `App.tsx`; o backend agora monta o bundle localmente em volta do codigo retornado pela IA.
+
 ## Atualizacao extra - 2026-04-08 (Preview React com erro visivel)
 - [x] Host do preview passou a expor todo o namespace de icones do `lucide-react`, corrigindo bundles que quebravam por icones nao registrados no iframe.
 - [x] Preview React agora mostra loading e mensagem de erro no canvas em vez de deixar a area preta quando o runtime do iframe falha.
@@ -500,3 +513,21 @@ Atualizado em: 2026-03-20
 - [x] Fast path de prompts curtos deixou de pular os asks: agora ele abre uma mensagem de planner mutavel com pergunta real e fila de refinamento, em vez de responder so com um plano fechado.
 - [x] `stageSummary` passou a distinguir o caso em que a Lume ja consegue montar preview, mas ainda quer alinhar alguns detalhes para refinar a pagina com o operador.
 - [x] Regra de auto-promocao para preview deixou de tratar `ctaLabel` e placeholders similares como direcao suficiente, evitando limpar a fila de perguntas cedo demais em briefs simples.
+
+## Atualizacao extra - 2026-04-10 (Revisao visual automatica da Lume)
+
+- [x] Schema Prisma ganhou `LandingCreationReview` com persistencia de score, issues, snapshots, erros de console, metricas e rodada da revisao visual por sessao de landing.
+- [x] Backend passou a bloquear publish quando o bundle atual ainda nao tem revisao visual aprovada, com log estruturado dedicado para bloqueio por review.
+- [x] Fluxo de preview da landing agora entra em `review_pending` e recebe parecer visual persistido para o bundle atual, em vez de liberar publicacao imediatamente.
+- [x] Nova rota autenticada de review foi ligada ao workspace de landings para receber o parecer do iframe, salvar auditoria e devolver a sessao atualizada.
+- [x] Lume agora tenta um auto-refino do bundle quando a revisao encontra erro critico de runtime, CTA, overflow ou quebra estrutural, com limite de tentativas.
+- [x] `LandingCodePreviewHost` passou a expor diagnosticos de runtime/console do iframe para a revisao visual automatica.
+- [x] Workspace de landings ganhou painel persistente de `Revisao visual`, com status, score, top issues e snapshots desktop/mobile do bundle atual.
+- [x] Build de `api` e `web` validado com sucesso apos integrar a revisao visual automatica, e a migracao `20260410_add_landing_creation_reviews` foi aplicada no banco.
+- [x] Fluxo de preview agora dispara um `preflight` assíncrono no backend em paralelo ao carregamento do iframe, sem esperar a revisao final do navegador para iniciar a triagem estrutural.
+- [x] `latestVisualReview` passou a expor a origem do parecer (`preflight` vs `browser`), permitindo ao workspace diferenciar a triagem paralela da validacao final.
+- [x] Painel de revisao visual no frontend agora mostra explicitamente quando o `preflight` esta rodando em paralelo enquanto o preview ainda esta sendo montado.
+- [x] Runtime do `LandingCodePreviewHost` ganhou compatibilidade com bundles que usam composicao em namespace como `Tabs.List`, `Tabs.Trigger`, `Accordion.Item`, `Accordion.Header` e `Card.Header`, evitando iframe em branco para esses casos.
+- [x] Prompt de geracao de landing React foi endurecido para exigir CTA exatamente igual ao `ctaLabel` do draft e uma estrutura minima real de pagina de curso.
+- [x] Validacao automatica do bundle agora rejeita geracoes com CTA divergente, hero fraco demais, landing curta, falta de FAQ em `Accordion`, falta de secao de trilha/modulos e ausencia de CTA repetido.
+- [x] Retry de reparo do bundle passou a receber instrucoes explicitas para corrigir CTA e expandir a pagina para um padrao real de landing de curso quando a primeira versao vier rasa demais.

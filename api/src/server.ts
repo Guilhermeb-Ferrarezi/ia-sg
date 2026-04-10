@@ -5,7 +5,10 @@ import dotenv from "dotenv";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { WebSocketServer, WebSocket } from "ws";
 import {
+  buildLandingDesignBriefPromptInput,
   buildLandingCodeGenerationPrompt,
+  buildLandingCodePreflightReviewPromptInput,
+  buildLandingCodeRefinePromptInput,
   buildLandingCreationPromptInput,
   LANDING_CODE_GENERATION_SYSTEM_PROMPT,
   buildLeadEnrichmentPromptInput,
@@ -141,6 +144,67 @@ type LandingCreationSessionRecord = {
   chatHistoryJson: unknown;
   codeBundleDraftJson?: unknown;
   publishedOfferId: number | null;
+  reviews?: LandingCreationReviewRecord[];
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+type LandingCreationReviewIssue = {
+  severity: "critical" | "warning" | "info";
+  category: "runtime" | "overflow" | "cta" | "contrast" | "layout" | "motion";
+  title: string;
+  detail: string;
+  selector?: string | null;
+  viewport?: "desktop" | "mobile" | "shared" | null;
+};
+
+type LandingCreationReviewSnapshot = {
+  viewport: "desktop" | "mobile";
+  width: number;
+  height: number;
+  dataUrl: string | null;
+  capturedAt: string;
+};
+
+type LandingCreationReviewMetrics = {
+  viewportWidth: number;
+  viewportHeight: number;
+  scrollWidth: number;
+  scrollHeight: number;
+  horizontalOverflowPx: number;
+  visibleSections: number;
+  ctaVisible: boolean;
+  ctaAboveFold: boolean;
+  contrastWarnings: number;
+  animatedElements: number;
+};
+
+type LandingCreationReviewPayload = {
+  bundleGeneratedAt: string | null;
+  summary: string;
+  score: number;
+  issues: LandingCreationReviewIssue[];
+  snapshots: LandingCreationReviewSnapshot[];
+  consoleErrors: string[];
+  metrics: {
+    desktop: LandingCreationReviewMetrics | null;
+    mobile: LandingCreationReviewMetrics | null;
+  } | null;
+};
+
+type LandingCreationReviewRecord = {
+  id: number;
+  sessionId: number;
+  status: string;
+  score: number | null;
+  summary: string | null;
+  bundleGeneratedAt: string | null;
+  issuesJson: unknown;
+  snapshotsJson: unknown;
+  consoleErrorsJson: unknown;
+  metricsJson: unknown;
+  reviewRound: number;
+  autoFixAttempted: boolean;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -215,6 +279,14 @@ const LANDING_CODE_ALLOWED_IMPORTS = new Set([
   ...LANDING_CODE_ALLOWED_UI_IMPORTS,
   "lucide-react"
 ]);
+const MAX_LANDING_AUTO_REVIEW_FIX_ATTEMPTS = 2;
+const landingPreflightReviewJobs = new Map<string, Promise<void>>();
+const landingCreationSessionInclude = {
+  reviews: {
+    orderBy: [{ createdAt: "desc" }],
+    take: 1
+  }
+} satisfies Prisma.LandingCreationSessionInclude;
 
 const PORT = Number(process.env.PORT || "3000");
 const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || "";
@@ -1890,6 +1962,7 @@ app.post("/api/landings/preview", requireSession, async (req, res) => {
 
 app.get("/api/landing-creation/sessions", requireSession, async (_req, res) => {
   const sessions = await prisma.landingCreationSession.findMany({
+    include: landingCreationSessionInclude,
     orderBy: [{ updatedAt: "desc" }],
     take: 30
   });
@@ -1979,6 +2052,24 @@ app.post("/api/landing-creation/sessions/:id/preview", requireSession, async (re
   }
 });
 
+app.post("/api/landing-creation/sessions/:id/review", requireSession, async (req, res) => {
+  const sessionId = Number(req.params.id);
+  if (!Number.isInteger(sessionId) || sessionId <= 0) {
+    res.status(400).json({ message: "Sessao invalida." });
+    return;
+  }
+  try {
+    const result = await submitLandingCreationReview(sessionId, req.body?.report);
+    broadcastEvent("landing_sessions_updated");
+    res.json({
+      session: mapLandingCreationSession(result.session),
+      reviewAction: result.reviewAction
+    });
+  } catch (err) {
+    res.status(400).json({ message: formatError(err) });
+  }
+});
+
 app.patch("/api/landing-creation/sessions/:id", requireSession, async (req, res) => {
   const sessionId = Number(req.params.id);
   if (!Number.isInteger(sessionId) || sessionId <= 0) {
@@ -2008,6 +2099,7 @@ app.patch("/api/landing-creation/sessions/:id", requireSession, async (req, res)
     }
 
     const updated = await prisma.landingCreationSession.update({
+      include: landingCreationSessionInclude,
       where: { id: sessionId },
       data: updates
     });
@@ -3646,7 +3738,11 @@ function buildFastLandingDraftFromTopic(topic: string, fallback: LandingCreation
       : [
           `Oferta focada em ${normalizedTopic}.`,
           "Pagina pensada para captar interesse e direcionar o lead para o proximo passo."
-        ]
+        ],
+    visualTheme: fallback.visualTheme.trim() || "Cena tecnica imersiva com atmosfera premium, narrativa visual forte e foco no que o aluno vai construir na pratica",
+    colorPalette: fallback.colorPalette.trim() || "grafite profundo com acentos vibrantes ligados ao tema do curso",
+    typographyStyle: fallback.typographyStyle.trim() || "editorial expressiva com titulos fortes e leitura limpa",
+    layoutStyle: fallback.layoutStyle.trim() || "hero full-bleed com storytelling visual, bloco de prova pratica, trilha de aprendizado e CTA final forte"
   }, fallback);
 
   if (!nextDraft.ctaLabel.trim()) nextDraft.ctaLabel = "Quero saber mais";
@@ -3856,9 +3952,15 @@ function normalizeLandingCodeBundle(value: unknown, fallback?: {
   };
 }
 
-function validateLandingCodeBundle(bundle: LandingCodeBundle): string[] {
+function validateLandingCodeBundle(bundle: LandingCodeBundle, expectations?: {
+  ctaLabel?: string | null;
+  layoutStyle?: string | null;
+  visualTheme?: string | null;
+}): string[] {
   const issues: string[] = [];
   const normalizedPaths = new Set(bundle.files.map((file) => file.path));
+  const allCode = bundle.files.map((file) => file.code).join("\n\n");
+  const leadingCode = allCode.slice(0, 4200);
 
   for (const file of bundle.files) {
     const imports = extractImportSources(file.code);
@@ -3900,7 +4002,208 @@ function validateLandingCodeBundle(bundle: LandingCodeBundle): string[] {
     issues.push("O bundle precisa usar componentes shadcn/Radix da allowlist.");
   }
 
+  const expectedCtaLabel = expectations?.ctaLabel?.trim();
+  if (expectedCtaLabel) {
+    const escapedLabel = escapeRegExp(expectedCtaLabel);
+    if (!new RegExp(escapedLabel).test(allCode)) {
+      issues.push(`O CTA principal obrigatorio precisa usar exatamente o texto "${expectedCtaLabel}".`);
+    }
+  }
+
+  const sectionCount = (allCode.match(/<section\b/gi) || []).length;
+  const hasFaq = /faq|perguntas frequentes/i.test(allCode);
+  const hasAccordion = /<Accordion\b/i.test(allCode) || /Accordion\.(Item|Trigger|Header|Content)/.test(allCode);
+  const hasTabs = /<Tabs\b/i.test(allCode) || /Tabs\.(List|Trigger|Content)/.test(allCode);
+  const hasScrollArea = /<ScrollArea\b/i.test(allCode);
+  const hasCtaButtonCount = (allCode.match(/<Button\b/gi) || []).length;
+  const paragraphCount = (allCode.match(/<p\b/gi) || []).length;
+  const componentSet = new Set(bundle.usedComponents.filter(Boolean));
+  const distinctComponents = componentSet.size;
+  const hasStrongHero = /<h1\b/i.test(allCode) && /<p\b/i.test(allCode);
+  const heroHasBadge = /<Badge\b/i.test(leadingCode);
+  const heroHasSceneSupport = /<(Card|AspectRatio|Tabs|ScrollArea|HoverCard|Popover)\b/i.test(leadingCode)
+    || /(Card|AspectRatio|Tabs|ScrollArea|HoverCard|Popover)\./.test(leadingCode);
+  const hasPracticalProof =
+    /(casos de uso|aplicac|na pratica|workflow|fluxo|integrac|cenario|cenario|projeto|template|dashboard|rotina|automac|resultado)/i.test(allCode);
+  const hasVisualAtmosphere =
+    /(radial-gradient|linear-gradient|conic-gradient|backdrop-blur|blur-\d+|absolute inset-0|style=\{\{[^}]*background|bg-gradient-to|shadow-\[|mix-blend)/i.test(allCode);
+  const hasRhythmBreak =
+    /(bg-(white|slate|zinc|neutral|stone|black)|border-[a-z]+-\d+\/\d+|Separator|<Separator\b|grid-cols-\[|lg:grid-cols-\[|md:grid-cols-\[|sticky top-|overflow-hidden)/i.test(allCode);
+  const hasInteractiveDetail =
+    /<(HoverCard|Popover|Tooltip|DropdownMenu|Dialog|Sheet|ToggleGroup|Select|Progress|Slider|NavigationMenu|Menubar)\b/i.test(allCode)
+    || /(HoverCard|Popover|Tooltip|DropdownMenu|Dialog|Sheet|ToggleGroup|Select|Progress|Slider|NavigationMenu|Menubar)\./.test(allCode)
+    || ["HoverCard", "Popover", "Tooltip", "DropdownMenu", "Dialog", "Sheet", "ToggleGroup", "Select", "Progress", "Slider", "NavigationMenu", "Menubar"]
+      .some((name) => componentSet.has(name));
+
+  if (sectionCount < 5) {
+    issues.push("A landing esta curta demais. Gere pelo menos 5 secoes semanticas com ritmo real alem do hero.");
+  }
+  if (!hasStrongHero) {
+    issues.push("O hero precisa ter pelo menos h1 e texto de apoio claros.");
+  }
+  if (paragraphCount < 5) {
+    issues.push("A landing esta com densidade de copy baixa demais. Expanda a narrativa com mais contexto e aplicacao.");
+  }
+  if (!heroHasBadge || !heroHasSceneSupport) {
+    issues.push("O hero esta fraco demais. Ele precisa de kicker visual e uma cena secundaria real, nao apenas texto centralizado.");
+  }
+  if (hasCtaButtonCount < 2) {
+    issues.push("A landing precisa repetir o CTA principal em pelo menos dois pontos relevantes da pagina.");
+  }
+  if (!hasFaq || !hasAccordion) {
+    issues.push("A landing precisa incluir FAQ real usando Accordion.");
+  }
+  if (!hasTabs && !hasScrollArea) {
+    issues.push("A landing precisa ter uma secao de trilha, modulos ou exploracao usando Tabs, ScrollArea ou composicao equivalente mais rica.");
+  }
+  if (!hasPracticalProof) {
+    issues.push("A landing precisa mostrar aplicacoes praticas ou prova concreta do que a pessoa vai conseguir fazer.");
+  }
+  if (!hasVisualAtmosphere || !hasRhythmBreak) {
+    issues.push("A composicao visual ainda esta basica demais. Use atmosfera de fundo, contraste entre secoes e uma quebra de ritmo mais clara.");
+  }
+  if (distinctComponents < 7) {
+    issues.push("A landing precisa usar um repertorio mais rico de componentes shadcn/Radix para ganhar densidade editorial.");
+  }
+  if (!hasInteractiveDetail) {
+    issues.push("A landing precisa de pelo menos um componente de detalhe interativo ou editorial alem de Button, Accordion, Tabs e ScrollArea.");
+  }
+  if (expectations?.layoutStyle && /storytelling/i.test(expectations.layoutStyle) && sectionCount < 6) {
+    issues.push("O layout pedido exige storytelling mais rico. A pagina precisa de mais cadencia narrativa e blocos de conteudo.");
+  }
+  if (expectations?.visualTheme && /(editorial|premium|cinematic|cinematograf|lovable)/i.test(expectations.visualTheme) && (!hasVisualAtmosphere || distinctComponents < 8)) {
+    issues.push("A direcao visual pedida exige pagina mais autoral. Falta atmosfera, contraste e repertorio de composicao.");
+  }
+
   return issues;
+}
+
+function escapeJsString(value: string): string {
+  return JSON.stringify(utf8Text(value)).slice(1, -1);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function buildEmergencyLandingCodeBundle(params: {
+  title: string;
+  slug: string;
+  shortDescription: string | null;
+  durationLabel: string | null;
+  modality: string | null;
+  approvedFacts: string[];
+  ctaLabel: string;
+  visualTheme?: string | null;
+  colorPalette?: string | null;
+}): LandingCodeBundle {
+  const facts = params.approvedFacts.slice(0, 5);
+  const title = escapeJsString(params.title || "Nova landing");
+  const description = escapeJsString(params.shortDescription || "Conheca esta oferta e fale com a equipe para saber mais.");
+  const ctaLabel = escapeJsString(params.ctaLabel || "Quero saber mais");
+  const visualTheme = escapeJsString(params.visualTheme || params.colorPalette || "Tecnologia moderna, limpa e orientada a conversao.");
+  const factItems = facts.length
+    ? facts.map((fact) => `"${escapeJsString(fact)}"`).join(",\n          ")
+    : `"Conteudo orientado para pessoas interessadas em aprender na pratica."`;
+  const duration = escapeJsString(params.durationLabel || "");
+  const modality = escapeJsString(params.modality || "");
+
+  return {
+    version: 1,
+    kind: "landing-code-bundle-v1",
+    framework: "vite-react",
+    source: "fallback",
+    entryFile: "App.tsx",
+    metadata: {
+      title: params.title || "Nova landing",
+      slug: normalizeSlug(params.slug || params.title || "nova-landing"),
+      description: params.shortDescription || undefined,
+      summary: "Fallback tecnico gerado localmente para evitar sessao sem preview quando a IA falhar.",
+      generatedAt: new Date().toISOString(),
+      visualTheme: params.visualTheme || params.colorPalette || undefined
+    },
+    themeTokens: {
+      accent: "#22c55e",
+      surface: "#0f172a",
+      canvas: "#020617",
+      text: "#f8fafc",
+      muted: "#94a3b8"
+    },
+    usedComponents: ["Button", "Badge", "Card", "Separator"],
+    usedImports: ["react", "@/components/ui/button", "@/components/ui/badge", "@/components/ui/card", "@/components/ui/separator"],
+    files: [
+      {
+        path: "App.tsx",
+        summary: "Fallback tecnico minimo para garantir preview renderizavel.",
+        code: `import React from "react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Separator } from "@/components/ui/separator";
+
+const facts = [
+          ${factItems}
+];
+
+export default function App({ onPrimaryAction }: { onPrimaryAction?: () => void }) {
+  return (
+    <main className="min-h-screen bg-slate-950 text-slate-50">
+      <section className="relative overflow-hidden px-6 py-16 sm:px-10 lg:px-16">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(34,197,94,0.24),transparent_34%),radial-gradient(circle_at_bottom_right,rgba(14,165,233,0.18),transparent_28%)]" />
+        <div className="relative mx-auto flex max-w-6xl flex-col gap-10 lg:flex-row lg:items-start lg:justify-between">
+          <div className="max-w-3xl space-y-6">
+            <Badge className="rounded-full border border-emerald-400/30 bg-emerald-400/15 px-4 py-1 text-[11px] font-black uppercase tracking-[0.22em] text-emerald-100">
+              Preview de contingencia
+            </Badge>
+            <div className="space-y-4">
+              <p className="text-sm font-semibold uppercase tracking-[0.28em] text-slate-400">Lume montou uma primeira versao segura</p>
+              <h1 className="max-w-4xl text-4xl font-black leading-tight sm:text-5xl">${title}</h1>
+              <p className="max-w-2xl text-base leading-8 text-slate-300">${description}</p>
+            </div>
+            <div className="flex flex-wrap gap-3 text-xs font-bold uppercase tracking-[0.18em] text-slate-300">
+              ${params.durationLabel ? `<span className="rounded-full border border-white/10 bg-white/5 px-4 py-2">Duracao: ${duration}</span>` : ""}
+              ${params.modality ? `<span className="rounded-full border border-white/10 bg-white/5 px-4 py-2">Modalidade: ${modality}</span>` : ""}
+            </div>
+            <div className="flex flex-wrap gap-4">
+              <Button
+                type="button"
+                onClick={() => onPrimaryAction?.()}
+                className="rounded-full bg-emerald-500 px-6 py-6 text-sm font-black uppercase tracking-[0.18em] text-slate-950 hover:bg-emerald-400"
+              >
+                ${ctaLabel}
+              </Button>
+              <div className="rounded-3xl border border-cyan-400/20 bg-cyan-400/10 px-4 py-3 text-sm leading-6 text-cyan-50">
+                ${visualTheme}
+              </div>
+            </div>
+          </div>
+
+          <Card className="w-full max-w-xl rounded-[32px] border border-white/10 bg-slate-900/75 shadow-[0_24px_80px_rgba(2,6,23,0.45)]">
+            <CardContent className="space-y-6 p-6">
+              <div>
+                <p className="text-[11px] font-black uppercase tracking-[0.22em] text-cyan-200/80">O que esta pronto</p>
+                <p className="mt-3 text-sm leading-7 text-slate-300">
+                  A IA nao conseguiu entregar o bundle final desta rodada, entao o sistema abriu este preview seguro para voce continuar refinando sem travar o fluxo.
+                </p>
+              </div>
+              <Separator className="bg-white/10" />
+              <div className="grid gap-3">
+                {facts.map((fact, index) => (
+                  <div key={fact + index} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm leading-7 text-slate-100">
+                    {fact}
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </section>
+    </main>
+  );
+}`
+      }
+    ]
+  };
 }
 
 function normalizePathSegments(value: string): string {
@@ -4113,6 +4416,131 @@ function mapLandingPageSummary(page: {
   };
 }
 
+function normalizeLandingCreationReviewIssue(raw: unknown): LandingCreationReviewIssue | null {
+  if (!raw || typeof raw !== "object") return null;
+  const value = raw as Record<string, unknown>;
+  const severity = value.severity === "critical" || value.severity === "warning" || value.severity === "info"
+    ? value.severity
+    : "info";
+  const category = value.category === "runtime"
+    || value.category === "overflow"
+    || value.category === "cta"
+    || value.category === "contrast"
+    || value.category === "layout"
+    || value.category === "motion"
+    ? value.category
+    : "layout";
+  const title = typeof value.title === "string" ? utf8Text(value.title).trim() : "";
+  const detail = typeof value.detail === "string" ? utf8Text(value.detail).trim() : "";
+  if (!title || !detail) return null;
+  return {
+    severity,
+    category,
+    title,
+    detail,
+    selector: typeof value.selector === "string" ? utf8Text(value.selector).trim() || null : null,
+    viewport: value.viewport === "desktop" || value.viewport === "mobile" || value.viewport === "shared" ? value.viewport : null
+  };
+}
+
+function normalizeLandingCreationReviewPayload(raw: unknown): LandingCreationReviewPayload {
+  const value = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+  const issues = Array.isArray(value.issues)
+    ? value.issues.map(normalizeLandingCreationReviewIssue).filter(Boolean) as LandingCreationReviewIssue[]
+    : [];
+  const snapshots = Array.isArray(value.snapshots)
+    ? value.snapshots
+        .map((entry) => {
+          if (!entry || typeof entry !== "object") return null;
+          const snapshot = entry as Record<string, unknown>;
+          const viewport = snapshot.viewport === "desktop" || snapshot.viewport === "mobile" ? snapshot.viewport : null;
+          const width = Number(snapshot.width);
+          const height = Number(snapshot.height);
+          if (!viewport || !Number.isFinite(width) || !Number.isFinite(height)) return null;
+          return {
+            viewport,
+            width,
+            height,
+            dataUrl: typeof snapshot.dataUrl === "string" && snapshot.dataUrl.trim() ? snapshot.dataUrl.trim() : null,
+            capturedAt: typeof snapshot.capturedAt === "string" && snapshot.capturedAt.trim() ? snapshot.capturedAt.trim() : new Date().toISOString()
+          } satisfies LandingCreationReviewSnapshot;
+        })
+        .filter(Boolean) as LandingCreationReviewSnapshot[]
+    : [];
+  const consoleErrors = Array.isArray(value.consoleErrors)
+    ? value.consoleErrors.map((entry) => (typeof entry === "string" ? utf8Text(entry).trim() : "")).filter(Boolean)
+    : [];
+  const normalizeMetrics = (metricsRaw: unknown): LandingCreationReviewMetrics | null => {
+    if (!metricsRaw || typeof metricsRaw !== "object") return null;
+    const metrics = metricsRaw as Record<string, unknown>;
+    const viewportWidth = Number(metrics.viewportWidth);
+    const viewportHeight = Number(metrics.viewportHeight);
+    if (!Number.isFinite(viewportWidth) || !Number.isFinite(viewportHeight)) return null;
+    const scrollWidth = Number(metrics.scrollWidth);
+    const scrollHeight = Number(metrics.scrollHeight);
+    const horizontalOverflowPx = Number(metrics.horizontalOverflowPx);
+    const visibleSections = Number(metrics.visibleSections);
+    const contrastWarnings = Number(metrics.contrastWarnings);
+    const animatedElements = Number(metrics.animatedElements);
+    return {
+      viewportWidth,
+      viewportHeight,
+      scrollWidth: Number.isFinite(scrollWidth) ? scrollWidth : viewportWidth,
+      scrollHeight: Number.isFinite(scrollHeight) ? scrollHeight : viewportHeight,
+      horizontalOverflowPx: Number.isFinite(horizontalOverflowPx) ? horizontalOverflowPx : 0,
+      visibleSections: Number.isFinite(visibleSections) ? visibleSections : 0,
+      ctaVisible: Boolean(metrics.ctaVisible),
+      ctaAboveFold: Boolean(metrics.ctaAboveFold),
+      contrastWarnings: Number.isFinite(contrastWarnings) ? contrastWarnings : 0,
+      animatedElements: Number.isFinite(animatedElements) ? animatedElements : 0
+    };
+  };
+  const metricsRaw = value.metrics && typeof value.metrics === "object" ? value.metrics as Record<string, unknown> : null;
+  return {
+    bundleGeneratedAt: typeof value.bundleGeneratedAt === "string" && value.bundleGeneratedAt.trim() ? value.bundleGeneratedAt.trim() : null,
+    summary: typeof value.summary === "string" && value.summary.trim() ? utf8Text(value.summary).trim() : "Revisao visual executada.",
+    score: Math.max(0, Math.min(100, Number.isFinite(Number(value.score)) ? Number(value.score) : 0)),
+    issues,
+    snapshots,
+    consoleErrors,
+    metrics: metricsRaw
+      ? {
+          desktop: normalizeMetrics(metricsRaw.desktop),
+          mobile: normalizeMetrics(metricsRaw.mobile)
+        }
+      : null
+  };
+}
+
+function mapLandingCreationReview(review: LandingCreationReviewRecord | null | undefined): Record<string, unknown> | null {
+  if (!review) return null;
+  const payload = normalizeLandingCreationReviewPayload({
+    bundleGeneratedAt: review.bundleGeneratedAt,
+    summary: review.summary,
+    score: review.score,
+    issues: review.issuesJson,
+    snapshots: review.snapshotsJson,
+    consoleErrors: review.consoleErrorsJson,
+    metrics: review.metricsJson
+  });
+  return {
+    id: review.id,
+    status: review.status,
+    source: review.status.startsWith("preflight_") ? "preflight" : "browser",
+    score: review.score,
+    summary: payload.summary,
+    bundleGeneratedAt: payload.bundleGeneratedAt,
+    issues: payload.issues,
+    snapshots: payload.snapshots,
+    consoleErrors: payload.consoleErrors,
+    metrics: payload.metrics,
+    reviewRound: review.reviewRound,
+    autoFixAttempted: review.autoFixAttempted,
+    createdAt: review.createdAt,
+    updatedAt: review.updatedAt
+  };
+}
+
 function mapLandingCreationSession(session: {
   id: number;
   title: string | null;
@@ -4122,6 +4550,7 @@ function mapLandingCreationSession(session: {
   chatHistoryJson: unknown;
   codeBundleDraftJson?: unknown;
   publishedOfferId: number | null;
+  reviews?: LandingCreationReviewRecord[];
   createdAt: Date;
   updatedAt: Date;
 }): Record<string, unknown> {
@@ -4178,6 +4607,7 @@ function mapLandingCreationSession(session: {
           }
         }
       : null,
+    latestVisualReview: mapLandingCreationReview(session.reviews?.[0] || null),
     publishedOfferId: session.publishedOfferId,
     createdAt: session.createdAt,
     updatedAt: session.updatedAt
@@ -4370,6 +4800,7 @@ function buildLandingCodeBundlePromptText(params: {
     level?: string | null;
     summary?: string | null;
   };
+  designBrief?: Record<string, unknown> | null;
 }) {
   const approvedFacts = params.offer.approvedFacts.length
     ? params.offer.approvedFacts
@@ -4379,21 +4810,253 @@ function buildLandingCodeBundlePromptText(params: {
     LANDING_CODE_GENERATION_SYSTEM_PROMPT,
     params.promptConfig.systemPrompt,
     "",
-    buildLandingCodeGenerationPrompt({
-      offerTitle: params.offer.title,
-      offerSlug: params.offer.slug,
-      shortDescription: params.offer.shortDescription,
-      durationLabel: params.offer.durationLabel,
-      modality: params.offer.modality,
-      visualTheme: params.offer.visualTheme,
-      colorPalette: params.offer.colorPalette,
-      typographyStyle: params.offer.typographyStyle,
-      layoutStyle: params.offer.layoutStyle,
-      approvedFacts,
-      prompt: params.promptConfig,
-      leadContext: params.leadContext
-    })
+    "Gere somente o codigo completo do arquivo App.tsx.",
+    "Nao devolva JSON, nao devolva markdown, nao use cercas de codigo, nao devolva texto explicativo.",
+    "A resposta inteira deve ser apenas o conteudo TSX do App.tsx, com imports no topo e default export no final.",
+    "O arquivo precisa ser autocontido e pronto para entrar no bundle React da landing.",
+    "",
+    "--- Oferta oficial ---",
+    `Titulo: ${params.offer.title}`,
+    `Slug: ${params.offer.slug}`,
+    `Descricao curta: ${params.offer.shortDescription || "Nao informado"}`,
+    `Duracao: ${params.offer.durationLabel || "Nao informado"}`,
+    `Modalidade: ${params.offer.modality || "Nao informado"}`,
+    `CTA principal obrigatorio: ${params.offer.ctaLabel}`,
+    `Direcao visual desejada: ${params.offer.visualTheme || "Nao informado"}`,
+    `Paleta de cores: ${params.offer.colorPalette || "Nao informado"}`,
+    `Tipografia: ${params.offer.typographyStyle || "Nao informado"}`,
+    `Layout preferido: ${params.offer.layoutStyle || "Nao informado"}`,
+    "Fatos aprovados:",
+    ...approvedFacts.map((fact, index) => `${index + 1}. ${fact}`),
+    "",
+    params.designBrief
+      ? ["--- Design brief aprovada para esta rodada ---", JSON.stringify(params.designBrief, null, 2)].join("\n")
+      : "",
+    "",
+    "--- Regras tecnicas ---",
+    "Use React com default export.",
+    "Use apenas imports desta allowlist: react, lucide-react e componentes @/components/ui/* ja permitidos pelo runtime.",
+    "Use o maximo coerente de componentes shadcn/Radix com papel real na pagina.",
+    "O CTA principal deve usar exatamente o texto informado acima.",
+    "A landing precisa incluir hero, secao de beneficios ou transformacao, trilha/modulos, aplicacoes praticas ou prova, FAQ e CTA final.",
+    "O hero precisa ter cena visual secundaria real, nao apenas texto centralizado.",
+    "Evite footer institucional e evite cara de template com pilha de cards iguais.",
+    "Nao use fetch, localStorage, sessionStorage, eval, new Function ou scripts externos.",
+    "Retorne somente o TSX de App.tsx."
   ].filter(Boolean).join("\n\n");
+}
+
+function extractLandingAppCode(rawOutput: string): string | null {
+  const parsed = extractFirstJsonObject(rawOutput);
+  if (parsed && typeof parsed.code === "string" && parsed.code.trim()) {
+    return parsed.code.trim();
+  }
+
+  const fencedMatch = rawOutput.match(/```(?:tsx|jsx|ts)?\s*([\s\S]*?)\s*```/i);
+  if (fencedMatch?.[1]?.trim()) {
+    return fencedMatch[1].trim();
+  }
+
+  const trimmed = rawOutput.trim();
+  if (/^\s*import\s+/m.test(trimmed) && /export\s+default/m.test(trimmed)) {
+    return trimmed;
+  }
+
+  const appStart = trimmed.search(/(?:^|\n)import\s+/);
+  if (appStart >= 0) {
+    const candidate = trimmed.slice(appStart).trim();
+    if (/export\s+default/m.test(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function detectUsedLandingComponents(code: string): string[] {
+  const components = new Set<string>();
+  for (const source of extractImportSources(code)) {
+    const uiMatch = source.match(/@\/components\/ui\/([a-z0-9-]+)/i);
+    if (uiMatch?.[1]) {
+      const normalized = uiMatch[1]
+        .split("-")
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join("");
+      if (normalized) components.add(normalized);
+    }
+  }
+
+  const jsxMatches = code.matchAll(/<(Accordion|AlertDialog|AspectRatio|Avatar|Badge|Button|Card|Checkbox|Collapsible|ContextMenu|Dialog|DropdownMenu|HoverCard|Label|Menubar|NavigationMenu|Popover|Progress|RadioGroup|ScrollArea|Select|Separator|Sheet|Slider|Switch|Tabs|Toggle|ToggleGroup|Tooltip)\b/g);
+  for (const match of jsxMatches) {
+    if (match[1]) components.add(match[1]);
+  }
+
+  return [...components];
+}
+
+function buildLandingCodeBundleFromAppCode(params: {
+  code: string;
+  offer: {
+    title: string;
+    slug: string;
+    shortDescription: string | null;
+    visualTheme?: string | null;
+  };
+  summary?: string | null;
+}): LandingCodeBundle {
+  const file: LandingCodeFile = {
+    path: "App.tsx",
+    code: params.code.trim(),
+    summary: "Arquivo principal da landing"
+  };
+  return {
+    version: 1,
+    kind: "landing-code-bundle-v1",
+    framework: "vite-react",
+    source: "ai",
+    entryFile: "App.tsx",
+    files: [file],
+    metadata: {
+      title: params.offer.title,
+      slug: normalizeSlug(params.offer.slug),
+      description: params.offer.shortDescription || undefined,
+      summary: params.summary || "Bundle React gerado para esta landing.",
+      generatedAt: new Date().toISOString(),
+      visualTheme: params.offer.visualTheme || undefined
+    },
+    themeTokens: {
+      accent: "#22d3ee",
+      surface: "#0f172a",
+      canvas: "#08111f",
+      text: "#f8fafc",
+      muted: "#94a3b8"
+    },
+    usedComponents: detectUsedLandingComponents(params.code),
+    usedImports: extractImportSources(params.code)
+  };
+}
+
+function normalizeLandingDesignBrief(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const brief = value as Record<string, unknown>;
+  if (typeof brief.visualThesis !== "string" || !brief.visualThesis.trim()) return null;
+  if (!Array.isArray(brief.contentPlan) || brief.contentPlan.length < 3) return null;
+  if (!brief.hero || typeof brief.hero !== "object") return null;
+  if (!Array.isArray(brief.sections) || brief.sections.length < 2) return null;
+  if (!brief.cta || typeof brief.cta !== "object") return null;
+  return brief;
+}
+
+async function generateLandingDesignBriefWithOpenAI(params: {
+  offer: {
+    title: string;
+    slug: string;
+    shortDescription: string | null;
+    durationLabel: string | null;
+    modality: string | null;
+    approvedFacts: string[];
+    ctaLabel: string;
+    visualTheme?: string | null;
+    colorPalette?: string | null;
+    typographyStyle?: string | null;
+    layoutStyle?: string | null;
+  };
+  promptConfig: {
+    systemPrompt: string;
+    toneGuidelines: string;
+    requiredRules: string[];
+    ctaRules: string[];
+  };
+  leadContext?: {
+    interestedCourse?: string | null;
+    courseMode?: string | null;
+    objective?: string | null;
+    level?: string | null;
+    summary?: string | null;
+  };
+  eventMeta: {
+    eventPrefix: string;
+    offerId?: number | null;
+    slug: string;
+    sessionId?: number | null;
+  };
+}): Promise<Record<string, unknown> | null> {
+  if (!OPENAI_API_KEY) return null;
+
+  const input = buildLandingDesignBriefPromptInput({
+    offerTitle: params.offer.title,
+    offerSlug: params.offer.slug,
+    shortDescription: params.offer.shortDescription,
+    durationLabel: params.offer.durationLabel,
+    modality: params.offer.modality,
+    ctaLabel: params.offer.ctaLabel,
+    visualTheme: params.offer.visualTheme,
+    colorPalette: params.offer.colorPalette,
+    typographyStyle: params.offer.typographyStyle,
+    layoutStyle: params.offer.layoutStyle,
+    approvedFacts: params.offer.approvedFacts.length ? params.offer.approvedFacts : [params.offer.shortDescription || params.offer.title],
+    prompt: params.promptConfig,
+    leadContext: params.leadContext
+  });
+
+  const responseResult = await callOpenAIResponsesWithRouting({
+    taskType: "landing_generation",
+    input,
+    maxOutputTokens: 2200,
+    metadata: {
+      sessionId: params.eventMeta.sessionId ?? null,
+      offerId: params.eventMeta.offerId,
+      slug: params.eventMeta.slug,
+      stage: "design_brief"
+    }
+  }).catch((err) => {
+    logEvent("warn", `${params.eventMeta.eventPrefix}.brief_failed`, {
+      sessionId: params.eventMeta.sessionId ?? null,
+      offerId: params.eventMeta.offerId,
+      slug: params.eventMeta.slug,
+      message: formatError(err)
+    });
+    return null;
+  });
+
+  if (!responseResult) return null;
+  const { response: resp, selectedModel, fallbackUsed } = responseResult;
+  if (!resp.ok) {
+    const detail = await resp.text().catch(() => "");
+    logEvent("warn", `${params.eventMeta.eventPrefix}.brief_failed`, {
+      sessionId: params.eventMeta.sessionId ?? null,
+      offerId: params.eventMeta.offerId,
+      slug: params.eventMeta.slug,
+      selectedModel,
+      fallbackUsed,
+      statusCode: resp.status,
+      message: detail
+    });
+    return null;
+  }
+
+  const payload = await resp.json();
+  const rawOutput = parseResponseOutputText(payload);
+  const parsed = extractFirstJsonObject(rawOutput);
+  const brief = normalizeLandingDesignBrief(parsed);
+  if (!brief) {
+    logEvent("warn", `${params.eventMeta.eventPrefix}.brief_invalid`, {
+      sessionId: params.eventMeta.sessionId ?? null,
+      offerId: params.eventMeta.offerId,
+      slug: params.eventMeta.slug,
+      selectedModel,
+      fallbackUsed,
+      rawPreview: rawOutput.slice(0, 1200)
+    });
+    return null;
+  }
+
+  const cta = brief.cta && typeof brief.cta === "object" ? brief.cta as Record<string, unknown> : null;
+  if (!cta || typeof cta.label !== "string" || cta.label.trim() !== params.offer.ctaLabel.trim()) {
+    if (cta) cta.label = params.offer.ctaLabel;
+  }
+
+  return brief;
 }
 
 async function generateLandingCodeBundleWithGemini(params: {
@@ -4515,7 +5178,11 @@ async function generateLandingCodeBundleWithGemini(params: {
     return null;
   }
 
-  const validationIssues = validateLandingCodeBundle(normalizedBundle);
+  const validationIssues = validateLandingCodeBundle(normalizedBundle, {
+    ctaLabel: params.offer.ctaLabel,
+    layoutStyle: params.offer.layoutStyle,
+    visualTheme: params.offer.visualTheme
+  });
   if (validationIssues.length > 0) {
     logEvent("warn", `${params.eventMeta.eventPrefix}.provider_invalid`, {
       sessionId: params.eventMeta.sessionId ?? null,
@@ -4602,6 +5269,7 @@ async function generateLandingCodeBundleWithOpenAI(params: {
     level?: string | null;
     summary?: string | null;
   };
+  designBrief?: Record<string, unknown> | null;
   eventMeta: {
     eventPrefix: string;
     offerId?: number | null;
@@ -4639,15 +5307,16 @@ async function generateLandingCodeBundleWithOpenAI(params: {
     repairAttempt: boolean
   ): Promise<{
     bundle: LandingCodeBundle | null;
+    appCode: string | null;
     rawOutput: string;
     issues: string[];
     selectedModel: string;
     fallbackUsed: boolean;
   } | null> => {
-    const responseResult = await callOpenAIResponsesWithRouting({
+  const responseResult = await callOpenAIResponsesWithRouting({
       taskType: "landing_code_bundle",
       input,
-      maxOutputTokens: 9000,
+      maxOutputTokens: 6500,
       metadata: {
         sessionId: params.eventMeta.sessionId ?? null,
         offerId: params.eventMeta.offerId,
@@ -4688,28 +5357,61 @@ async function generateLandingCodeBundleWithOpenAI(params: {
 
     const payload = await resp.json();
     const rawOutput = parseResponseOutputText(payload);
-    const parsed = extractFirstJsonObject(rawOutput);
-    const normalizedBundle = normalizeLandingCodeBundle(parsed, {
-      title: params.offer.title,
-      slug: params.offer.slug,
-      shortDescription: params.offer.shortDescription,
-      visualTheme: params.offer.visualTheme
-    });
+    const appCode = extractLandingAppCode(rawOutput);
 
-    if (!normalizedBundle) {
+    if (!appCode) {
       return {
         bundle: null,
+        appCode: null,
         rawOutput,
-        issues: ["O bundle precisa seguir exatamente o contrato JSON solicitado, com kind/framework/entryFile/files validos."],
+        issues: ["A resposta precisa conter apenas o TSX completo do arquivo App.tsx com imports e export default."],
         selectedModel,
         fallbackUsed
       };
     }
 
-    const validationIssues = validateLandingCodeBundle(normalizedBundle);
+    const normalizedBundle = buildLandingCodeBundleFromAppCode({
+      code: appCode,
+      offer: {
+        title: params.offer.title,
+        slug: params.offer.slug,
+        shortDescription: params.offer.shortDescription,
+        visualTheme: params.offer.visualTheme
+      },
+      summary: params.designBrief && typeof params.designBrief.visualThesis === "string"
+        ? String(params.designBrief.visualThesis)
+        : undefined
+    });
+
+    const validationIssues = validateLandingCodeBundle(normalizedBundle, {
+      ctaLabel: params.offer.ctaLabel,
+      layoutStyle: params.offer.layoutStyle,
+      visualTheme: params.offer.visualTheme
+    });
     if (validationIssues.length > 0) {
+      if (repairAttempt) {
+        return {
+          bundle: {
+            ...normalizedBundle,
+            source: "ai",
+            metadata: {
+              ...normalizedBundle.metadata,
+              generatedAt: new Date().toISOString(),
+              summary: normalizedBundle.metadata.summary
+                ? `${normalizedBundle.metadata.summary} | Warnings: ${validationIssues.slice(0, 2).join(" / ")}`
+                : `Warnings: ${validationIssues.slice(0, 2).join(" / ")}`
+            }
+          },
+          appCode,
+          rawOutput,
+          issues: validationIssues,
+          selectedModel,
+          fallbackUsed
+        };
+      }
       return {
         bundle: null,
+        appCode,
         rawOutput,
         issues: validationIssues,
         selectedModel,
@@ -4726,6 +5428,7 @@ async function generateLandingCodeBundleWithOpenAI(params: {
           generatedAt: new Date().toISOString()
         }
       },
+      appCode,
       rawOutput,
       issues: [],
       selectedModel,
@@ -4762,13 +5465,18 @@ async function generateLandingCodeBundleWithOpenAI(params: {
           text: [
             "Sua ultima resposta nao passou na validacao do runtime.",
             "Corrija e reenvie somente um JSON valido no mesmo schema.",
+            `O CTA principal precisa usar exatamente este texto: "${params.offer.ctaLabel}".`,
+            "A pagina precisa ter estrutura real de landing de curso: hero forte, beneficios, trilha ou modulos, prova/aplicacoes, FAQ e CTA final repetido.",
+            params.designBrief ? `Use esta design brief como ancora do reparo:\n${JSON.stringify(params.designBrief, null, 2)}` : "",
+            firstAttempt?.appCode ? `Repare em cima deste App.tsx anterior, sem recomecar do zero sem necessidade:\n${firstAttempt.appCode}` : "",
             "Problemas detectados:",
             ...(firstAttempt?.issues || ["O bundle veio fora do contrato esperado."]).map((issue, index) => `${index + 1}. ${issue}`),
             'O arquivo principal precisa importar e usar componentes `@/components/ui/*`. O caminho minimo seguro e `@/components/ui/button` com `<Button>` em um CTA visivel.',
             "Aproveite o catalogo shadcn/Radix ao maximo no reparo. Se houver secoes suficientes, prefira combinar varios componentes reais da allowlist, como Button, Badge, Accordion, Tabs, Separator, ScrollArea, Tooltip, HoverCard, Card e ToggleGroup, em vez de voltar para HTML cru.",
             "Nao injete componente morto so para inflar a lista. Cada primitive deve aparecer com papel real na pagina.",
-            "Nao use markdown, cercas de codigo, comentarios fora do JSON ou texto antes/depois do objeto.",
-            "Se o codigo estiver grande demais, simplifique. Prefira um bundle compacto e valido."
+            "Nao use markdown, nao use cercas de codigo e nao devolva JSON.",
+            "Responda apenas com o TSX completo do App.tsx.",
+            "Se o codigo estiver grande demais, simplifique. Prefira um App.tsx compacto e valido."
           ].join("\n")
         }
       ]
@@ -4777,6 +5485,19 @@ async function generateLandingCodeBundleWithOpenAI(params: {
 
   const repairedAttempt = await runAttempt(repairInput, true);
   if (repairedAttempt?.bundle) {
+    if (repairedAttempt.issues.length > 0) {
+      logEvent("warn", `${params.eventMeta.eventPrefix}.provider_degraded`, {
+        sessionId: params.eventMeta.sessionId ?? null,
+        offerId: params.eventMeta.offerId,
+        slug: params.eventMeta.slug,
+        mode: "react_bundle",
+        provider: "openai",
+        selectedModel: repairedAttempt.selectedModel,
+        fallbackUsed: repairedAttempt.fallbackUsed,
+        repairAttempt: true,
+        issues: repairedAttempt.issues
+      });
+    }
     return repairedAttempt.bundle;
   }
 
@@ -4840,7 +5561,20 @@ async function generateLandingCodeBundleForOfferData(params: {
     providerOrder: ["openai"]
   });
 
-  const openaiBundle = await generateLandingCodeBundleWithOpenAI(params);
+  const designBrief = await generateLandingDesignBriefWithOpenAI(params);
+  if (designBrief) {
+    logEvent("info", `${params.eventMeta.eventPrefix}.brief_succeeded`, {
+      sessionId: params.eventMeta.sessionId ?? null,
+      offerId: params.eventMeta.offerId,
+      slug: params.eventMeta.slug,
+      visualThesis: typeof designBrief.visualThesis === "string" ? designBrief.visualThesis : null
+    });
+  }
+
+  const openaiBundle = await generateLandingCodeBundleWithOpenAI({
+    ...params,
+    designBrief
+  });
   if (openaiBundle) {
     logEvent("info", `${params.eventMeta.eventPrefix}.succeeded`, {
       sessionId: params.eventMeta.sessionId ?? null,
@@ -4863,13 +5597,632 @@ async function generateLandingCodeBundleForOfferData(params: {
     provider: "none",
     message: "Nenhum provider conseguiu gerar um bundle visual valido."
   });
-  throw new Error("Nenhum provider de IA conseguiu gerar o preview visual agora.");
+  const fallbackBundle = buildEmergencyLandingCodeBundle({
+    title: params.offer.title,
+    slug: params.offer.slug,
+    shortDescription: params.offer.shortDescription,
+    durationLabel: params.offer.durationLabel,
+    modality: params.offer.modality,
+    approvedFacts: params.offer.approvedFacts,
+    ctaLabel: params.offer.ctaLabel,
+    visualTheme: params.offer.visualTheme,
+    colorPalette: params.offer.colorPalette
+  });
+  logEvent("warn", `${params.eventMeta.eventPrefix}.fallback_generated`, {
+    sessionId: params.eventMeta.sessionId ?? null,
+    offerId: params.eventMeta.offerId,
+    slug: params.eventMeta.slug,
+    mode: "react_bundle",
+    provider: "local_fallback",
+    entryFile: fallbackBundle.entryFile,
+    files: fallbackBundle.files.map((file) => file.path)
+  });
+  return fallbackBundle;
+}
+
+function getSessionBundleGeneratedAt(session: Pick<LandingCreationSessionRecord, "codeBundleDraftJson">): string | null {
+  if (!session.codeBundleDraftJson || typeof session.codeBundleDraftJson !== "object") return null;
+  const metadata = (session.codeBundleDraftJson as { metadata?: { generatedAt?: unknown } }).metadata;
+  return typeof metadata?.generatedAt === "string" && metadata.generatedAt.trim() ? metadata.generatedAt.trim() : null;
+}
+
+function getLatestReviewForCurrentBundle(session: LandingCreationSessionRecord): LandingCreationReviewRecord | null {
+  const bundleGeneratedAt = getSessionBundleGeneratedAt(session);
+  const latestReview = session.reviews?.[0] || null;
+  if (!latestReview || !bundleGeneratedAt) return null;
+  return latestReview.bundleGeneratedAt === bundleGeneratedAt ? latestReview : null;
+}
+
+async function createLandingCreationReview(params: {
+  sessionId: number;
+  status: string;
+  score?: number | null;
+  summary: string;
+  bundleGeneratedAt: string | null;
+  issues?: LandingCreationReviewIssue[];
+  snapshots?: LandingCreationReviewSnapshot[];
+  consoleErrors?: string[];
+  metrics?: LandingCreationReviewPayload["metrics"];
+  reviewRound?: number;
+  autoFixAttempted?: boolean;
+  replaceExistingForStatus?: boolean;
+}) {
+  if (params.replaceExistingForStatus) {
+    await prisma.landingCreationReview.deleteMany({
+      where: {
+        sessionId: params.sessionId,
+        bundleGeneratedAt: params.bundleGeneratedAt,
+        status: params.status
+      }
+    });
+  }
+  const latest = await prisma.landingCreationReview.findFirst({
+    where: { sessionId: params.sessionId },
+    orderBy: [{ reviewRound: "desc" }, { createdAt: "desc" }]
+  });
+  return prisma.landingCreationReview.create({
+    data: {
+      sessionId: params.sessionId,
+      status: params.status,
+      score: params.score ?? null,
+      summary: params.summary,
+      bundleGeneratedAt: params.bundleGeneratedAt,
+      issuesJson: (params.issues || []) as unknown as object,
+      snapshotsJson: (params.snapshots || []) as unknown as object,
+      consoleErrorsJson: (params.consoleErrors || []) as unknown as object,
+      metricsJson: (params.metrics || null) as unknown as object | null,
+      reviewRound: params.reviewRound ?? ((latest?.reviewRound || 0) + 1),
+      autoFixAttempted: Boolean(params.autoFixAttempted)
+    } as any
+  });
+}
+
+function buildLandingPreflightDraftSummary(draft: LandingCreationDraftValues): string {
+  return [
+    draft.shortDescription || "Sem descricao curta.",
+    draft.visualTheme ? `Tema: ${draft.visualTheme}.` : null,
+    draft.layoutStyle ? `Layout: ${draft.layoutStyle}.` : null,
+    draft.colorPalette ? `Cores: ${draft.colorPalette}.` : null,
+    draft.typographyStyle ? `Tipografia: ${draft.typographyStyle}.` : null,
+    draft.approvedFacts.length ? `Fatos aprovados: ${draft.approvedFacts.slice(0, 4).join("; ")}.` : null,
+    draft.ctaLabel ? `CTA: ${draft.ctaLabel}.` : null
+  ].filter(Boolean).join(" ");
+}
+
+function buildHeuristicPreflightReview(bundle: LandingCodeBundle): LandingCreationReviewPayload {
+  const allCode = bundle.files.map((file) => file.code).join("\n\n");
+  const lowered = allCode.toLowerCase();
+  const leadingCode = allCode.slice(0, 4200);
+  const issues: LandingCreationReviewIssue[] = [];
+
+  const hasButton = /<Button\b/.test(allCode) || /button/i.test(bundle.usedComponents.join(" "));
+  const hasSection = /<section\b/gi.test(allCode);
+  const sectionCount = (allCode.match(/<section\b/gi) || []).length;
+  const hasHeading = /<h1\b/i.test(allCode);
+  const paragraphCount = (allCode.match(/<p\b/gi) || []).length;
+  const distinctComponents = new Set(bundle.usedComponents.filter(Boolean)).size;
+  const animationSignals = (allCode.match(/animate-|transition-|motion\./g) || []).length;
+  const overflowSignals = (allCode.match(/w-screen|min-w-\[|translate-x-\[|left-\[-|right-\[-/g) || []).length;
+  const contrastSignals = (allCode.match(/text-(slate|zinc|gray)-[34]00/g) || []).length;
+  const heroHasBadge = /<Badge\b/i.test(leadingCode);
+  const heroHasSceneSupport = /<(Card|AspectRatio|Tabs|ScrollArea|HoverCard|Popover)\b/i.test(leadingCode)
+    || /(Card|AspectRatio|Tabs|ScrollArea|HoverCard|Popover)\./.test(leadingCode);
+  const hasPracticalProof =
+    /(casos de uso|aplicac|na pratica|workflow|fluxo|integrac|projeto|template|dashboard|rotina|automac|resultado)/i.test(allCode);
+  const hasVisualAtmosphere =
+    /(radial-gradient|linear-gradient|conic-gradient|backdrop-blur|bg-gradient-to|absolute inset-0|style=\{\{[^}]*background|shadow-\[|mix-blend)/i.test(allCode);
+
+  if (!hasButton) {
+    issues.push({
+      severity: "critical",
+      category: "cta",
+      title: "CTA principal nao apareceu no bundle",
+      detail: "O preflight nao encontrou uso claro de Button ou CTA principal renderizavel no codigo atual.",
+      viewport: "shared"
+    });
+  }
+
+  if (!hasHeading) {
+    issues.push({
+      severity: "warning",
+      category: "layout",
+      title: "Hero sem heading principal evidente",
+      detail: "O bundle nao mostra um h1 claro. Isso costuma enfraquecer a dobra inicial e a clareza da oferta.",
+      viewport: "shared"
+    });
+  }
+
+  if (!hasSection || sectionCount < 5) {
+    issues.push({
+      severity: "warning",
+      category: "layout",
+      title: "Estrutura curta para uma landing completa",
+      detail: "O codigo parece ter poucas secoes semanticas ou pouco ritmo editorial. Isso tende a deixar a pagina rasa demais.",
+      viewport: "shared"
+    });
+  }
+
+  if (paragraphCount < 5 || !heroHasBadge || !heroHasSceneSupport) {
+    issues.push({
+      severity: "warning",
+      category: "layout",
+      title: "Hero com cara de template basico",
+      detail: "O preflight detectou hero pouco denso ou sem cena visual secundaria forte. Vale expandir a dobra inicial.",
+      viewport: "shared"
+    });
+  }
+
+  if (!hasPracticalProof) {
+    issues.push({
+      severity: "warning",
+      category: "layout",
+      title: "Falta aplicacao pratica concreta",
+      detail: "O bundle ainda nao evidencia bem o que a pessoa vai conseguir criar, automatizar ou operar apos o curso.",
+      viewport: "shared"
+    });
+  }
+
+  if (!hasVisualAtmosphere || distinctComponents < 7) {
+    issues.push({
+      severity: "info",
+      category: "layout",
+      title: "Direcao visual ainda parece generica",
+      detail: "O codigo ainda mostra pouca atmosfera de fundo, pouco contraste estrutural ou repertorio limitado de componentes.",
+      viewport: "shared"
+    });
+  }
+
+  if (animationSignals >= 24) {
+    issues.push({
+      severity: "warning",
+      category: "motion",
+      title: "Muitas camadas de animacao",
+      detail: "O bundle mostra muitos sinais de animacao/transicao. Vale validar se isso nao esta pesando ou distraindo demais.",
+      viewport: "shared"
+    });
+  }
+
+  if (overflowSignals >= 3) {
+    issues.push({
+      severity: "warning",
+      category: "overflow",
+      title: "Possivel risco de overflow horizontal",
+      detail: "O preflight detectou classes e posicionamentos que costumam gerar largura excedente em alguns breakpoints.",
+      viewport: "shared"
+    });
+  }
+
+  if (contrastSignals >= 8) {
+    issues.push({
+      severity: "info",
+      category: "contrast",
+      title: "Contraste merece confirmacao no browser",
+      detail: "O codigo usa varios tons medio-escuros de texto. A revisao visual final deve confirmar legibilidade real.",
+      viewport: "shared"
+    });
+  }
+
+  const criticalCount = issues.filter((issue) => issue.severity === "critical").length;
+  const warningCount = issues.filter((issue) => issue.severity === "warning").length;
+  const score = Math.max(0, Math.min(100, 100 - criticalCount * 32 - warningCount * 8));
+
+  return {
+    bundleGeneratedAt: bundle.metadata.generatedAt || null,
+    summary: criticalCount > 0
+      ? "Preflight estrutural encontrou bloqueios antes da revisao visual final."
+      : warningCount > 0
+        ? "Preflight estrutural encontrou pontos de atencao enquanto o preview carrega."
+        : "Preflight estrutural nao encontrou bloqueios evidentes no bundle atual.",
+    score,
+    issues,
+    snapshots: [],
+    consoleErrors: [],
+    metrics: null
+  };
+}
+
+async function runLandingCodeBundlePreflightReview(params: {
+  sessionId: number;
+  draft: LandingCreationDraftValues;
+  bundle: LandingCodeBundle;
+}): Promise<LandingCreationReviewPayload> {
+  const heuristicReview = buildHeuristicPreflightReview(params.bundle);
+  if (!OPENAI_API_KEY) {
+    return heuristicReview;
+  }
+
+  const input = buildLandingCodePreflightReviewPromptInput({
+    offerTitle: params.draft.title,
+    offerSlug: params.draft.slug,
+    draftSummary: buildLandingPreflightDraftSummary(params.draft),
+    currentBundle: params.bundle
+  });
+
+  const responseResult = await callOpenAIResponsesWithRouting({
+    taskType: "landing_visual",
+    input,
+    maxOutputTokens: 2200,
+    metadata: {
+      sessionId: params.sessionId,
+      slug: params.draft.slug,
+      source: "landing_preflight_review"
+    }
+  }).catch((err) => {
+    logEvent("warn", "landing.creation.review.preflight.model_failed", {
+      sessionId: params.sessionId,
+      slug: params.draft.slug,
+      message: formatError(err)
+    });
+    return null;
+  });
+
+  if (!responseResult) {
+    return heuristicReview;
+  }
+
+  const { response: resp, selectedModel, fallbackUsed } = responseResult;
+  if (!resp.ok) {
+    const detail = await resp.text().catch(() => "");
+    logEvent("warn", "landing.creation.review.preflight.model_failed", {
+      sessionId: params.sessionId,
+      slug: params.draft.slug,
+      selectedModel,
+      fallbackUsed,
+      statusCode: resp.status,
+      message: detail
+    });
+    return heuristicReview;
+  }
+
+  const payload = await resp.json().catch(() => null);
+  const rawOutput = payload ? parseResponseOutputText(payload) : "";
+  const parsed = extractFirstJsonObject(rawOutput);
+  const normalized = normalizeLandingCreationReviewPayload(parsed);
+  if (!normalized.summary && normalized.issues.length === 0) {
+    return heuristicReview;
+  }
+
+  return {
+    ...heuristicReview,
+    summary: normalized.summary || heuristicReview.summary,
+    score: Number.isFinite(normalized.score) ? normalized.score : heuristicReview.score,
+    issues: normalized.issues.length ? normalized.issues : heuristicReview.issues,
+    consoleErrors: [],
+    snapshots: [],
+    metrics: null
+  };
+}
+
+function queueLandingCreationPreflightReview(sessionId: number, draft: LandingCreationDraftValues, bundle: LandingCodeBundle) {
+  const bundleGeneratedAt = bundle.metadata.generatedAt || "";
+  const jobKey = `${sessionId}:${bundleGeneratedAt}`;
+  if (!bundleGeneratedAt || landingPreflightReviewJobs.has(jobKey)) return;
+
+  const job = (async () => {
+    try {
+      await createLandingCreationReview({
+        sessionId,
+        status: "preflight_running",
+        score: null,
+        summary: "Preflight estrutural iniciado em paralelo enquanto o preview carrega no navegador.",
+        bundleGeneratedAt,
+        issues: [],
+        snapshots: [],
+        consoleErrors: [],
+        metrics: null,
+        replaceExistingForStatus: true
+      });
+
+      logEvent("info", "landing.creation.review.preflight.started", {
+        sessionId,
+        bundleGeneratedAt
+      });
+
+      const report = await runLandingCodeBundlePreflightReview({
+        sessionId,
+        draft,
+        bundle
+      });
+      const hasCriticalIssues = report.issues.some((issue) => issue.severity === "critical");
+
+      await createLandingCreationReview({
+        sessionId,
+        status: hasCriticalIssues ? "preflight_failed" : "preflight_passed",
+        score: report.score,
+        summary: report.summary,
+        bundleGeneratedAt: report.bundleGeneratedAt,
+        issues: report.issues,
+        snapshots: [],
+        consoleErrors: [],
+        metrics: null,
+        replaceExistingForStatus: true
+      });
+
+      logEvent(hasCriticalIssues ? "warn" : "info", `landing.creation.review.preflight.${hasCriticalIssues ? "failed" : "passed"}`, {
+        sessionId,
+        bundleGeneratedAt,
+        score: report.score,
+        issues: report.issues.length
+      });
+    } catch (err) {
+      logEvent("warn", "landing.creation.review.preflight.failed", {
+        sessionId,
+        bundleGeneratedAt,
+        message: formatError(err)
+      });
+    } finally {
+      landingPreflightReviewJobs.delete(jobKey);
+    }
+  })();
+
+  landingPreflightReviewJobs.set(jobKey, job);
+}
+
+async function refineLandingCodeBundleFromReview(params: {
+  sessionId: number;
+  draft: LandingCreationDraftValues;
+  currentBundle: LandingCodeBundle;
+  review: LandingCreationReviewPayload;
+}): Promise<LandingCodeBundle | null> {
+  if (!OPENAI_API_KEY) return null;
+  const input = buildLandingCodeRefinePromptInput({
+    offerTitle: params.draft.title,
+    offerSlug: params.draft.slug,
+    currentBundle: params.currentBundle,
+    reviewSummary: params.review.summary,
+    issues: params.review.issues
+  });
+  const responseResult = await callOpenAIResponsesWithRouting({
+    taskType: "landing_refine",
+    input,
+    maxOutputTokens: 9000,
+    metadata: {
+      sessionId: params.sessionId,
+      slug: params.draft.slug,
+      source: "landing_visual_review"
+    }
+  }).catch((err) => {
+    logEvent("error", "landing.creation.review.auto_fix.failed", {
+      sessionId: params.sessionId,
+      slug: params.draft.slug,
+      message: formatError(err)
+    });
+    return null;
+  });
+  if (!responseResult) return null;
+  const { response: resp, selectedModel, fallbackUsed } = responseResult;
+  if (!resp.ok) {
+    const detail = await resp.text().catch(() => "");
+    logEvent("error", "landing.creation.review.auto_fix.failed", {
+      sessionId: params.sessionId,
+      slug: params.draft.slug,
+      selectedModel,
+      fallbackUsed,
+      statusCode: resp.status,
+      message: detail
+    });
+    return null;
+  }
+
+  const payload = await resp.json();
+  const rawOutput = parseResponseOutputText(payload);
+  const parsed = extractFirstJsonObject(rawOutput);
+  const normalizedBundle = normalizeLandingCodeBundle(parsed, {
+    title: params.draft.title,
+    slug: params.draft.slug,
+    shortDescription: params.draft.shortDescription || null,
+    visualTheme: params.draft.visualTheme || null
+  });
+  if (!normalizedBundle) {
+    logEvent("warn", "landing.creation.review.auto_fix.invalid", {
+      sessionId: params.sessionId,
+      slug: params.draft.slug,
+      selectedModel,
+      fallbackUsed,
+      message: "bundle_refinado_invalido",
+      rawPreview: rawOutput.slice(0, 1200)
+    });
+    return null;
+  }
+
+  const validationIssues = validateLandingCodeBundle(normalizedBundle, {
+    ctaLabel: params.draft.ctaLabel,
+    layoutStyle: params.draft.layoutStyle,
+    visualTheme: params.draft.visualTheme
+  });
+  if (validationIssues.length > 0) {
+    logEvent("warn", "landing.creation.review.auto_fix.invalid", {
+      sessionId: params.sessionId,
+      slug: params.draft.slug,
+      selectedModel,
+      fallbackUsed,
+      issues: validationIssues,
+      rawPreview: rawOutput.slice(0, 1200)
+    });
+    return null;
+  }
+
+  return {
+    ...normalizedBundle,
+    source: "ai",
+    metadata: {
+      ...normalizedBundle.metadata,
+      generatedAt: new Date().toISOString()
+    }
+  };
+}
+
+async function submitLandingCreationReview(sessionId: number, payload: unknown) {
+  const session = await getLandingCreationSessionOrThrow(sessionId);
+  const currentBundle = normalizeLandingCodeBundle(session.codeBundleDraftJson, {
+    title: normalizeLandingCreationDraft(session.offerDraftJson).title || session.title || "Nova landing",
+    slug: normalizeLandingCreationDraft(session.offerDraftJson).slug || `landing-${sessionId}`,
+    shortDescription: normalizeLandingCreationDraft(session.offerDraftJson).shortDescription || null,
+    visualTheme: normalizeLandingCreationDraft(session.offerDraftJson).visualTheme || null
+  });
+  if (!currentBundle) {
+    throw new Error("A sessao nao possui bundle para revisar.");
+  }
+
+  const reviewPayload = normalizeLandingCreationReviewPayload(payload);
+  const bundleGeneratedAt = currentBundle.metadata.generatedAt || null;
+  if (reviewPayload.bundleGeneratedAt && bundleGeneratedAt && reviewPayload.bundleGeneratedAt !== bundleGeneratedAt) {
+    throw new Error("O preview mudou antes da revisao terminar. Gere um novo parecer.");
+  }
+  logEvent("info", "landing.creation.review.started", {
+    sessionId,
+    bundleGeneratedAt
+  });
+
+  const criticalIssues = reviewPayload.issues.filter((issue) => issue.severity === "critical");
+  const hasBlockingIssues = criticalIssues.length > 0 || reviewPayload.consoleErrors.length > 0;
+  const baseSummary = hasBlockingIssues
+    ? reviewPayload.summary || "Revisao visual encontrou problemas criticos."
+    : reviewPayload.summary || "Revisao visual aprovada para o bundle atual.";
+
+  const createdReview = await createLandingCreationReview({
+    sessionId,
+    status: hasBlockingIssues ? "failed" : "passed",
+    score: reviewPayload.score,
+    summary: baseSummary,
+    bundleGeneratedAt,
+    issues: reviewPayload.issues,
+    snapshots: reviewPayload.snapshots,
+    consoleErrors: reviewPayload.consoleErrors,
+    metrics: reviewPayload.metrics
+  });
+
+  if (!hasBlockingIssues) {
+    await prisma.landingCreationSession.update({
+      include: landingCreationSessionInclude,
+      where: { id: sessionId },
+      data: {
+        status: "preview_ready"
+      }
+    });
+    logEvent("info", "landing.creation.review.passed", {
+      sessionId,
+      reviewId: createdReview.id,
+      score: reviewPayload.score,
+      bundleGeneratedAt
+    });
+    return {
+      session: await getLandingCreationSessionOrThrow(sessionId),
+      reviewAction: {
+        autoFixed: false,
+        rerunRequired: false
+      }
+    };
+  }
+
+  logEvent("warn", "landing.creation.review.failed", {
+    sessionId,
+    reviewId: createdReview.id,
+    score: reviewPayload.score,
+    criticalIssues: criticalIssues.length,
+    consoleErrors: reviewPayload.consoleErrors.length,
+    bundleGeneratedAt
+  });
+
+  const autoFixAttempts = await prisma.landingCreationReview.count({
+    where: {
+      sessionId,
+      autoFixAttempted: true
+    }
+  });
+  const canAutoFix = autoFixAttempts < MAX_LANDING_AUTO_REVIEW_FIX_ATTEMPTS;
+  if (!canAutoFix) {
+    await prisma.landingCreationSession.update({
+      include: landingCreationSessionInclude,
+      where: { id: sessionId },
+      data: {
+        status: "review_failed"
+      }
+    });
+    return {
+      session: await getLandingCreationSessionOrThrow(sessionId),
+      reviewAction: {
+        autoFixed: false,
+        rerunRequired: false
+      }
+    };
+  }
+
+  await prisma.landingCreationReview.update({
+    where: { id: createdReview.id },
+    data: {
+      autoFixAttempted: true
+    }
+  });
+
+  logEvent("info", "landing.creation.review.auto_fix.started", {
+    sessionId,
+    reviewId: createdReview.id,
+    bundleGeneratedAt
+  });
+
+  const refinedBundle = await refineLandingCodeBundleFromReview({
+    sessionId,
+    draft: normalizeLandingCreationDraft(session.offerDraftJson),
+    currentBundle,
+    review: reviewPayload
+  });
+
+  if (!refinedBundle) {
+    await prisma.landingCreationSession.update({
+      include: landingCreationSessionInclude,
+      where: { id: sessionId },
+      data: {
+        status: "review_failed"
+      }
+    });
+    return {
+      session: await getLandingCreationSessionOrThrow(sessionId),
+      reviewAction: {
+        autoFixed: false,
+        rerunRequired: false
+      }
+    };
+  }
+
+  await prisma.landingCreationSession.update({
+    include: landingCreationSessionInclude,
+    where: { id: sessionId },
+    data: {
+      status: "review_pending",
+      codeBundleDraftJson: refinedBundle as unknown as object
+    } as any
+  });
+  await createLandingCreationReview({
+    sessionId,
+    status: "auto_fixed",
+    score: null,
+    summary: "A Lume aplicou um refino automatico no bundle. Reexecutando a revisao visual.",
+    bundleGeneratedAt: refinedBundle.metadata.generatedAt,
+    reviewRound: createdReview.reviewRound + 1,
+    autoFixAttempted: true
+  });
+
+  logEvent("info", "landing.creation.review.auto_fix.succeeded", {
+    sessionId,
+    reviewId: createdReview.id,
+    nextBundleGeneratedAt: refinedBundle.metadata.generatedAt
+  });
+
+  return {
+    session: await getLandingCreationSessionOrThrow(sessionId),
+    reviewAction: {
+      autoFixed: true,
+      rerunRequired: true
+    }
+  };
 }
 
 async function createLandingCreationSession() {
   const promptDraft = await getGlobalLandingPromptSettings();
   const defaultDraft = buildDefaultLandingCreationDraft();
   const session = await prisma.landingCreationSession.create({
+    include: landingCreationSessionInclude,
     data: {
       title: "Nova landing",
       status: "draft",
@@ -4885,7 +6238,8 @@ async function createLandingCreationSession() {
 
 async function getLandingCreationSessionOrThrow(sessionId: number): Promise<LandingCreationSessionRecord> {
   const session = await prisma.landingCreationSession.findUnique({
-    where: { id: sessionId }
+    where: { id: sessionId },
+    include: landingCreationSessionInclude
   }) as LandingCreationSessionRecord | null;
   if (!session) throw new Error("Sessao de criacao nao encontrada.");
   return session;
@@ -4894,6 +6248,7 @@ async function getLandingCreationSessionOrThrow(sessionId: number): Promise<Land
 async function runLandingCreationChatTurn(sessionId: number, userMessage: string, options?: { absorbAskAnswer?: boolean; askAnswers?: Record<string, string> | null }) {
   const session = await getLandingCreationSessionOrThrow(sessionId);
   const draft = normalizeLandingCreationDraft(session.offerDraftJson);
+  const promptDraft = mergeLandingPromptPayload(buildDefaultLandingPromptValues(), session.promptDraftJson);
   const history = normalizeLandingCreationHistory(session.chatHistoryJson);
   const currentPlanner = normalizeLandingPlannerState(draft.planner, buildFallbackLandingPlannerState(draft));
   const askAnswerSummary =
@@ -4972,6 +6327,7 @@ async function runLandingCreationChatTurn(sessionId: number, userMessage: string
           }
         ];
     const updated = await prisma.landingCreationSession.update({
+      include: landingCreationSessionInclude,
       where: { id: sessionId },
       data: {
         title: nextDraft.title || session.title || "Nova landing",
@@ -4986,6 +6342,12 @@ async function runLandingCreationChatTurn(sessionId: number, userMessage: string
       topic: simpleTopic,
       title: nextDraft.title
     });
+    if (planner.readyForVisualGeneration && !planner.shouldAsk && promptDraft.autoGenerateEnabled) {
+      return generateLandingPreviewForSession(sessionId, {
+        offerDraft: nextDraft,
+        promptDraft
+      });
+    }
     return updated;
   }
   const plannerHistory = nextHistory
@@ -5179,6 +6541,12 @@ async function runLandingCreationChatTurn(sessionId: number, userMessage: string
     } as any
   });
   logEvent("info", "landing.creation.chat.succeeded", { sessionId });
+  if (planner.readyForVisualGeneration && !planner.shouldAsk && promptDraft.autoGenerateEnabled) {
+    return generateLandingPreviewForSession(sessionId, {
+      offerDraft: nextDraft,
+      promptDraft
+    });
+  }
   return updated;
 }
 
@@ -5235,15 +6603,17 @@ async function generateLandingPreviewForSession(sessionId: number, payload: unkn
     }
   });
   const updated = await prisma.landingCreationSession.update({
+    include: landingCreationSessionInclude,
     where: { id: sessionId },
     data: {
       title: mergedDraft.title || session.title || "Nova landing",
-      status: "preview_ready",
+      status: "review_pending",
       offerDraftJson: mergedDraft,
       promptDraftJson: promptDraft,
       codeBundleDraftJson: landingCodeBundle as unknown as object
     } as any
   });
+  queueLandingCreationPreflightReview(sessionId, mergedDraft, landingCodeBundle);
   logEvent("info", "landing.creation.preview.generated", { sessionId });
   return updated;
 }
@@ -5255,6 +6625,7 @@ async function saveLandingCreationPrompt(sessionId: number, payload: unknown) {
     payload
   );
   return prisma.landingCreationSession.update({
+    include: landingCreationSessionInclude,
     where: { id: sessionId },
     data: {
       promptDraftJson: nextPrompt,
@@ -5277,6 +6648,15 @@ async function publishLandingCreationSession(sessionId: number, payload: unknown
   const readiness = computeLandingDraftReadiness(draft);
   if (!readiness.canPublish) {
     throw new Error(`Campos obrigatorios para publicar: ${readiness.missingPublishFields.join(", ")}`);
+  }
+  const latestReview = getLatestReviewForCurrentBundle(session);
+  if (!latestReview || latestReview.status !== "passed") {
+    logEvent("warn", "landing.creation.publish.blocked_by_review", {
+      sessionId,
+      latestReviewStatus: latestReview?.status || null,
+      bundleGeneratedAt: getSessionBundleGeneratedAt(session)
+    });
+    throw new Error("A revisao visual desta landing ainda nao foi aprovada. Gere ou aguarde a validacao antes de publicar.");
   }
 
   const offerData = {
@@ -5395,6 +6775,7 @@ async function publishLandingCreationSession(sessionId: number, payload: unknown
   }
 
   const updatedSession = await prisma.landingCreationSession.update({
+    include: landingCreationSessionInclude,
     where: { id: sessionId },
     data: {
       title: draft.title,
@@ -7094,9 +8475,9 @@ function resolveBaseModelForTask(config: AIConfigValues, taskType: AIModelTaskTy
   switch (taskType) {
     case "landing_planner":
     case "landing_generation":
-    case "landing_code_bundle":
     case "landing_refine":
     case "landing_visual":
+    case "landing_code_bundle":
       return config.strongModel || config.cheapModel;
     case "chat_reply":
     case "lead_enrichment":
@@ -7161,8 +8542,9 @@ function resolveTaskRequestTimeoutMs(taskType: AIModelTaskType): number {
     case "landing_refine":
       return 30000;
     case "landing_code_bundle":
+      return 90000;
     case "landing_visual":
-      return 120000;
+      return 60000;
     default:
       return 20000;
   }

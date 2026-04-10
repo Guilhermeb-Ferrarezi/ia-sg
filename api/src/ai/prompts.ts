@@ -325,12 +325,114 @@ export function buildLandingGenerationPrompt(input: {
   ].join("\n");
 }
 
+export function buildLandingDesignBriefPrompt(input: {
+  offerTitle: string;
+  offerSlug: string;
+  shortDescription?: string | null;
+  durationLabel?: string | null;
+  modality?: string | null;
+  ctaLabel: string;
+  visualTheme?: string | null;
+  colorPalette?: string | null;
+  typographyStyle?: string | null;
+  layoutStyle?: string | null;
+  approvedFacts: string[];
+  prompt: {
+    systemPrompt: string;
+    toneGuidelines?: string | null;
+    requiredRules: string[];
+    ctaRules: string[];
+  };
+  leadContext?: {
+    interestedCourse?: string | null;
+    courseMode?: string | null;
+    objective?: string | null;
+    level?: string | null;
+    summary?: string | null;
+  } | null;
+}): string {
+  return [
+    "Crie uma design brief curta e forte para uma landing page de curso.",
+    "A brief precisa servir como base visual e narrativa para uma segunda etapa que gerara o bundle React.",
+    "Nao escreva HTML, JSX, markdown ou comentarios fora do JSON.",
+    "",
+    "--- Oferta oficial ---",
+    `Titulo: ${input.offerTitle}`,
+    `Slug: ${input.offerSlug}`,
+    `Descricao curta: ${input.shortDescription || "Nao informado"}`,
+    `Duracao: ${input.durationLabel || "Nao informado"}`,
+    `Modalidade: ${input.modality || "Nao informado"}`,
+    `CTA principal obrigatorio: ${input.ctaLabel}`,
+    `Direcao visual desejada: ${input.visualTheme || "Nao informado"}`,
+    `Paleta de cores: ${input.colorPalette || "Nao informado"}`,
+    `Tipografia: ${input.typographyStyle || "Nao informado"}`,
+    `Layout preferido: ${input.layoutStyle || "Nao informado"}`,
+    "Fatos aprovados:",
+    ...input.approvedFacts.map((fact, index) => `${index + 1}. ${fact}`),
+    "",
+    "--- Diretrizes de tom ---",
+    input.prompt.toneGuidelines || "Sem diretriz adicional.",
+    "",
+    "--- Regras obrigatorias ---",
+    ...input.prompt.requiredRules.map((rule, index) => `${index + 1}. ${rule}`),
+    "",
+    "--- Regras de CTA ---",
+    ...input.prompt.ctaRules.map((rule, index) => `${index + 1}. ${rule}`),
+    "",
+    "--- Contexto complementar do lead ---",
+    `Interesse detectado: ${input.leadContext?.interestedCourse || "Nao informado"}`,
+    `Modalidade preferida: ${input.leadContext?.courseMode || "Nao informado"}`,
+    `Objetivo: ${input.leadContext?.objective || "Nao informado"}`,
+    `Nivel: ${input.leadContext?.level || "Nao informado"}`,
+    `Resumo: ${input.leadContext?.summary || "Nao informado"}`,
+    "",
+    "--- Regras da brief ---",
+    "Seja concreta. Nada de frases vagas sobre 'experiencia guiada' ou 'jornada transformadora' sem explicar a cena da pagina.",
+    "A brief precisa escolher uma tese visual dominante, um plano de conteudo enxuto e um plano de composicao claro.",
+    "Cada secao precisa ter uma funcao diferente. Nao repita a mesma ideia com nomes diferentes.",
+    "Para cursos tecnicos, cite cenas reais como fluxos, integrações, dashboards, templates, módulos, automações ou bastidores operacionais.",
+    "A CTA label final precisa ser exatamente igual ao CTA principal obrigatorio informado acima.",
+    "A sequencia minima esperada e: hero, suporte/prova, detalhe/trilha e CTA final.",
+    "",
+    "--- Formato de resposta ---",
+    "{",
+    '  "visualThesis": "Uma frase com humor, materialidade e energia visual",',
+    '  "contentPlan": ["Hero", "Support", "Detail", "Final CTA"],',
+    '  "interactionThesis": ["Animacao 1", "Animacao 2", "Animacao 3"],',
+    '  "hero": {',
+    '    "composition": "Como a primeira dobra deve parecer",',
+    '    "headline": "Headline principal",',
+    '    "subheadline": "Subheadline curta",',
+    '    "supportingPoints": ["Ponto 1", "Ponto 2", "Ponto 3"],',
+    '    "sceneIdeas": ["Cena 1", "Cena 2"]',
+    "  },",
+    '  "sections": [',
+    '    { "id": "support", "title": "Nome da secao", "goal": "Funcao narrativa", "layoutIdea": "Ideia visual", "content": ["Item 1", "Item 2"] }',
+    "  ],",
+    '  "designSystemHints": {',
+    '    "palette": ["Cor 1", "Cor 2", "Cor 3"],',
+    '    "typeMood": "Direcao tipografica",',
+    '    "surfaces": "Como tratar fundos e superficies",',
+    '    "avoid": ["Evitar 1", "Evitar 2"]',
+    "  },",
+    '  "componentPlan": ["Button", "Badge", "Tabs", "Accordion", "ScrollArea", "Card", "Tooltip"],',
+    '  "cta": {',
+    '    "label": "Texto exato do CTA",',
+    '    "helper": "Texto auxiliar curto" ',
+    "  }",
+    "}",
+    "",
+    "Responda apenas com JSON valido."
+  ].join("\n");
+}
+
 export function buildLandingCodeGenerationPrompt(input: {
   offerTitle: string;
   offerSlug: string;
   shortDescription?: string | null;
   durationLabel?: string | null;
   modality?: string | null;
+  ctaLabel: string;
   visualTheme?: string | null;
   colorPalette?: string | null;
   typographyStyle?: string | null;
@@ -360,6 +462,7 @@ export function buildLandingCodeGenerationPrompt(input: {
     `Descricao curta: ${input.shortDescription || "Nao informado"}`,
     `Duracao: ${input.durationLabel || "Nao informado"}`,
     `Modalidade: ${input.modality || "Nao informado"}`,
+    `CTA principal obrigatorio: ${input.ctaLabel}`,
     `Direcao visual desejada: ${input.visualTheme || "Nao informado"}`,
     `Paleta de cores: ${input.colorPalette || "Nao informado"}`,
     `Tipografia: ${input.typographyStyle || "Nao informado"}`,
@@ -386,6 +489,16 @@ export function buildLandingCodeGenerationPrompt(input: {
     "--- Runtime e restricoes ---",
     "A exportacao principal deve ser um componente React default export.",
     "O componente pode receber props com onPrimaryAction para o CTA principal.",
+    "O texto do CTA principal deve ser exatamente igual ao CTA principal obrigatorio informado acima. Nao troque por sinonimos, nao encurte e nao invente variacao.",
+    "A landing precisa ter estrutura minima de pagina de curso, nao apenas um hero curto com 2 ou 3 blocos soltos.",
+    "Inclua no minimo: hero forte com proposta de valor, secao de beneficios ou transformacao, secao de conteudo/modulos/trilha, secao de prova ou aplicacoes praticas, FAQ e CTA final repetido perto do encerramento.",
+    "Quando o layoutStyle pedir hero com storytelling, o hero precisa ter narrativa visual e copy mais forte do que apenas titulo + subtitulo curto.",
+    "Evite hero generico com titulo do curso, uma frase curta e um botao sozinho. Isso nao basta para esta tarefa.",
+    "O hero precisa parecer uma cena real da landing: kicker ou badge, headline forte, texto de apoio com densidade, CTA principal claro e uma composicao visual secundaria relevante ao tema.",
+    "Nao entregue pagina com cara de wireframe premium. Cada secao precisa ter funcao narrativa clara: descoberta, transformacao, aplicacao pratica, confianca ou fechamento.",
+    "Inclua pelo menos uma secao de aplicacoes praticas ou prova concreta com exemplos do que a pessoa vai conseguir construir, automatizar ou operar apos aprender.",
+    "Inclua pelo menos um bloco com ritmo visual diferente do resto da pagina, como composicao assimetrica, cena em camadas, painel tecnico, trilha editorial ou contraste de background entre secoes.",
+    "Evite paginas que parecam apenas uma pilha de cards centralizados. Misture escala, alinhamento, densidade e hierarquia sem perder legibilidade.",
     "Gere arquivos como se estivesse criando a landing do zero a partir do prompt atual. Nao assuma a existencia de um App anterior, seed visual ou template escondido.",
     "Ao construir o preview, trabalhe em modo lovable editorial imersivo. Priorize uma composicao memoravel, sensorial e autoral em vez de seguir um template rigido.",
     "Se o contexto visual estiver incompleto, infira uma direcao plausivel e elegante em vez de cair em layout generico.",
@@ -402,6 +515,8 @@ export function buildLandingCodeGenerationPrompt(input: {
     "Use como referencia de linguagem visual o padrao recente das landings da Santos Tech, mas eleve isso para algo mais lovable: hero forte e direto, secoes com ritmo claro, blocos de aprendizado ou transformacao, atmosfera premium e detalhes visuais que deem vontade de explorar a pagina.",
     "Quando combinar com o tema, voce pode se inspirar em elementos de cena do proprio assunto, como planilhas, dashboards, interfaces, modulos, trilhas ou artefatos visuais do curso, sem copiar literalmente nenhuma pagina existente.",
     "Prefira compor uma narrativa de pagina com contraste entre secoes, ancoras editoriais, variacao de escala e blocos assimetricos, em vez de repetir a mesma caixa informativa varias vezes.",
+    "Em curso tecnico, troque copy genérica por cenas concretas: fluxos, integrações, dashboards, módulos, templates, rotinas, automações, entregas ou bastidores do trabalho.",
+    "Distribua o conteudo para que a pagina nao morra depois do hero. O miolo precisa sustentar interesse com pelo menos dois blocos realmente diferentes entre si, nao apenas uma nova grade com a mesma linguagem.",
     "Evite tratar a pagina como checkout, oferta agressiva, promocao relampago ou fechamento de venda imediata. O foco principal deve ser apresentar o curso, despertar interesse e convidar o visitante a saber mais.",
     "Evite metacopy e placeholders como 'experiencia guiada', 'visao geral', 'proximo passo', 'direcao editorial montada a partir do briefing' ou frases equivalentes.",
     "A landing deve terminar no ultimo bloco util de conteudo ou CTA. Nao adicione footer institucional, barra inferior, strip final, ticker, copyright, assinatura da marca ou mini-rodape com nome da escola e titulo do curso.",
@@ -414,12 +529,14 @@ export function buildLandingCodeGenerationPrompt(input: {
     'O bundle precisa importar e usar explicitamente componentes `@/components/ui/*`. O caminho minimo seguro e `@/components/ui/button` com `<Button>` em um CTA visivel, mas o objetivo aqui e ir muito alem do minimo.',
     "Use o maior numero coerente de componentes da allowlist. Em uma landing rica, tente combinar pelo menos 6 componentes distintos quando houver secoes suficientes, sempre sem criar elementos mortos.",
     "Mapeie componentes a papeis reais da pagina. Exemplos: `Accordion` ou `Collapsible` no FAQ; `Tabs` ou `ToggleGroup` para trilhas e modulos; `ScrollArea` para paines densos; `HoverCard`, `Tooltip` ou `Popover` para detalhes; `Separator` para ritmo; `Card`, `AspectRatio`, `Avatar` e `Badge` para cenas e prova; `Progress`, `Slider`, `Switch`, `RadioGroup` ou `Select` quando ajudarem a explicar niveis, filtros, comparacoes ou percursos.",
+    "Para esta task, prefira pelo menos 7 componentes distintos quando a pagina tiver conteudo suficiente, incluindo obrigatoriamente alguns de estrutura editorial e alguns de detalhe interativo.",
     "Se houver cabecalho, menu contextual ou CTA complementar, prefira `NavigationMenu`, `Menubar`, `DropdownMenu`, `Sheet`, `Dialog` ou `AlertDialog` quando fizer sentido de UX.",
     "Nao use um componente apenas para preencher checklist. Mas, antes de recorrer a blocos customizados, esgote as opcoes do catalogo shadcn/Radix ja permitido.",
     "Nao use fetch, XMLHttpRequest, WebSocket, eval, new Function, document.cookie, localStorage, sessionStorage ou scripts externos.",
     "Prefira compor secoes inteiras com componentes da allowlist em vez de usar HTML semantico quase puro. So recue para markup customizada quando a primitive nao cobrir bem a interacao ou a estrutura.",
     "Voce pode construir secoes com div, section, article, header e grid livremente dentro do TSX.",
     "Evite repeticao mecanica de blocos iguais. O preview deve parecer pensado, nao montado por molde.",
+    "No JSON final, o campo code deve ser uma string JSON valida. Nao use template literals com crase, nao use cercas markdown e nao deixe TSX fora das aspas.",
     "",
     "--- Formato de resposta ---",
     "{",
@@ -494,6 +611,166 @@ export function buildLandingCodeGenerationPromptInput(input: Parameters<typeof b
         {
           type: "input_text",
           text: buildLandingCodeGenerationPrompt(input)
+        }
+      ]
+    }
+  ];
+}
+
+export function buildLandingDesignBriefPromptInput(input: Parameters<typeof buildLandingDesignBriefPrompt>[0]): PromptInputMessage[] {
+  return [
+    {
+      role: "system",
+      content: [
+        {
+          type: "input_text",
+          text: [LANDING_GENERATION_SYSTEM_PROMPT, input.prompt.systemPrompt].filter(Boolean).join("\n\n")
+        }
+      ]
+    },
+    {
+      role: "user",
+      content: [
+        {
+          type: "input_text",
+          text: buildLandingDesignBriefPrompt(input)
+        }
+      ]
+    }
+  ];
+}
+
+export function buildLandingCodeRefinePromptInput(input: {
+  offerTitle: string;
+  offerSlug: string;
+  currentBundle: unknown;
+  reviewSummary: string;
+  issues: Array<{
+    severity: string;
+    category: string;
+    title: string;
+    detail: string;
+    viewport?: string | null;
+  }>;
+}): PromptInputMessage[] {
+  return [
+    {
+      role: "system",
+      content: [
+        {
+          type: "input_text",
+          text: LANDING_CODE_GENERATION_SYSTEM_PROMPT
+        }
+      ]
+    },
+    {
+      role: "user",
+      content: [
+        {
+          type: "input_text",
+          text: [
+            "Repare o bundle React/TSX da landing abaixo.",
+            "Mantenha a proposta visual e a narrativa sempre que possivel. Corrija apenas o necessario para remover os problemas apontados.",
+            "Nao escreva markdown, comentarios ou texto fora do JSON final.",
+            "",
+            `Titulo: ${input.offerTitle}`,
+            `Slug: ${input.offerSlug}`,
+            `Resumo da revisao: ${input.reviewSummary}`,
+            "",
+            "Problemas obrigatorios para corrigir:",
+            ...input.issues.map((issue, index) =>
+              `${index + 1}. [${issue.severity}] ${issue.category} - ${issue.title}${issue.viewport ? ` (${issue.viewport})` : ""}: ${issue.detail}`
+            ),
+            "",
+            "Regras de reparo:",
+            "1. Preserve o schema landing-code-bundle-v1.",
+            "2. Preserve ou aumente o uso coerente de componentes shadcn/Radix ja permitidos.",
+            "3. Garanta CTA principal visivel na primeira dobra sem quebrar a composicao.",
+            "4. Remova overflow horizontal, sobreposicoes graves e texto ilegivel.",
+            "5. Nao adicione footer institucional, ticker ou barra residual.",
+              "6. Se animacoes estiverem exageradas a ponto de prejudicar leitura, simplifique sem matar a energia visual.",
+              "7. Se um detalhe estiver causando falha estrutural, prefira uma solucao robusta a um truque visual fragil.",
+              "8. O CTA principal deve ficar exatamente igual ao CTA aprovado no draft, sem sinonimos ou troca de intencao.",
+              "9. Se a landing estiver curta demais, expanda a estrutura para um padrao real de pagina de curso com hero forte, beneficios, trilha/modulos, prova/aplicacoes, FAQ e CTA final.",
+              "10. Se a pagina estiver correta estruturalmente, mas ainda parecer generica, aumente densidade visual, contraste entre secoes e concretude do conteudo sem trocar o tema.",
+              "11. O hero reparado precisa parecer uma cena real, com copy forte, composicao secundaria relevante e menos cara de template.",
+              "12. O campo code no JSON final precisa ser string JSON valida, sem crase e sem TSX solto fora das aspas.",
+              "",
+              "Bundle atual:",
+            JSON.stringify(input.currentBundle, null, 2),
+            "",
+            "Responda apenas com um JSON valido no mesmo schema do bundle."
+          ].join("\n")
+        }
+      ]
+    }
+  ];
+}
+
+export function buildLandingCodePreflightReviewPromptInput(input: {
+  offerTitle: string;
+  offerSlug: string;
+  draftSummary: string;
+  currentBundle: unknown;
+}): PromptInputMessage[] {
+  return [
+    {
+      role: "system",
+      content: [
+        {
+          type: "input_text",
+          text: [
+            "Voce e um revisor tecnico de UI da Santos Tech.",
+            "Sua tarefa e fazer um preflight estrutural de uma landing React antes da revisao visual final no navegador.",
+            "Analise apenas o bundle e o contexto fornecido. Nao invente screenshot, console error ou resultado de browser real.",
+            "Se algo depender de renderizacao real, marque como warning conservador, nunca como erro inventado.",
+            "Responda apenas com JSON valido."
+          ].join("\n")
+        }
+      ]
+    },
+    {
+      role: "user",
+      content: [
+        {
+          type: "input_text",
+          text: [
+            "Revise o bundle abaixo e gere um parecer de preflight.",
+            "",
+            `Titulo: ${input.offerTitle}`,
+            `Slug: ${input.offerSlug}`,
+            `Resumo do draft: ${input.draftSummary}`,
+            "",
+            "Regras:",
+            "1. Identifique riscos estruturais reais no codigo, especialmente CTA ausente, hero fraco, secoes insuficientes, imports suspeitos, excesso de animacao, possivel overflow e contraste questionavel.",
+            "2. Nao declare erro de runtime sem evidencia estatica clara.",
+            "3. snapshots deve ser um array vazio.",
+            "4. consoleErrors deve ser um array vazio.",
+            "5. metrics deve ser null.",
+            "6. Use status implicito pelo conteudo: issues criticas apenas quando houver forte evidencia estrutural.",
+            "",
+            "Formato exato de resposta:",
+            "{",
+            '  "summary": "Resumo curto do preflight",',
+            '  "score": 0,',
+            '  "issues": [',
+            "    {",
+            '      "severity": "critical | warning | info",',
+            '      "category": "runtime | overflow | cta | contrast | layout | motion",',
+            '      "title": "Titulo curto",',
+            '      "detail": "Descricao objetiva",',
+            '      "selector": null,',
+            '      "viewport": "shared"',
+            "    }",
+            "  ],",
+            '  "snapshots": [],',
+            '  "consoleErrors": [],',
+            '  "metrics": null',
+            "}",
+            "",
+            "Bundle atual:",
+            JSON.stringify(input.currentBundle, null, 2)
+          ].join("\n")
         }
       ]
     }
@@ -713,6 +990,13 @@ function findFirstBalancedJsonObject(raw: string): string | null {
   return null;
 }
 
+function sanitizeJsonLikeTemplateLiterals(raw: string): string {
+  return raw.replace(/"code"\s*:\s*`([\s\S]*?)`(?=\s*[},])/g, (_match, code) => {
+    const normalizedCode = String(code).replace(/\r\n/g, "\n");
+    return `"code": ${JSON.stringify(normalizedCode)}`;
+  });
+}
+
 export function extractFirstJsonObject(raw: string): Record<string, unknown> | null {
   const initial = raw.replace(/^\uFEFF/, "").trim();
   if (!initial) return null;
@@ -742,6 +1026,11 @@ export function extractFirstJsonObject(raw: string): Record<string, unknown> | n
     const withoutFence = stripCodeFence(candidate);
     if (withoutFence !== candidate) {
       queue.push(withoutFence);
+    }
+
+    const sanitizedTemplateLiterals = sanitizeJsonLikeTemplateLiterals(candidate);
+    if (sanitizedTemplateLiterals !== candidate) {
+      queue.push(sanitizedTemplateLiterals);
     }
 
     if (

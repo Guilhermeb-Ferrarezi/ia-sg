@@ -119,12 +119,94 @@ const LANDING_UI_EXTERNAL_MODULES: Record<string, unknown> = {
   "@/components/ui/tooltip": TooltipModule,
 };
 
+function createNamespaceComponent<T extends Record<string, unknown>, K extends keyof T & string>(
+  module: T,
+  rootKey: K,
+  aliases: Record<string, keyof T & string>,
+) {
+  const rootValue = module[rootKey];
+  if (typeof rootValue !== "function" && (typeof rootValue !== "object" || rootValue === null)) {
+    return module;
+  }
+
+  const namespaceTarget =
+    typeof rootValue === "function"
+      ? rootValue as Record<string, unknown>
+      : { ...(rootValue as Record<string, unknown>) };
+
+  for (const [alias, exportKey] of Object.entries(aliases)) {
+    if (!namespaceTarget[alias] && module[exportKey]) {
+      namespaceTarget[alias] = module[exportKey];
+    }
+  }
+
+  return {
+    ...module,
+    [rootKey]: namespaceTarget,
+    default: namespaceTarget,
+  };
+}
+
+const LANDING_UI_RUNTIME_MODULES: Record<string, unknown> = {
+  ...LANDING_UI_EXTERNAL_MODULES,
+  "@/components/ui/accordion": createNamespaceComponent(AccordionModule, "Accordion", {
+    Item: "AccordionItem",
+    Header: "AccordionTrigger",
+    Trigger: "AccordionTrigger",
+    Content: "AccordionContent",
+    Body: "AccordionContent",
+  }),
+  "@/components/ui/card": createNamespaceComponent(CardModule, "Card", {
+    Header: "CardHeader",
+    Title: "CardTitle",
+    Description: "CardDescription",
+    Content: "CardContent",
+    Footer: "CardFooter",
+  }),
+  "@/components/ui/tabs": createNamespaceComponent(TabsModule, "Tabs", {
+    List: "TabsList",
+    Trigger: "TabsTrigger",
+    Content: "TabsContent",
+  }),
+  "@/components/ui/scroll-area": createNamespaceComponent(ScrollAreaModule, "ScrollArea", {
+    ScrollBar: "ScrollBar",
+  }),
+  "@/components/ui/navigation-menu": createNamespaceComponent(NavigationMenuModule, "NavigationMenu", {
+    List: "NavigationMenuList",
+    Item: "NavigationMenuItem",
+    Content: "NavigationMenuContent",
+    Trigger: "NavigationMenuTrigger",
+    Link: "NavigationMenuLink",
+    Indicator: "NavigationMenuIndicator",
+    Viewport: "NavigationMenuViewport",
+  }),
+  "@/components/ui/menubar": createNamespaceComponent(MenubarModule, "Menubar", {
+    Menu: "MenubarMenu",
+    Group: "MenubarGroup",
+    Portal: "MenubarPortal",
+    RadioGroup: "MenubarRadioGroup",
+    Trigger: "MenubarTrigger",
+    Content: "MenubarContent",
+    Item: "MenubarItem",
+    CheckboxItem: "MenubarCheckboxItem",
+    RadioItem: "MenubarRadioItem",
+    Label: "MenubarLabel",
+    Separator: "MenubarSeparator",
+    Shortcut: "MenubarShortcut",
+    Sub: "MenubarSub",
+    SubTrigger: "MenubarSubTrigger",
+    SubContent: "MenubarSubContent",
+  }),
+};
+
 export default function LandingCodePreviewHost({
   bundle,
   onPrimaryAction,
+  onRuntimeSnapshot,
 }: {
   bundle: LandingCodeBundle;
   onPrimaryAction?: () => void;
+  onRuntimeSnapshot?: (snapshot: { iframe: HTMLIFrameElement | null; state: RuntimeState; runtimeError: string; bundleGeneratedAt: string }) => void;
 }) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const requestIdRef = useRef(0);
@@ -139,6 +221,15 @@ export default function LandingCodePreviewHost({
     setRuntimeState("preparing");
     setRuntimeError("");
   }, [srcDoc]);
+
+  useEffect(() => {
+    onRuntimeSnapshot?.({
+      iframe: iframeRef.current,
+      state: runtimeState,
+      runtimeError,
+      bundleGeneratedAt: bundle.metadata.generatedAt
+    });
+  }, [bundle.metadata.generatedAt, onRuntimeSnapshot, runtimeError, runtimeState]);
 
   useEffect(() => {
     let cancelled = false;
@@ -188,7 +279,7 @@ export default function LandingCodePreviewHost({
           },
           externalModules: {
             react: { ...React, default: React },
-            ...LANDING_UI_EXTERNAL_MODULES,
+            ...LANDING_UI_RUNTIME_MODULES,
             "lucide-react": LucideIcons,
           },
         };
@@ -197,6 +288,39 @@ export default function LandingCodePreviewHost({
           (() => {
             const runtime = window.__LANDING_PREVIEW_RUNTIME;
             const moduleCache = {};
+            window.__LANDING_PREVIEW_DIAGNOSTICS = {
+              consoleErrors: [],
+              runtimeErrors: [],
+            };
+            const previewDiagnostics = window.__LANDING_PREVIEW_DIAGNOSTICS;
+            const originalConsoleError = console.error.bind(console);
+            console.error = (...args) => {
+              try {
+                previewDiagnostics.consoleErrors.push(args.map((entry) => {
+                  if (typeof entry === "string") return entry;
+                  try {
+                    return JSON.stringify(entry);
+                  } catch {
+                    return String(entry);
+                  }
+                }).join(" "));
+              } catch {}
+              originalConsoleError(...args);
+            };
+            window.addEventListener("error", (event) => {
+              const message = event?.error?.message || event?.message || "Erro desconhecido no preview.";
+              previewDiagnostics.runtimeErrors.push(String(message));
+            });
+            window.addEventListener("unhandledrejection", (event) => {
+              const reason = event?.reason;
+              const message =
+                typeof reason === "string"
+                  ? reason
+                  : reason?.message
+                    ? String(reason.message)
+                    : "Unhandled promise rejection no preview.";
+              previewDiagnostics.runtimeErrors.push(message);
+            });
             const RESPONSIVE_BREAKPOINTS = {
               sm: "640px",
               md: "768px",
@@ -545,6 +669,10 @@ declare global {
         onPrimaryAction?: () => void;
       };
       externalModules: Record<string, unknown>;
+    };
+    __LANDING_PREVIEW_DIAGNOSTICS?: {
+      consoleErrors: string[];
+      runtimeErrors: string[];
     };
   }
 }

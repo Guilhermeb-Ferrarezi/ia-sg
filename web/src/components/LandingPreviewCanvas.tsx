@@ -9,11 +9,13 @@ export default function LandingPreviewCanvas({
   landing,
   previewLabel: _previewLabel,
   onCtaClick,
+  onRuntimeSnapshot,
 }: {
   offer: Pick<Offer, "title" | "shortDescription" | "approvedFacts" | "ctaLabel" | "ctaUrl" | "durationLabel" | "modality">;
   landing: Pick<LandingPageSummary, "landingCodeBundleJson">;
   previewLabel?: string;
   onCtaClick?: () => void;
+  onRuntimeSnapshot?: (snapshot: { iframe: HTMLIFrameElement | null; state: "preparing" | "transpiling" | "ready" | "error"; runtimeError: string; bundleGeneratedAt: string }) => void;
 }) {
   const codeBundle = resolveLandingCodeBundle(landing);
 
@@ -34,5 +36,5 @@ export default function LandingPreviewCanvas({
     );
   }
 
-  return <LandingCodePreviewHost bundle={codeBundle} onPrimaryAction={onCtaClick} />;
+  return <LandingCodePreviewHost bundle={codeBundle} onPrimaryAction={onCtaClick} onRuntimeSnapshot={onRuntimeSnapshot} />;
 }

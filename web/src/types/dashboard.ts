@@ -475,6 +475,56 @@ export type LandingCreationReadiness = {
   missingPublishFields: string[];
 };
 
+export type LandingVisualReviewIssue = {
+  severity: "critical" | "warning" | "info" | string;
+  category: "runtime" | "overflow" | "cta" | "contrast" | "layout" | "motion" | string;
+  title: string;
+  detail: string;
+  selector?: string | null;
+  viewport?: "desktop" | "mobile" | "shared" | string | null;
+};
+
+export type LandingVisualReviewSnapshot = {
+  viewport: "desktop" | "mobile" | string;
+  width: number;
+  height: number;
+  dataUrl: string | null;
+  capturedAt: string;
+};
+
+export type LandingVisualReviewMetrics = {
+  viewportWidth: number;
+  viewportHeight: number;
+  scrollWidth: number;
+  scrollHeight: number;
+  horizontalOverflowPx: number;
+  visibleSections: number;
+  ctaVisible: boolean;
+  ctaAboveFold: boolean;
+  contrastWarnings: number;
+  animatedElements: number;
+};
+
+export type LandingVisualReview = {
+  id: number;
+  status: string;
+  source?: "preflight" | "browser" | string;
+  score: number | null;
+  summary: string;
+  bundleGeneratedAt: string | null;
+  issues: LandingVisualReviewIssue[];
+  snapshots: LandingVisualReviewSnapshot[];
+  consoleErrors: string[];
+  metrics: {
+    desktop: LandingVisualReviewMetrics | null;
+    mobile: LandingVisualReviewMetrics | null;
+  } | null;
+  reviewRound: number;
+  autoFixAttempted: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type LandingCreationSession = {
   id: number;
   title: string;
@@ -486,6 +536,7 @@ export type LandingCreationSession = {
   planner: LandingCreationPlannerState;
   codeBundleDraft?: LandingCodeBundle | null;
   preview: LandingPreviewResponse | null;
+  latestVisualReview: LandingVisualReview | null;
   publishedOfferId: number | null;
   createdAt: string;
   updatedAt: string;

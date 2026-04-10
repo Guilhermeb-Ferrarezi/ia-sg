@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Brain, ChartNoAxesColumn, ChevronDown, ChevronLeft, ChevronRight, CodeXml, CornerDownLeft, Ellipsis, FileText, Globe, History, LayoutDashboard, Menu, MessageSquare, MonitorPlay, PanelLeftClose, PanelsTopLeft, Plus, RefreshCw, Send, Sparkles, Trash2, X } from "lucide-react";
 import { apiFetch } from "../lib/apiFetch";
-import type { LandingCreationSession, LandingPageSummary, LandingPreviewLeadContext, Offer } from "../types/dashboard";
+import type {
+  LandingCreationSession,
+  LandingPageSummary,
+  LandingPreviewLeadContext,
+  LandingVisualReviewIssue,
+  LandingVisualReviewMetrics,
+  LandingVisualReviewSnapshot,
+  Offer
+} from "../types/dashboard";
 import LandingPreviewCanvas from "./LandingPreviewCanvas";
 import LandingCodeIdePane from "./LandingCodeIdePane";
 import { motion, AnimatePresence } from "framer-motion";
@@ -61,6 +69,322 @@ function buildSessionAutoPreviewKey(session: Pick<LandingCreationSession, "offer
     offerDraft: session.offerDraft,
     promptDraft: session.promptDraft
   });
+}
+
+type PreviewRuntimeSnapshot = {
+  iframe: HTMLIFrameElement | null;
+  state: "preparing" | "transpiling" | "ready" | "error";
+  runtimeError: string;
+  bundleGeneratedAt: string;
+};
+
+type LandingVisualReviewReport = {
+  bundleGeneratedAt: string | null;
+  summary: string;
+  score: number;
+  issues: LandingVisualReviewIssue[];
+  snapshots: LandingVisualReviewSnapshot[];
+  consoleErrors: string[];
+  metrics: {
+    desktop: LandingVisualReviewMetrics | null;
+    mobile: LandingVisualReviewMetrics | null;
+  };
+};
+
+function parseCssColor(value: string | null | undefined): [number, number, number, number] | null {
+  if (!value) return null;
+  const normalized = value.trim().toLowerCase();
+  if (!normalized || normalized === "transparent") return [0, 0, 0, 0];
+  if (normalized.startsWith("#")) {
+    const hex = normalized.slice(1);
+    if (hex.length === 3) {
+      return [
+        parseInt(hex[0] + hex[0], 16),
+        parseInt(hex[1] + hex[1], 16),
+        parseInt(hex[2] + hex[2], 16),
+        1
+      ];
+    }
+    if (hex.length === 6 || hex.length === 8) {
+      return [
+        parseInt(hex.slice(0, 2), 16),
+        parseInt(hex.slice(2, 4), 16),
+        parseInt(hex.slice(4, 6), 16),
+        hex.length === 8 ? parseInt(hex.slice(6, 8), 16) / 255 : 1
+      ];
+    }
+  }
+  const match = normalized.match(/rgba?\(([^)]+)\)/);
+  if (!match) return null;
+  const parts = match[1].split(",").map((part) => Number(part.trim()));
+  if (parts.length < 3 || parts.some((part, index) => index < 3 && !Number.isFinite(part))) return null;
+  return [parts[0], parts[1], parts[2], Number.isFinite(parts[3]) ? parts[3] : 1];
+}
+
+function getRelativeLuminance([r, g, b]: [number, number, number, number]): number {
+  const toLinear = (channel: number) => {
+    const normalized = channel / 255;
+    return normalized <= 0.03928 ? normalized / 12.92 : Math.pow((normalized + 0.055) / 1.055, 2.4);
+  };
+  const red = toLinear(r);
+  const green = toLinear(g);
+  const blue = toLinear(b);
+  return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+}
+
+function getContrastRatio(foreground: [number, number, number, number], background: [number, number, number, number]): number {
+  const lighter = Math.max(getRelativeLuminance(foreground), getRelativeLuminance(background));
+  const darker = Math.min(getRelativeLuminance(foreground), getRelativeLuminance(background));
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+function findBackgroundColor(element: Element, win: Window): [number, number, number, number] {
+  let current: Element | null = element;
+  while (current) {
+    const color = parseCssColor(win.getComputedStyle(current).backgroundColor);
+    if (color && color[3] > 0.01) return color;
+    current = current.parentElement;
+  }
+  return [2, 6, 23, 1];
+}
+
+function isElementVisible(element: Element, win: Window): boolean {
+  const htmlElement = element as HTMLElement;
+  const style = win.getComputedStyle(htmlElement);
+  if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) return false;
+  const rect = htmlElement.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
+}
+
+function buildReviewSummary(issues: LandingVisualReviewIssue[]): string {
+  const criticalCount = issues.filter((issue) => issue.severity === "critical").length;
+  const warningCount = issues.filter((issue) => issue.severity === "warning").length;
+  if (criticalCount > 0) return `Revisao visual bloqueou a landing com ${criticalCount} problema(s) critico(s) e ${warningCount} alerta(s).`;
+  if (warningCount > 0) return `Revisao visual aprovada com ${warningCount} alerta(s) menores para refinamento.`;
+  return "Revisao visual aprovada sem bloqueios.";
+}
+
+function buildSnapshotDataUrl(doc: Document, width: number, height: number): string | null {
+  try {
+    const markup = new XMLSerializer().serializeToString(doc.documentElement);
+    if (!markup || markup.length > 180000) return null;
+    const svg = [
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">`,
+      `<foreignObject width="100%" height="100%">`,
+      markup,
+      "</foreignObject>",
+      "</svg>"
+    ].join("");
+    return `data:image/svg+xml;base64,${window.btoa(unescape(encodeURIComponent(svg)))}`;
+  } catch {
+    return null;
+  }
+}
+
+function waitForReviewPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        window.setTimeout(resolve, 140);
+      });
+    });
+  });
+}
+
+async function collectLandingViewportReview(params: {
+  iframe: HTMLIFrameElement;
+  viewport: "desktop" | "mobile";
+  width?: number;
+  runtimeError?: string;
+}): Promise<{
+  issues: LandingVisualReviewIssue[];
+  snapshot: LandingVisualReviewSnapshot | null;
+  metrics: LandingVisualReviewMetrics | null;
+  consoleErrors: string[];
+}> {
+  const iframe = params.iframe;
+  const iframeWindow = iframe.contentWindow as (Window & {
+    __LANDING_PREVIEW_DIAGNOSTICS?: {
+      consoleErrors: string[];
+      runtimeErrors: string[];
+    };
+  }) | null;
+  const iframeDocument = iframe.contentDocument;
+  if (!iframeWindow || !iframeDocument) {
+    return {
+      issues: [{
+        severity: "critical",
+        category: "runtime",
+        title: "Preview indisponivel",
+        detail: "O iframe do preview nao ficou acessivel para a revisao.",
+        viewport: params.viewport
+      }],
+      snapshot: null,
+      metrics: null,
+      consoleErrors: []
+    };
+  }
+
+  const previousStyles = {
+    width: iframe.style.width,
+    maxWidth: iframe.style.maxWidth,
+    margin: iframe.style.margin,
+    display: iframe.style.display
+  };
+  if (params.viewport === "mobile" && params.width) {
+    iframe.style.width = `${params.width}px`;
+    iframe.style.maxWidth = `${params.width}px`;
+    iframe.style.margin = "0 auto";
+    iframe.style.display = "block";
+  }
+  await waitForReviewPaint();
+
+  const issues: LandingVisualReviewIssue[] = [];
+  const diagnostics = iframeWindow.__LANDING_PREVIEW_DIAGNOSTICS;
+  const consoleErrors = Array.from(new Set([...(diagnostics?.consoleErrors || []), ...(diagnostics?.runtimeErrors || [])])).filter(Boolean);
+  const viewportWidth = iframeDocument.documentElement.clientWidth || iframe.clientWidth || params.width || 0;
+  const viewportHeight = iframeDocument.documentElement.clientHeight || iframe.clientHeight || 900;
+  const scrollWidth = Math.max(iframeDocument.documentElement.scrollWidth, iframeDocument.body?.scrollWidth || 0);
+  const scrollHeight = Math.max(iframeDocument.documentElement.scrollHeight, iframeDocument.body?.scrollHeight || 0);
+  const horizontalOverflowPx = Math.max(0, scrollWidth - viewportWidth);
+  const sectionSelector = "section, main > div, main > section, [data-slot], [data-radix-collection-item]";
+  const visibleSections = Array.from(iframeDocument.querySelectorAll(sectionSelector)).filter((element) => isElementVisible(element, iframeWindow)).length;
+  const actionCandidates = Array.from(iframeDocument.querySelectorAll("a, button, [role='button']")).filter((element) => isElementVisible(element, iframeWindow));
+  const primaryCta = actionCandidates.find((element) => /(saiba|quero|falar|inscrev|matric|comece|comecar|conhec|ver mais)/i.test(element.textContent || ""))
+    || actionCandidates[0]
+    || null;
+  const ctaRect = primaryCta ? (primaryCta as HTMLElement).getBoundingClientRect() : null;
+  const ctaVisible = Boolean(ctaRect && ctaRect.top < viewportHeight && ctaRect.bottom > 0);
+  const ctaAboveFold = Boolean(ctaRect && ctaRect.top <= Math.max(180, viewportHeight * 0.92));
+  const textElements = Array.from(iframeDocument.querySelectorAll("h1, h2, h3, p, span, li, a, button"))
+    .filter((element) => isElementVisible(element, iframeWindow))
+    .slice(0, 120);
+  let contrastWarnings = 0;
+  for (const element of textElements) {
+    const htmlElement = element as HTMLElement;
+    const text = htmlElement.innerText?.trim();
+    if (!text) continue;
+    const style = iframeWindow.getComputedStyle(htmlElement);
+    const foreground = parseCssColor(style.color);
+    const background = findBackgroundColor(htmlElement, iframeWindow);
+    if (!foreground) continue;
+    const ratio = getContrastRatio(foreground, background);
+    if (ratio < 4.5) {
+      contrastWarnings += 1;
+    }
+  }
+  const animatedElements = Array.from(iframeDocument.querySelectorAll("*")).slice(0, 300).filter((element) => {
+    const style = iframeWindow.getComputedStyle(element);
+    return style.animationDuration !== "0s" || style.transitionDuration !== "0s";
+  }).length;
+
+  if (params.runtimeError) {
+    issues.push({
+      severity: "critical",
+      category: "runtime",
+      title: "Erro de runtime no preview",
+      detail: params.runtimeError,
+      viewport: params.viewport
+    });
+  }
+  if (consoleErrors.length > 0) {
+    issues.push({
+      severity: "critical",
+      category: "runtime",
+      title: "Console do preview reportou erro",
+      detail: consoleErrors[0],
+      viewport: params.viewport
+    });
+  }
+  if (horizontalOverflowPx > 8) {
+    issues.push({
+      severity: "critical",
+      category: "overflow",
+      title: "Overflow horizontal detectado",
+      detail: `A landing excedeu a largura da viewport em ${Math.round(horizontalOverflowPx)}px.`,
+      viewport: params.viewport
+    });
+  }
+  if (!primaryCta) {
+    issues.push({
+      severity: "critical",
+      category: "cta",
+      title: "CTA principal ausente",
+      detail: "A pagina nao expôs nenhum botao ou link principal clicavel.",
+      viewport: params.viewport
+    });
+  } else if (!ctaVisible || !ctaAboveFold) {
+    issues.push({
+      severity: "critical",
+      category: "cta",
+      title: "CTA principal pouco acessivel",
+      detail: "O CTA principal nao ficou claramente visivel na primeira dobra.",
+      viewport: params.viewport
+    });
+  }
+  if (contrastWarnings > 0) {
+    issues.push({
+      severity: "warning",
+      category: "contrast",
+      title: "Possivel contraste baixo",
+      detail: `${contrastWarnings} bloco(s) de texto ficaram com contraste abaixo do ideal.`,
+      viewport: params.viewport
+    });
+  }
+  if (animatedElements > 48) {
+    issues.push({
+      severity: "warning",
+      category: "motion",
+      title: "Animacoes em excesso",
+      detail: `${animatedElements} elementos visiveis usam animacao ou transicao ao mesmo tempo.`,
+      viewport: params.viewport
+    });
+  }
+  if (visibleSections < 2) {
+    issues.push({
+      severity: "warning",
+      category: "layout",
+      title: "Estrutura visual curta demais",
+      detail: "A composicao renderizada ficou curta ou com poucas secoes reconheciveis.",
+      viewport: params.viewport
+    });
+  }
+
+  const snapshotHeight = Math.max(900, Math.min(scrollHeight, 2200));
+  const snapshot = {
+    viewport: params.viewport,
+    width: viewportWidth,
+    height: snapshotHeight,
+    dataUrl: buildSnapshotDataUrl(iframeDocument, viewportWidth, snapshotHeight),
+    capturedAt: new Date().toISOString()
+  } satisfies LandingVisualReviewSnapshot;
+  const metrics = {
+    viewportWidth,
+    viewportHeight,
+    scrollWidth,
+    scrollHeight,
+    horizontalOverflowPx,
+    visibleSections,
+    ctaVisible,
+    ctaAboveFold,
+    contrastWarnings,
+    animatedElements
+  } satisfies LandingVisualReviewMetrics;
+
+  if (params.viewport === "mobile") {
+    iframe.style.width = previousStyles.width;
+    iframe.style.maxWidth = previousStyles.maxWidth;
+    iframe.style.margin = previousStyles.margin;
+    iframe.style.display = previousStyles.display;
+    await waitForReviewPaint();
+  }
+
+  return {
+    issues,
+    snapshot,
+    metrics,
+    consoleErrors
+  };
 }
 
 function ThinkingBlock({ thinking, label = "Raciocinio" }: { thinking: string; label?: string }) {
@@ -123,6 +447,8 @@ export default function OffersSection({
   const [creatingSession] = useState(false);
   const [sendingChat, setSendingChat] = useState(false);
   const [previewing, setPreviewing] = useState(false);
+  const [reviewingPreview, setReviewingPreview] = useState(false);
+  const [submittingPreviewReview, setSubmittingPreviewReview] = useState(false);
   const [publishingSession, setPublishingSession] = useState(false);
   const [deletingOfferId, setDeletingOfferId] = useState<number | null>(null);
   const [togglingOfferId, setTogglingOfferId] = useState<number | null>(null);
@@ -139,6 +465,7 @@ export default function OffersSection({
   const [plannerSelectedOption, setPlannerSelectedOption] = useState<string | null>(null);
   const [plannerAskIndex, setPlannerAskIndex] = useState(0);
   const [plannerAnswers, setPlannerAnswers] = useState<Record<string, string>>({});
+  const [previewRuntimeSnapshot, setPreviewRuntimeSnapshot] = useState<PreviewRuntimeSnapshot | null>(null);
 
   const sortedSessions = useMemo(() => sortSessionsByRecent(sessions), [sessions]);
   const latestSession = useMemo(() => sortedSessions[0] ?? null, [sortedSessions]);
@@ -150,12 +477,46 @@ export default function OffersSection({
     if (!selectedSession) return null;
     return selectedSession.preview?.landing?.landingCodeBundleJson || selectedSession.codeBundleDraft || null;
   }, [selectedSession]);
+  const selectedBundleGeneratedAt = selectedSessionCodeBundle?.metadata.generatedAt || "";
+  const selectedLatestVisualReview = selectedSession?.latestVisualReview || null;
+  const currentBundleReviewApproved = Boolean(
+    selectedBundleGeneratedAt
+      && selectedLatestVisualReview
+      && selectedLatestVisualReview.bundleGeneratedAt === selectedBundleGeneratedAt
+      && selectedLatestVisualReview.status === "passed"
+  );
+  const shouldRunVisualReview = Boolean(
+    selectedSession
+      && selectedSession.id > 0
+      && selectedBundleGeneratedAt
+      && (
+        !selectedLatestVisualReview
+        || selectedLatestVisualReview.bundleGeneratedAt !== selectedBundleGeneratedAt
+        || selectedLatestVisualReview.source === "preflight"
+        || selectedLatestVisualReview.status === "auto_fixed"
+      )
+  );
   const askQueue = useMemo(
     () => (sendingChat || !selectedSession?.planner.shouldAsk ? [] : selectedSession.planner.askQueue),
     [sendingChat, selectedSession]
   );
   const activePlannerAsk = askQueue[plannerAskIndex] ?? null;
   const hasPlannerAsk = askQueue.length > 0;
+  const publishBlockedByReview = Boolean(
+    selectedSessionCodeBundle
+      && (!currentBundleReviewApproved || reviewingPreview || submittingPreviewReview)
+  );
+  const generationInFlight = previewing || selectedSession?.status === "review_pending";
+  const latestReviewIsPreflight = selectedLatestVisualReview?.source === "preflight";
+  const reviewStatusLabel = currentBundleReviewApproved
+    ? "Aprovado"
+    : latestReviewIsPreflight && selectedLatestVisualReview?.status === "preflight_running"
+      ? "preflight"
+      : selectedLatestVisualReview?.status || "pendente";
+  const reviewSummaryText = reviewingPreview || submittingPreviewReview
+    ? "Analisando runtime, CTA, overflow, contraste e estrutura em desktop e mobile."
+    : selectedLatestVisualReview?.summary
+      || "O parecer visual ainda nao foi persistido para este bundle.";
 
   const [localOfferDraft, setLocalOfferDraft] = useState<LandingCreationSession["offerDraft"] | null>(null);
   const [savingDraft, setSavingDraft] = useState(false);
@@ -164,6 +525,16 @@ export default function OffersSection({
   const chatResizeStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const sendingChatRef = useRef(false);
   const chatAbortControllerRef = useRef<AbortController | null>(null);
+  const reviewSubmissionKeyRef = useRef("");
+  const replaceSession = useCallback((session: LandingCreationSession) => {
+    setSessions((current) => {
+      const next = current.some((item) => item.id === session.id)
+        ? current.map((item) => (item.id === session.id ? session : item))
+        : [session, ...current];
+      return sortSessionsByRecent(next);
+    });
+    setSelectedSessionId(session.id);
+  }, []);
 
   useEffect(() => {
     if (showDraftPanel && selectedSession) {
@@ -173,6 +544,7 @@ export default function OffersSection({
 
   useEffect(() => {
     setPreviewPaneMode("preview");
+    setPreviewRuntimeSnapshot(null);
   }, [selectedSessionId]);
 
   useEffect(() => {
@@ -180,6 +552,122 @@ export default function OffersSection({
       setPreviewPaneMode("preview");
     }
   }, [previewPaneMode, selectedSessionCodeBundle]);
+
+  useEffect(() => {
+    if (!selectedSession || !selectedSessionCodeBundle || !selectedBundleGeneratedAt) return;
+    if (!previewRuntimeSnapshot?.iframe) return;
+    if (previewRuntimeSnapshot.bundleGeneratedAt !== selectedBundleGeneratedAt) return;
+    const reviewIframe = previewRuntimeSnapshot.iframe;
+    const reviewState = previewRuntimeSnapshot.state;
+    if (reviewState !== "ready" && reviewState !== "error") return;
+    if (!shouldRunVisualReview || reviewingPreview || submittingPreviewReview) return;
+
+    const submissionKey = `${selectedSession.id}:${selectedBundleGeneratedAt}:${selectedLatestVisualReview?.id || 0}:${selectedLatestVisualReview?.status || "none"}`;
+    if (reviewSubmissionKeyRef.current === submissionKey) return;
+    reviewSubmissionKeyRef.current = submissionKey;
+
+    let cancelled = false;
+    const runReview = async () => {
+      setReviewingPreview(true);
+      try {
+        const desktopReview = reviewState === "error"
+          ? {
+              issues: [{
+                severity: "critical",
+                category: "runtime",
+                title: "Erro de runtime no preview",
+                detail: previewRuntimeSnapshot.runtimeError || "O canvas nao conseguiu renderizar o bundle atual.",
+                viewport: "desktop"
+              }] satisfies LandingVisualReviewIssue[],
+              snapshot: null,
+              metrics: null,
+              consoleErrors: [previewRuntimeSnapshot.runtimeError].filter(Boolean)
+            }
+          : await collectLandingViewportReview({
+              iframe: reviewIframe,
+              viewport: "desktop",
+              runtimeError: previewRuntimeSnapshot.runtimeError
+            });
+        const mobileReview = reviewState === "error"
+          ? {
+              issues: [] as LandingVisualReviewIssue[],
+              snapshot: null,
+              metrics: null,
+              consoleErrors: [] as string[]
+            }
+          : await collectLandingViewportReview({
+              iframe: reviewIframe,
+              viewport: "mobile",
+              width: 390,
+              runtimeError: previewRuntimeSnapshot.runtimeError
+            });
+        if (cancelled) return;
+
+        const issues = [...desktopReview.issues, ...mobileReview.issues];
+        const consoleErrors = Array.from(new Set([...desktopReview.consoleErrors, ...mobileReview.consoleErrors])).filter(Boolean);
+        const criticalCount = issues.filter((issue) => issue.severity === "critical").length;
+        const warningCount = issues.filter((issue) => issue.severity === "warning").length;
+        const score = Math.max(0, Math.min(100, 100 - criticalCount * 32 - warningCount * 8));
+        const report: LandingVisualReviewReport = {
+          bundleGeneratedAt: selectedBundleGeneratedAt,
+          summary: buildReviewSummary(issues),
+          score,
+          issues,
+          snapshots: [desktopReview.snapshot, mobileReview.snapshot].filter(Boolean) as LandingVisualReviewSnapshot[],
+          consoleErrors,
+          metrics: {
+            desktop: desktopReview.metrics,
+            mobile: mobileReview.metrics
+          }
+        };
+
+        setSubmittingPreviewReview(true);
+        const response = await apiFetch<{
+          session: LandingCreationSession;
+          reviewAction: {
+            autoFixed: boolean;
+            rerunRequired: boolean;
+          };
+        }>(`/landing-creation/sessions/${selectedSession.id}/review`, {
+          method: "POST",
+          body: JSON.stringify({ report })
+        });
+        if (cancelled) return;
+        replaceSession(response.session);
+        if (response.reviewAction.autoFixed) {
+          addToast("A Lume refinou o bundle automaticamente apos a revisao visual.", "info");
+        } else if (criticalCount > 0) {
+          addToast("Revisao visual reprovou a landing atual e bloqueou a publicacao.", "error");
+        }
+      } catch (err) {
+        if (!cancelled) {
+          reviewSubmissionKeyRef.current = "";
+          addToast(err instanceof Error ? err.message : "Falha ao revisar visualmente a landing.", "error");
+        }
+      } finally {
+        if (!cancelled) {
+          setReviewingPreview(false);
+          setSubmittingPreviewReview(false);
+        }
+      }
+    };
+
+    void runReview();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    addToast,
+    previewRuntimeSnapshot,
+    replaceSession,
+    reviewingPreview,
+    selectedBundleGeneratedAt,
+    selectedLatestVisualReview,
+    selectedSession,
+    selectedSessionCodeBundle,
+    shouldRunVisualReview,
+    submittingPreviewReview
+  ]);
 
   useEffect(() => {
     function handlePointerMove(event: PointerEvent) {
@@ -286,16 +774,6 @@ export default function OffersSection({
     setSelectedSessionId((current) => (current && nextSessions.some((session) => session.id === current) ? current : null));
   }, []);
 
-  const replaceSession = useCallback((session: LandingCreationSession) => {
-    setSessions((current) => {
-      const next = current.some((item) => item.id === session.id)
-        ? current.map((item) => (item.id === session.id ? session : item))
-        : [session, ...current];
-      return sortSessionsByRecent(next);
-    });
-    setSelectedSessionId(session.id);
-  }, []);
-
   const ensureCreationSessionPersisted = useCallback(async (session: LandingCreationSession) => {
     if (session.id > 0) return session;
 
@@ -386,6 +864,7 @@ export default function OffersSection({
       },
       codeBundleDraft: null,
       preview: null,
+      latestVisualReview: null,
       publishedOfferId: null,
       createdAt: now,
       updatedAt: now,
@@ -532,6 +1011,10 @@ export default function OffersSection({
       if (shouldAutoPreview) {
         requestPhase = "preview";
         setPreviewing(true);
+        replaceSession({
+          ...response.session,
+          status: "review_pending"
+        });
         try {
           const previewResponse = await apiFetch<{ session: LandingCreationSession }>(
             `/landing-creation/sessions/${session.id}/preview`,
@@ -579,6 +1062,10 @@ export default function OffersSection({
   const generateSessionPreview = async () => {
     if (!selectedSession) return;
     setPreviewing(true);
+    replaceSession({
+      ...selectedSession,
+      status: "review_pending"
+    });
     const toastId = addToast("Gerando preview do chatbot...", "loading");
     try {
       const response = await apiFetch<{ session: LandingCreationSession }>(
@@ -966,12 +1453,12 @@ export default function OffersSection({
 
             <button
               type="button"
-              disabled={publishingSession}
-              className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-emerald-500 disabled:opacity-50"
+              disabled={publishingSession || publishBlockedByReview}
+              className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
               onClick={publishSession}
             >
               {publishingSession ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-              {publishingSession ? "Publicando..." : "Publicar"}
+              {publishingSession ? "Publicando..." : reviewingPreview || submittingPreviewReview ? "Validando UI..." : "Publicar"}
             </button>
             </div>
           </div>
@@ -1128,6 +1615,31 @@ export default function OffersSection({
                   <h2 className="text-2xl font-black tracking-tight text-white drop-shadow-md">
                     {selectedSession.title || "Nova landing"}
                   </h2>
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <span className={`rounded-full px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.22em] ${
+                      generationInFlight
+                        ? "bg-cyan-500/15 text-cyan-100"
+                        : currentBundleReviewApproved
+                          ? "bg-emerald-500/15 text-emerald-100"
+                          : "bg-slate-800/90 text-slate-300"
+                    }`}>
+                      {generationInFlight
+                        ? "Gerando landing"
+                        : currentBundleReviewApproved
+                          ? "Preview aprovado"
+                          : selectedSession.status || "workspace"}
+                    </span>
+                    {(previewing || reviewingPreview || submittingPreviewReview) ? (
+                      <span className="inline-flex items-center gap-2 text-xs font-semibold text-slate-300">
+                        <RefreshCw className="h-3.5 w-3.5 animate-spin text-cyan-300" />
+                        {previewing
+                          ? "Montando bundle e preview"
+                          : reviewingPreview || submittingPreviewReview
+                            ? "Validando interface"
+                            : "Processando"}
+                      </span>
+                    ) : null}
+                  </div>
                 </div>
 
                 <div className="flex min-h-0 flex-1 flex-col z-10">
@@ -1462,7 +1974,93 @@ export default function OffersSection({
                           offer={selectedSession.preview!.offer}
                           landing={selectedSession.preview!.landing}
                           previewLabel="Preview em Tempo Real ⚡"
+                          onRuntimeSnapshot={setPreviewRuntimeSnapshot}
                         />
+                        <div className="border-t border-slate-800/50 bg-slate-950/80 px-4 py-4">
+                          <div className="rounded-3xl border border-cyan-400/15 bg-slate-900/70 p-4 text-slate-100 shadow-[0_24px_80px_rgba(2,6,23,0.32)]">
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                              <div>
+                                <p className="text-[11px] font-black uppercase tracking-[0.22em] text-cyan-200/80">Revisao visual</p>
+                                <h3 className="mt-2 text-lg font-black text-white">
+                                  {reviewingPreview || submittingPreviewReview
+                                    ? "Lume esta validando a UI"
+                                    : latestReviewIsPreflight
+                                      ? "Preflight rodando em paralelo"
+                                    : selectedLatestVisualReview?.status === "passed"
+                                      ? "Landing aprovada para publicar"
+                                    : selectedLatestVisualReview?.status === "auto_fixed"
+                                        ? "Refino automatico aplicado"
+                                        : selectedLatestVisualReview?.status === "failed" || selectedLatestVisualReview?.status === "preflight_failed"
+                                          ? "Publicacao bloqueada pela revisao"
+                                          : "Aguardando primeira revisao"}
+                                </h3>
+                                <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-300">
+                                  {reviewSummaryText}
+                                </p>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <span className={`rounded-full px-3 py-1 text-[11px] font-black uppercase tracking-[0.18em] ${
+                                  currentBundleReviewApproved
+                                    ? "bg-emerald-500/15 text-emerald-200"
+                                    : selectedLatestVisualReview?.status === "failed" || selectedLatestVisualReview?.status === "preflight_failed"
+                                      ? "bg-rose-500/15 text-rose-200"
+                                      : "bg-amber-500/15 text-amber-100"
+                                }`}>
+                                  {reviewStatusLabel}
+                                </span>
+                                {latestReviewIsPreflight ? (
+                                  <span className="rounded-full border border-cyan-400/20 bg-cyan-500/10 px-3 py-1 text-[11px] font-black uppercase tracking-[0.18em] text-cyan-100">
+                                    paralelo
+                                  </span>
+                                ) : null}
+                                {selectedLatestVisualReview?.score !== null && selectedLatestVisualReview?.score !== undefined ? (
+                                  <span className="rounded-full border border-white/10 bg-slate-950/80 px-3 py-1 text-xs font-bold text-slate-200">
+                                    Score {selectedLatestVisualReview.score}
+                                  </span>
+                                ) : null}
+                              </div>
+                            </div>
+
+                            {(selectedLatestVisualReview?.issues.length || 0) > 0 ? (
+                              <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                                {selectedLatestVisualReview!.issues.slice(0, 4).map((issue, index) => (
+                                  <div
+                                    key={`${issue.category}-${issue.title}-${index}`}
+                                    className={`rounded-2xl border px-4 py-3 ${
+                                      issue.severity === "critical"
+                                        ? "border-rose-400/25 bg-rose-500/10 text-rose-50"
+                                        : "border-amber-300/15 bg-amber-500/10 text-amber-50"
+                                    }`}
+                                  >
+                                    <p className="text-[10px] font-black uppercase tracking-[0.2em] opacity-80">
+                                      {issue.viewport || "shared"} · {issue.category}
+                                    </p>
+                                    <p className="mt-2 text-sm font-bold">{issue.title}</p>
+                                    <p className="mt-2 text-sm leading-6 opacity-90">{issue.detail}</p>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : null}
+
+                            {selectedLatestVisualReview?.snapshots.length ? (
+                              <div className="mt-4 flex flex-wrap gap-2">
+                                {selectedLatestVisualReview.snapshots.map((snapshot) => (
+                                  snapshot.dataUrl ? (
+                                    <a
+                                      key={`${snapshot.viewport}-${snapshot.capturedAt}`}
+                                      href={snapshot.dataUrl}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="rounded-full border border-white/10 bg-slate-950/80 px-3 py-1.5 text-xs font-bold uppercase tracking-[0.16em] text-slate-200 transition-colors hover:bg-slate-800"
+                                    >
+                                      Snapshot {snapshot.viewport}
+                                    </a>
+                                  ) : null
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
+                        </div>
                         {selectedSession.preview?.landing?.artifactUrl ? (
                           <div className="border-t border-slate-800/50 bg-slate-950/75 px-4 py-4">
                             <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-400/15 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-50">

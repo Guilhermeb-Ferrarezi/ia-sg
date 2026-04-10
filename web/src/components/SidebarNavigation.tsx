@@ -1,8 +1,9 @@
 import * as Collapsible from "@radix-ui/react-collapsible";
-import { CalendarDays, ChevronLeft, ChevronRight, GraduationCap, LayoutGrid, LogOut, MessageSquare, Settings, ShieldAlert, Sparkles, BarChart3, ScrollText } from "lucide-react";
+import { BarChart3, CalendarDays, ChevronLeft, ChevronRight, GraduationCap, LayoutGrid, LogOut, MessageSquare, ScrollText, Settings, ShieldAlert, Sparkles } from "lucide-react";
+import logoVermelha from "../assets/logoVermelha.png";
+import { cn } from "../lib/utils";
 import SidebarItem from "./SidebarItem";
 import { TooltipProvider } from "./ui/tooltip";
-import { cn } from "../lib/utils";
 
 export type AppPanel = "crm" | "faqs" | "chat" | "analytics" | "calendar" | "operation" | "logs" | "offers" | "settings";
 
@@ -43,8 +44,8 @@ export default function SidebarNavigation({
         <div className="flex h-full min-h-0 flex-col px-3 pb-3 pt-4">
           <div className="mb-4 border-b border-slate-800 pb-4">
             <div className={cn("flex min-w-0 items-center gap-3 px-1", collapsed ? "justify-center" : "")}>
-              <div className="rounded-lg bg-cyan-500/20 p-2 text-cyan-400">
-                <Sparkles className="h-4 w-4" />
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-rose-500/20 bg-white/95 shadow-[0_10px_30px_rgba(239,68,68,0.18)]">
+                <img src={logoVermelha} alt="Santos Tech" className="h-8 w-8 object-contain" />
               </div>
               <div
                 className={cn(
@@ -52,8 +53,8 @@ export default function SidebarNavigation({
                   collapsed ? "max-w-0 opacity-0" : "max-w-[180px] opacity-100"
                 )}
               >
-                <p className="truncate text-sm font-semibold text-slate-100">CRM WhatsApp</p>
-                <p className="truncate text-xs text-slate-500">Navegação</p>
+                <p className="truncate text-sm font-semibold uppercase tracking-[0.18em] text-slate-100">SANTOS TECH</p>
+                <p className="truncate text-xs text-slate-500">CRM WhatsApp</p>
               </div>
             </div>
           </div>
@@ -69,11 +70,11 @@ export default function SidebarNavigation({
             <SidebarItem label="FAQs" icon={Sparkles} isActive={activePanel === "faqs"} isCollapsed={collapsed} onClick={() => onSelectPanel("faqs")} />
             <SidebarItem label="Chat" icon={MessageSquare} isActive={activePanel === "chat"} isCollapsed={collapsed} onClick={() => onSelectPanel("chat")} />
             <SidebarItem label="Analytics" icon={BarChart3} isActive={activePanel === "analytics"} isCollapsed={collapsed} onClick={() => onSelectPanel("analytics")} />
-            <SidebarItem label="Calendário" icon={CalendarDays} isActive={activePanel === "calendar"} isCollapsed={collapsed} onClick={() => onSelectPanel("calendar")} />
+            <SidebarItem label="Calendario" icon={CalendarDays} isActive={activePanel === "calendar"} isCollapsed={collapsed} onClick={() => onSelectPanel("calendar")} />
             <SidebarItem label="Logs" icon={ScrollText} isActive={activePanel === "logs"} isCollapsed={collapsed} onClick={() => onSelectPanel("logs")} />
             <SidebarItem label="Landings" icon={GraduationCap} isActive={activePanel === "offers"} isCollapsed={collapsed} onClick={() => onSelectPanel("offers")} />
             <SidebarItem
-              label="Operação"
+              label="Operacao"
               icon={ShieldAlert}
               isActive={activePanel === "operation"}
               isCollapsed={collapsed}
@@ -84,7 +85,7 @@ export default function SidebarNavigation({
 
             <div className="my-2 border-t border-slate-800/60" />
 
-            <SidebarItem label="Configurações" icon={Settings} isActive={activePanel === "settings"} isCollapsed={collapsed} onClick={() => onSelectPanel("settings")} />
+            <SidebarItem label="Configuracoes" icon={Settings} isActive={activePanel === "settings"} isCollapsed={collapsed} onClick={() => onSelectPanel("settings")} />
           </nav>
 
           <Collapsible.Trigger asChild>
@@ -116,7 +117,7 @@ export default function SidebarNavigation({
               "mt-2 flex h-10 w-full items-center rounded-xl border border-rose-500/25 bg-rose-500/5 text-xs font-semibold text-rose-300 transition-colors hover:bg-rose-500/10 disabled:opacity-50",
               collapsed ? "justify-center px-0" : "justify-center gap-2 px-3"
             )}
-            aria-label="Encerrar sessão"
+            aria-label="Encerrar sessao"
           >
             <LogOut className="h-4 w-4 shrink-0" />
             <span

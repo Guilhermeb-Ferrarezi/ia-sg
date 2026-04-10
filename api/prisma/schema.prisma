@@ -259,11 +259,33 @@ model LandingCreationSession {
   codeBundleDraftJson Json?
   publishedOfferId  Int?
   publishedOffer    Offer?   @relation("PublishedOfferSessions", fields: [publishedOfferId], references: [id], onDelete: SetNull)
+  reviews           LandingCreationReview[]
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
   @@index([status, updatedAt])
   @@index([publishedOfferId])
+}
+
+model LandingCreationReview {
+  id                Int                    @id @default(autoincrement())
+  sessionId         Int
+  status            String                 @default("pending")
+  score             Int?
+  summary           String?
+  bundleGeneratedAt String?
+  issuesJson        Json?
+  snapshotsJson     Json?
+  consoleErrorsJson Json?
+  metricsJson       Json?
+  reviewRound       Int                    @default(1)
+  autoFixAttempted  Boolean                @default(false)
+  session           LandingCreationSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+
+  @@index([sessionId, createdAt])
+  @@index([sessionId, reviewRound])
 }
 
 model WebhookEvent {
